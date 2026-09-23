@@ -7,6 +7,10 @@
   3. GET /scan-billing/breakdown     — 按文件夹维度的消耗明细
   4. GET /scan-billing/monthly       — 月度用量汇总
   5. GET /scan-billing/user-ranking  — 教师用量排名
+  6. GET /scan-billing/pricing       — 计费规则与价格表（计费项/单位/免费额度/累进阶梯/抵扣顺序）
+  7. GET /scan-billing/estimate      — 按量计费预估（本月至今，含免费额度抵扣与阶梯分段）
+  8. GET /scan-billing/bill          — 月度账单（指定月份完整用量与费用）
+  9. GET /scan-billing/usage-stats   — 用量统计（汇总 + 序列 + 维度明细）
 
 数据源：grading_daily_stats（app/models/grading_daily_stat.py），
 由 app/grading/grading_stats.py 在批改主流程旁路累加，无需新增表。
