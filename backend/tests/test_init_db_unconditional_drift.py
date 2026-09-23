@@ -15,11 +15,11 @@
 """
 import os
 
-# ⚠️ 必须先于任何 `app.*` import：本仓 backend/.env 当前写着 AUTO_DDL=true，
-# 而 app.database 在 **import 时**就会因 AUTO_DDL=true 调用 _ensure_database() 去连库。
-# 本文件测的就是「生产默认 AUTO_DDL=false」这条路径，故在此把配置钉死为被测口径
-# （pydantic-settings 优先级：os.environ > .env）。
-os.environ["AUTO_DDL"] = "false"
+# 必须先于任何 `app.*` import：`app.database` 在 **导入期**就会因 AUTO_DDL=true 去连库。
+# 本文件测的就是「生产默认 AUTO_DDL=false」这条路径（pydantic-settings：os.environ > .env）。
+# 主口径已收口在 tests/conftest.py（它在 collection 前加载）；此处保留 setdefault 作二次兜底，
+# ⛔ 用 setdefault 而非强制赋值，避免把进程级 os.environ 强改掉、波及其它测试模块。
+os.environ.setdefault("AUTO_DDL", "false")
 
 import pytest  # noqa: E402
 from sqlalchemy import create_engine, inspect, text  # noqa: E402
