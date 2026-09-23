@@ -13,24 +13,11 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { useLocale } from "@/contexts/LocaleContext";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { translateSubjectName } from "@/i18n/index";
 
-const REGISTER_ROLES = [
-  { value: "任课教师", labelKey: "auth.register.roleSubjectTeacher" },
-  { value: "班主任", labelKey: "auth.register.roleHeadTeacher" },
-  { value: "年级组长", labelKey: "auth.register.roleGradeLeader" },
-  { value: "校级管理者", labelKey: "auth.register.rolePrincipal" },
-  { value: "系统管理员", labelKey: "auth.register.roleAdmin" },
-] as const;
-
-const REGISTER_SUBJECTS = ["语文", "数学", "英语", "科学"] as const;
+// 免审核自助注册只开放「任课教师」（= 不挂靠学校的独立老师）。
+// 其余角色都能经 is_school_admin() 拿到后台权限，可选即等于公网自封管理员（提权）。
+// 后端闸门在 app/schemas/auth.py 的 RegisterRole（Literal）；此处不再保留第二份角色清单。
+const REGISTER_ROLE = "任课教师";
 
 export default function Auth() {
   const REMEMBER_KEY = "grade_buddy_remembered_credentials";
@@ -56,13 +43,12 @@ export default function Auth() {
   const [regEmail, setRegEmail] = useState("");
   const [regPassword, setRegPassword] = useState("");
   const [regDisplayName, setRegDisplayName] = useState("");
-  const [regRole, setRegRole] = useState("任课教师");
   const [regSubject, setRegSubject] = useState("");
   const { signIn, register } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const { projectName } = useProjectBranding();
-  const { t, locale } = useLocale();
+  const { t } = useLocale();
 
   const emailSchema = z.string().email(t("auth.invalidEmail"));
   const passwordSchema = z.string().min(6, t("auth.passwordMin"));
@@ -143,23 +129,14 @@ export default function Auth() {
       return;
     }
 
-    if (regRole === "任课教师" && !regSubject) {
-      toast({
-        title: t("auth.inputError"),
-        description: t("auth.selectSubject"),
-        variant: "destructive",
-      });
-      return;
-    }
-
     setSubmitting(true);
     try {
       const { error } = await register({
         email: regEmail,
         password: regPassword,
         display_name: regDisplayName || undefined,
-        role: regRole,
-        teaching_subject: regSubject || undefined,
+        role: REGISTER_ROLE,
+        teaching_subject: regSubject.trim() || undefined,
       });
       if (error) {
         const msg =
@@ -169,7 +146,11 @@ export default function Auth() {
             : error.message.includes("频繁") ||
                 error.message.toLowerCase().includes("too many")
               ? t("auth.registerRateLimited")
-              : t("auth.registerFailed");
+              : // 科目为自由填写，服务端长度上限（32）是唯一闸门；此处透出原文，
+                // 否则用户只看到笼统的「注册失败」，不知道该改哪里
+                error.message.includes("科目")
+                ? error.message
+                : t("auth.registerFailed");
         toast({
           title: t("auth.registerFailed"),
           description: msg,
@@ -308,45 +289,23 @@ export default function Auth() {
                   />
                 </div>
 
+                {/* 角色无选项：自助注册只开放「任课教师」，故不做成下拉框（单选项下拉框是死交互） */}
                 <div className="space-y-2">
                   <Label>{t("auth.role")}</Label>
-                  <Select
-                    value={regRole}
-                    onValueChange={(v) => {
-                      setRegRole(v);
-                      setRegSubject("");
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder={t("auth.selectRole")} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {REGISTER_ROLES.map((r) => (
-                        <SelectItem key={r.value} value={r.value}>
-                          {t(r.labelKey)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <p className="text-sm text-muted-foreground">
+                    {t("auth.register.roleSubjectTeacher")}
+                  </p>
                 </div>
 
-                {regRole === "任课教师" && (
-                  <div className="space-y-2">
-                    <Label>{t("auth.subject")}</Label>
-                    <Select value={regSubject} onValueChange={setRegSubject}>
-                      <SelectTrigger>
-                        <SelectValue placeholder={t("auth.selectSubject")} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {REGISTER_SUBJECTS.map((s) => (
-                          <SelectItem key={s} value={s}>
-                            {translateSubjectName(locale, s)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
+                <div className="space-y-2">
+                  <Label htmlFor="regSubject">{t("auth.subject")}</Label>
+                  <Input
+                    id="regSubject"
+                    placeholder={t("auth.subjectPlaceholder")}
+                    value={regSubject}
+                    onChange={(e) => setRegSubject(e.target.value)}
+                  />
+                </div>
 
                 <p className="text-xs text-muted-foreground">
                   {t("auth.registerHint")}

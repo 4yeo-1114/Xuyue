@@ -21,7 +21,7 @@ class RegisterRequest(BaseModel):
     password: str
     display_name: Optional[str] = None
     role: RegisterRole
-    teaching_subject: Optional[str] = None  # 仅 role=="任课教师" 时必填
+    teaching_subject: Optional[str] = None  # 可选、自由填写；长度上限见 routers/auth.py
 
 
 class UserResponse(BaseModel):
