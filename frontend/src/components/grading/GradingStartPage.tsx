@@ -1811,7 +1811,6 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
           );
         } else {
           setGradingsPersisted({ completed: [], failed: [] });
-          setMissingQuestions(null);
           const localPrefs = getStoredFolderPrefs(name);
           setScoringConfig(
             (currentEngine === "baidu" || currentEngine === "aliyun") ? localPrefs.scoring_config || {} : {},

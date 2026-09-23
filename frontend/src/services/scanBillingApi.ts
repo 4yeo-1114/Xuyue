@@ -197,25 +197,3 @@ export async function fetchBreakdown(params?: {
   const q = search.toString();
   return request<BreakdownItem[]>(`/scan-billing/breakdown${q ? `?${q}` : ""}`);
 }
-
-/** 教师排名 */
-export interface UserRankingItem {
-  rank: number;
-  user_id: string;
-  display_name: string | null;
-  email: string | null;
-  upload: number;
-  grade: number;
-  total: number;
-}
-
-export async function fetchUserRanking(params?: {
-  days?: number;
-  limit?: number;
-}): Promise<UserRankingItem[]> {
-  const search = new URLSearchParams();
-  if (params?.days) search.set("days", String(params.days));
-  if (params?.limit) search.set("limit", String(params.limit));
-  const q = search.toString();
-  return request<UserRankingItem[]>(`/scan-billing/user-ranking${q ? `?${q}` : ""}`);
-}
