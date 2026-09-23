@@ -4,11 +4,11 @@
 覆盖：
   1. 任课教师+数学 注册成功：users.roles / teaching_subject、class_teachers 新增 1 行
      role="teacher" subject="数学"、响应含 access_token
-  2. 班主任注册成功：class_teachers role="head"
-  3. 年级组长/校级管理者/系统管理员注册成功：不产生 class_teachers 行
-  4. 重复邮箱 → 409；非法角色 → 422；任课教师缺科目/非法科目 → 400；
-     其他角色带科目 → 400；演示池空 → 503；限流 → 429
-  5. settings.ALLOW_PUBLIC_REGISTRATION=False → 403
+  2. 免审核自助注册只允许「任课教师」：班主任/年级组长/校级管理者/系统管理员
+     一律在 Pydantic 校验阶段被拒（ValidationError）——公网无法自封管理员
+  3. 重复邮箱 → 409；非法角色 → 422；任课教师缺科目/非法科目 → 400；
+     演示池空 → 503；限流 → 429
+  4. settings.ALLOW_PUBLIC_REGISTRATION=False → 403
 
 测试方式：直接调用 auth.register（与 test_admin_batch_delete 同款 fake db 风格），
 mock 掉密码哈希 / token 签发 / 批改目录初始化 / 注册限流外部副作用。
@@ -174,40 +174,19 @@ def test_register_subject_teacher_success():
     assert db.committed
 
 
-def test_register_head_teacher_success():
-    db = _FakeDb(demo_classes=[_demo_class()])
-    resp = auth.register(
-        RegisterRequest(email="head@example.com", password="123456", role="班主任"),
-        _request(),
-        db=db,
-    )
-
-    assert resp.access_token.startswith("token-")
-    ct = db.added[1]
-    assert isinstance(ct, ClassTeacher)
-    assert ct.role == "head"
-    assert ct.subject is None
-    assert db.committed
-
-
 @pytest.mark.parametrize(
     "role",
-    ["年级组长", "校级管理者", "系统管理员"],
+    ["班主任", "年级组长", "校级管理者", "系统管理员"],
 )
-def test_register_global_roles_no_class_teacher(role):
-    db = _FakeDb()
-    resp = auth.register(
-        RegisterRequest(email=f"{role}@example.com", password="123456", role=role),
-        _request(),
-        db=db,
-    )
+def test_register_privileged_role_rejected(role):
+    """闸门：免审核自助注册只允许「任课教师」。
 
-    assert resp.access_token.startswith("token-")
-    user = db.added[0]
-    assert user.roles == role
-    # 全局角色不绑定演示班 → 只新增了 User，没有 ClassTeacher
-    assert len([o for o in db.added if isinstance(o, ClassTeacher)]) == 0
-    assert db.committed
+    这四个角色都能经 is_school_admin() 拿到后台权限；自助注册若可选，
+    等于任何人对公网打一个请求就能自封平台管理员（提权）。
+    断言它们在 Pydantic 校验阶段（路由函数体执行之前）就被拒。
+    """
+    with pytest.raises(ValidationError):
+        RegisterRequest(email=f"{role}@example.com", password="123456", role=role)
 
 
 # ── 校验分支 ─────────────────────────────────────────────
@@ -253,17 +232,6 @@ def test_register_teacher_invalid_subject_400():
     assert exc_info.value.status_code == 400
 
 
-def test_register_non_teacher_with_subject_400():
-    db = _FakeDb()
-    with pytest.raises(HTTPException) as exc_info:
-        auth.register(
-            RegisterRequest(email="head@example.com", password="123456", role="班主任", teaching_subject="数学"),
-            _request(),
-            db=db,
-        )
-    assert exc_info.value.status_code == 400
-
-
 def test_register_demo_pool_empty_503():
     db = _FakeDb(demo_classes=[])
     with pytest.raises(HTTPException) as exc_info:
@@ -282,7 +250,7 @@ def test_register_rate_limited_429(monkeypatch):
     db = _FakeDb()
     with pytest.raises(HTTPException) as exc_info:
         auth.register(
-            RegisterRequest(email="spam@example.com", password="123456", role="年级组长"),
+            RegisterRequest(email="spam@example.com", password="123456", role="任课教师", teaching_subject="数学"),
             _request(),
             db=db,
         )
@@ -294,7 +262,7 @@ def test_register_disabled_by_config_403(monkeypatch):
     db = _FakeDb()
     with pytest.raises(HTTPException) as exc_info:
         auth.register(
-            RegisterRequest(email="blocked@example.com", password="123456", role="年级组长"),
+            RegisterRequest(email="blocked@example.com", password="123456", role="任课教师", teaching_subject="数学"),
             _request(),
             db=db,
         )
@@ -372,18 +340,18 @@ def test_http_register_then_login_local_email(monkeypatch):
 
     reg = client.post(
         "/auth/register",
-        json={"email": "head@grade.local", "password": "123456", "role": "班主任"},
+        json={"email": "teacher@grade.local", "password": "123456", "role": "任课教师", "teaching_subject": "数学"},
     )
     assert reg.status_code == 200, reg.text
 
     login = client.post(
         "/auth/login",
-        json={"email": "head@grade.local", "password": "123456"},
+        json={"email": "teacher@grade.local", "password": "123456"},
     )
     assert login.status_code == 200, login.text
     body = login.json()
     assert body["access_token"].startswith("token-")
-    assert body["user"]["email"] == "head@grade.local"
+    assert body["user"]["email"] == "teacher@grade.local"
 
 
 def test_http_login_com_email_success(monkeypatch):

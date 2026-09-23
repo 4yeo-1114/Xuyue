@@ -9,8 +9,10 @@ class LoginRequest(BaseModel):
     password: str
 
 
-# 前端注册选项 → 落库 roles 的映射（"校长"前端选项落库为"校级管理者"）
-RegisterRole = Literal["任课教师", "班主任", "年级组长", "校级管理者", "系统管理员"]
+# 免审核自助注册只允许「任课教师」——这是唯一的注册闸门（Pydantic 校验阶段即拦非法值）。
+# 收窄理由：系统管理员/子系统管理员/校级管理者/年级组长都能经 is_school_admin() 拿到后台权限，
+# 自助注册若可选即等于公网自封管理员（提权）。
+RegisterRole = Literal["任课教师"]
 
 
 class RegisterRequest(BaseModel):

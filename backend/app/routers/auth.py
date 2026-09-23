@@ -85,7 +85,8 @@ def _validate_loose_email(raw: str) -> str:
 
 
 # ── 免审核自助注册（演示环境）──────────────────────────────
-REGISTER_ROLE_WHITELIST = ("任课教师", "班主任", "年级组长", "校级管理者", "系统管理员")
+# 可注册角色白名单的闸门在 app/schemas/auth.py 的 RegisterRole（Literal，Pydantic 校验阶段拦截）。
+# 此处不再保留第二份角色清单：两个事实源必然分叉。
 DEMO_SUBJECTS = ("语文", "数学", "英语", "科学")
 DEMO_CLASS_PREFIX = "演示-"
 
