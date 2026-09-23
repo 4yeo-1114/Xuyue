@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, Suspense, lazy } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { isPlatformAdmin, isParent } from "@/lib/adminAccess";
+import { isPlatformAdmin, isParent, isNavPageAllowed } from "@/lib/adminAccess";
 import { NAV_ITEMS, Sidebar } from "@/components/Sidebar";
 import { TopHeader } from "@/components/TopHeader";
 import { ClassManageDialog } from "@/components/ClassManageDialog";
@@ -184,6 +184,25 @@ function NeedsClassPlaceholder() {
       <p className="text-muted-foreground text-sm">
         {t("common.selectClassHint")}
       </p>
+    </div>
+  );
+}
+
+/* ── 无权访问该功能域（独立老师深链越界时的中性态：明说 + 给回首页的出口，⛔ 不静默回落） ── */
+function NavDeniedPlaceholder({ onBackHome }: { onBackHome: () => void }) {
+  const { t } = useLocale();
+  return (
+    <div className="flex flex-col items-center justify-center h-[60vh]">
+      <ShieldOff className="w-16 h-16 text-muted-foreground/30 mb-4" />
+      <h2 className="text-lg font-semibold text-foreground mb-1">
+        {t("account.accessDenied.title")}
+      </h2>
+      <p className="text-muted-foreground text-sm mb-5">
+        {t("common.navDeniedDesc")}
+      </p>
+      <Button variant="outline" size="sm" onClick={onBackHome}>
+        {t("auth.backToHome")}
+      </Button>
     </div>
   );
 }
@@ -388,6 +407,15 @@ export default function Index() {
 
   /* ── Content renderer ── */
   const renderContent = () => {
+    // 深链闸：独立老师（仅任课教师账号）请求白名单外的功能域 ⇒ 明确拒绝渲染。
+    // ⛔ 与侧栏共用同一份白名单（constants/systemRoles.ts），不另建第二份谓词。
+    // 位置刻意在 CLASS_REQUIRED_IDS 之前：拒绝优先于「请先选班」，且不改后者语义。
+    if (!isNavPageAllowed(user, activeNavId)) {
+      return (
+        <NavDeniedPlaceholder onBackHome={() => handleNavChange("home")} />
+      );
+    }
+
     // Pages that need a class selected
     if (CLASS_REQUIRED_IDS.has(activeNavId) && !selectedClass) {
       return <NeedsClassPlaceholder />;
@@ -746,10 +774,13 @@ export default function Index() {
 
         {/* 中间内容区域：唯一可以滑动的地方 */}
         <main className="flex-1 p-6 overflow-y-auto overflow-x-hidden relative">
-          <ContentBreadcrumb
-            activeNavId={activeNavId}
-            onNavChange={handleNavChange}
-          />
+          {/* 被深链闸拒的功能域不渲染面包屑（否则会把无权访问的页面名露出来） */}
+          {isNavPageAllowed(user, activeNavId) && (
+            <ContentBreadcrumb
+              activeNavId={activeNavId}
+              onNavChange={handleNavChange}
+            />
+          )}
           <Suspense
             fallback={
               <div className="flex h-[400px] flex-col items-center justify-center gap-3 text-muted-foreground">

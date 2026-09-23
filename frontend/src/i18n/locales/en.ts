@@ -178,6 +178,8 @@ export const en: TranslationDict = {
   "common.selectClassFirst": "Select a Class",
   "common.selectClassHint":
     "Please select a class in the top bar to view content.",
+  "common.navDeniedDesc":
+    "Your account doesn't have access to this feature. Please contact your administrator.",
   "common.multiDevice": "Multi-device",
   "common.multiDeviceDesc":
     "Student/parent apps, DingTalk integration, permissions & push policies",

@@ -177,6 +177,7 @@ export const zh: TranslationDict = {
   "common.tour.start": "开始使用",
   "common.selectClassFirst": "请选择班级",
   "common.selectClassHint": "请在顶部筛选栏选择班级后查看内容",
+  "common.navDeniedDesc": "当前账号无权访问该功能，如需使用请联系管理员",
   "common.multiDevice": "多端管理",
   "common.multiDeviceDesc": "学生端/家长端开关、钉钉集成、数据权限与推送策略",
 
