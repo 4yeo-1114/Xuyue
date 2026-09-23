@@ -1,0 +1,69 @@
+<view class="page">
+
+  <view wx:if="{{loading}}" class="empty">正在加载…</view>
+
+  <block wx:else>
+
+    <!-- 作业卡片 -->
+    <view class="card result-card">
+      <view class="result-title">{{title}}</view>
+
+      <view class="status-wrap">
+        <view class="tag tag-{{status}}">{{statusText}}</view>
+      </view>
+
+      <view class="result-meta">
+        共 {{questionCount}} {{sourceText}} · {{copies}} 份{{pageSizeLabel ? ' · ' + pageSizeLabel : ''}}
+      </view>
+
+      <view wx:if="{{status === 'printing'}}" class="status-sub">打印机正在出纸…</view>
+      <view wx:elif="{{status === 'pending'}}" class="status-sub">已进入打印队列，等待打印机取走</view>
+      <view wx:elif="{{status === 'done'}}" class="status-sub">请到打印机处取走作业纸</view>
+      <view wx:elif="{{status === 'failed'}}" class="status-sub">{{error || '打印失败'}}</view>
+      <view wx:elif="{{status === 'draft'}}" class="status-sub">作业已生成，先预览确认，满意再打印</view>
+
+      <view wx:if="{{printer}}" class="result-printer">打印机：{{printer}}</view>
+    </view>
+
+    <view wx:if="{{timedOut && (status === 'pending' || status === 'printing')}}" class="hint hint-warn">
+      等待时间较长。请检查办公室那台电脑上的打印代理是否在运行、打印机是否开机。
+    </view>
+
+    <view wx:if="{{status === 'failed' && error}}" class="hint hint-warn">{{error}}</view>
+
+    <!-- 预览 -->
+    <button class="btn btn-ghost action-btn big" loading="{{previewing}}" bindtap="onPreview">
+      预览作业纸
+    </button>
+
+    <!-- 草稿：可以打印 / 返回修改 / 删除 -->
+    <block wx:if="{{status === 'draft'}}">
+      <button class="btn action-btn big" loading="{{printing}}" disabled="{{printing}}" bindtap="onPrint">
+        打印
+      </button>
+      <button class="btn btn-plain action-btn" bindtap="onBack">返回修改</button>
+      <button class="btn btn-plain action-btn" bindtap="onDelete">删除这份作业</button>
+    </block>
+
+    <!-- 失败：重试 -->
+    <block wx:elif="{{status === 'failed'}}">
+      <button class="btn action-btn big" loading="{{printing}}" bindtap="onPrint">重新打印</button>
+      <button class="btn btn-plain action-btn" bindtap="onGoHome">返回首页</button>
+    </block>
+
+    <!-- 完成 -->
+    <block wx:elif="{{status === 'done'}}">
+      <button class="btn btn-plain action-btn" loading="{{reprinting}}" bindtap="onReprint">
+        再打一份
+      </button>
+      <button class="btn btn-plain action-btn" bindtap="onGoHome">继续布置下一份</button>
+    </block>
+
+    <!-- 排队 / 打印中 -->
+    <block wx:else>
+      <button class="btn btn-plain action-btn" bindtap="onGoHome">回到首页（打印会继续）</button>
+    </block>
+
+  </block>
+
+</view>

@@ -1,0 +1,35 @@
+<view class="page home-page">
+
+  <view class="home-head">
+    <view class="home-brand">叙阅</view>
+    <view class="home-slogan">布置作业 · 自动批改</view>
+  </view>
+
+  <view class="home-grid">
+    <view class="home-card home-card-primary" bindtap="onGoAssign">
+      <text class="home-card-icon">📝</text>
+      <text class="home-card-title">布置作业</text>
+      <text class="home-card-desc">AI 出题 · 自己出题 · 上传材料</text>
+    </view>
+
+    <view class="home-card home-card-accent" bindtap="onGoGrade">
+      <text class="home-card-icon">✅</text>
+      <text class="home-card-title">批改作业</text>
+      <text class="home-card-desc">拍照上传 · 自动批改留痕</text>
+    </view>
+  </view>
+
+  <view class="card home-links">
+    <view class="home-link" bindtap="onGoGradeHistory">
+      <text class="home-link-label">📚 批改历史</text>
+      <text class="home-link-arrow">›</text>
+    </view>
+    <view class="home-link" bindtap="onGoPrintHistory">
+      <text class="home-link-label">🖨️ 打印记录</text>
+      <text class="home-link-arrow">›</text>
+    </view>
+  </view>
+
+  <view class="home-logout" bindtap="onLogout">退出登录</view>
+
+</view>

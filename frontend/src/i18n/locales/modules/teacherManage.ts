@@ -1,0 +1,58 @@
+import type { TranslationDict } from "../../types";
+
+export const teacherManageZh: TranslationDict = {
+  "nav.settings-teacher": "教师管理",
+  "teacherManage.title": "教师管理",
+  "teacherManage.subtitle": "查看全校教师的班级任教与角色信息",
+  "teacherManage.filter.allClasses": "全部班级",
+  "teacherManage.filter.classPlaceholder": "按班级筛选",
+  "teacherManage.searchPlaceholder": "搜索姓名或账号…",
+  "teacherManage.count": "共 {count} 位教师",
+  "teacherManage.table.name": "姓名",
+  "teacherManage.table.account": "账号",
+  "teacherManage.table.role": "角色",
+  "teacherManage.table.classes": "任教班级",
+  "teacherManage.table.subject": "任教科目",
+  "teacherManage.role.head": "班主任",
+  "teacherManage.role.deputy": "副班主任",
+  "teacherManage.role.teacher": "任课教师",
+  "teacherManage.role.unknown": "教师",
+  "teacherManage.loading": "加载中…",
+  "teacherManage.error": "教师数据加载失败",
+  "teacherManage.errorRetry": "重试",
+  "teacherManage.empty": "暂无教师数据",
+  "teacherManage.emptyHint": "请先在「班级管理」中为班级添加教师",
+  "teacherManage.subjectUnset": "未设置",
+  "teacherManage.noClasses": "暂无班级",
+  "teacherManage.noClassesHint": "请先创建班级后再查看教师信息",
+};
+
+export const teacherManageEn: TranslationDict = {
+  "nav.settings-teacher": "Teacher Management",
+  "teacherManage.title": "Teacher Management",
+  "teacherManage.subtitle":
+    "View teachers and their class assignments across the school",
+  "teacherManage.filter.allClasses": "All Classes",
+  "teacherManage.filter.classPlaceholder": "Filter by class",
+  "teacherManage.searchPlaceholder": "Search by name or account…",
+  "teacherManage.count": "{count} teacher(s)",
+  "teacherManage.table.name": "Name",
+  "teacherManage.table.account": "Account",
+  "teacherManage.table.role": "Role",
+  "teacherManage.table.classes": "Teaching Classes",
+  "teacherManage.table.subject": "Subject",
+  "teacherManage.role.head": "Head Teacher",
+  "teacherManage.role.deputy": "Deputy Head",
+  "teacherManage.role.teacher": "Subject Teacher",
+  "teacherManage.role.unknown": "Teacher",
+  "teacherManage.loading": "Loading…",
+  "teacherManage.error": "Failed to load teacher data",
+  "teacherManage.errorRetry": "Retry",
+  "teacherManage.empty": "No teacher data",
+  "teacherManage.emptyHint":
+    "Add teachers to a class in Class Management first",
+  "teacherManage.subjectUnset": "Not set",
+  "teacherManage.noClasses": "No classes",
+  "teacherManage.noClassesHint":
+    "Create a class first to view teacher information",
+};

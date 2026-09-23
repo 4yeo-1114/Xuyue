@@ -1,0 +1,9 @@
+student_number in students=True
+students cols=id,class_id,user_id,name,student_number,created_at,updated_at,gender,tier,status,birthday,phone,parent_name,parent_phone,address,enroll_date,seat_row,seat_col,cadre_role,notes,school_id
+  wq.exam_id type=varchar(36) null=YES default=None
+  wq.review_count type=int null=YES default=0
+  wq.review_interval type=int null=YES default=0
+  wq.knowledge_point_id type=varchar(36) null=YES default=None
+  wq.status type=varchar(16) null=NO default=open
+  wq.corrected_at type=datetime null=YES default=None
+  wq.school_id type=varchar(36) null=YES default=None

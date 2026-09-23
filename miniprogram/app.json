@@ -1,0 +1,21 @@
+{
+  "pages": [
+    "pages/home/home",
+    "pages/login/login",
+    "pages/index/index",
+    "pages/grade/grade",
+    "pages/grade-history/grade-history",
+    "pages/result/result",
+    "pages/history/history"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#2F6BFF",
+    "navigationBarTitleText": "叙阅",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#F5F6F8",
+    "backgroundTextStyle": "light"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json",
+  "permission": {}
+}

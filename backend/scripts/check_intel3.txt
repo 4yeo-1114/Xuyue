@@ -1,0 +1,17 @@
+== exam_scores for 三年级: rank/avg null counts ==
+  total=2313 has_rank=2313 has_avg=2313 has_score=2313
+== targeted_improvement_reports for 三年级 ==
+  targeted_reports_3rd=0
+== wrong_questions (deprecated) by grade ==
+  grade=初一 total=9 corrected=0
+== student_wrong_questions count ==
+  student_wrong_questions=22240
+== knowledge_points sample (for wrong_question linkage) ==
+  kp 语文_概括能力弱 概括能力弱 unit=b0aa9a2e-91fc-466f-8939-7444b479f501
+  kp 英语_三单形式错误 三单形式错误 unit=13901210-3f42-45bf-8cac-25e3ddbeb571
+  kp SX-FS-01 分数加减法 unit=13901210-3f42-45bf-8cac-25e3ddbeb571
+  kp 数学_分数加减法未通分 分数加减法未通分 unit=19b840c6-c00d-4421-8b39-df3e0ae4569e
+  kp SX-FC-03 方程求解 unit=13901210-3f42-45bf-8cac-25e3ddbeb571
+  kp YY-JX-02 现在进行时 unit=dd398e04-c36e-4cf3-b601-d7aaa24531e9
+  kp 语文_形近字混淆 形近字混淆 unit=b0aa9a2e-91fc-466f-8939-7444b479f501
+  kp SX-MJ-05 面积计算 unit=56647cac-b6bc-455f-9935-e1a65c1f0ab2

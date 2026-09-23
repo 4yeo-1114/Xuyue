@@ -1,0 +1,109 @@
+<view class="page">
+
+  <!-- 上传模式 -->
+  <block wx:if="{{mode === 'upload'}}">
+    <view class="card">
+      <view class="card-title">上传学生试卷</view>
+      <view class="hint">拍一张学生作答的试卷，系统自动批改，并在卷面留下对错与分数。</view>
+
+      <view wx:if="{{!imagePath}}" class="grade-upload" bindtap="onChooseImage">
+        <text class="grade-upload-icon">📷</text>
+        <text class="grade-upload-text">拍照 / 选择试卷图片</text>
+      </view>
+      <view wx:else class="preview-wrap">
+        <image class="preview-img" src="{{imagePath}}" mode="widthFix" bindtap="onChooseImage" />
+        <view class="preview-tip">点击图片可重新选择</view>
+      </view>
+    </view>
+
+    <view class="card">
+      <view class="card-title">标准答案卷 <text class="muted">（可选，批改更准）</text></view>
+      <view class="hint">上传一份带标准答案的试卷，系统会对照答案批改、识别卷面分数更准；不传则直接盲批。</view>
+
+      <view wx:if="{{!standardPath}}" class="grade-upload grade-upload-mini" bindtap="onChooseStandard">
+        <text class="grade-upload-icon">📋</text>
+        <text class="grade-upload-text">选择标准答案卷</text>
+      </view>
+      <view wx:else class="preview-wrap">
+        <image class="preview-img" src="{{standardPath}}" mode="widthFix" bindtap="onChooseStandard" />
+        <view class="preview-tip">已选标准答案卷，点击可重选</view>
+      </view>
+    </view>
+
+    <button class="btn btn-bottom" loading="{{grading}}" disabled="{{grading || !imagePath}}" bindtap="onStartGrade">
+      开始批改
+    </button>
+  </block>
+
+  <!-- 详情 / 批改结果 -->
+  <block wx:else>
+
+    <view wx:if="{{loading}}" class="empty">正在加载…</view>
+
+    <!-- 批改中 -->
+    <view wx:elif="{{status === 'queued' || status === 'running' || status === 'rendering'}}" class="card">
+      <view class="grading-status">
+        <text class="grading-emoji">⏳</text>
+        <text class="grading-title">{{statusText}}</text>
+        <view class="progress-bar">
+          <view class="progress-fill" style="width: {{progress}}%"></view>
+        </view>
+        <text class="muted">{{message}}</text>
+      </view>
+    </view>
+
+    <!-- 结果 -->
+    <block wx:elif="{{status === 'done'}}">
+      <view class="card">
+        <view class="card-title">批改结果 <text class="tag tag-done">已完成</text></view>
+
+        <view class="img-tabs" wx:if="{{imageAnnotated || imageOriginal}}">
+          <view wx:if="{{imageAnnotated}}" class="img-tab {{viewing === 'annotated' ? 'img-tab-active' : ''}}"
+            data-view="annotated" bindtap="onSwitchImage">批改留痕</view>
+          <view wx:if="{{imageOriginal}}" class="img-tab {{viewing === 'original' ? 'img-tab-active' : ''}}"
+            data-view="original" bindtap="onSwitchImage">原图</view>
+        </view>
+
+        <movable-area wx:if="{{imageAnnotated || imageOriginal}}" class="img-viewport" scale-area>
+          <movable-view class="img-movable" direction="all" scale scale-min="1" scale-max="5"
+            scale-value="{{zoom}}" bindscale="onScale">
+            <image wx:if="{{viewing === 'annotated' && imageAnnotated}}" class="result-img" src="{{imageAnnotated}}" mode="aspectFit" />
+            <image wx:elif="{{viewing === 'original' && imageOriginal}}" class="result-img" src="{{imageOriginal}}" mode="aspectFit" />
+          </movable-view>
+        </movable-area>
+
+        <view class="zoom-bar" wx:if="{{imageAnnotated || imageOriginal}}">
+          <view class="zoom-btn {{zoom <= 1 ? 'zoom-btn-disabled' : ''}}" bindtap="onZoomOut">－</view>
+          <text class="zoom-label">{{zoomText}}</text>
+          <view class="zoom-btn {{zoom >= 5 ? 'zoom-btn-disabled' : ''}}" bindtap="onZoomIn">＋</view>
+          <view class="zoom-btn" bindtap="onZoomReset">复位</view>
+        </view>
+
+        <view wx:if="{{result}}" class="result-text">
+          <view class="result-text-title">批改明细</view>
+          <text class="result-text-body">{{result}}</text>
+        </view>
+      </view>
+    </block>
+
+    <!-- 失败 / 取消 -->
+    <block wx:elif="{{status === 'failed' || status === 'cancelled'}}">
+      <view class="card">
+        <view class="card-title">批改未完成 <text class="tag tag-failed">{{statusText}}</text></view>
+        <view class="hint hint-warn">{{message || '批改失败，请检查图片是否清晰后重试'}}</view>
+      </view>
+    </block>
+
+    <!-- 报错 -->
+    <view wx:elif="{{error}}" class="empty">
+      <text class="empty-emoji">😕</text>
+      {{error}}
+    </view>
+
+    <button wx:if="{{mode === 'result' && (status === 'done' || status === 'failed' || status === 'cancelled')}}"
+      class="btn btn-ghost action-btn" bindtap="onReset">再批一张</button>
+    <button class="btn btn-plain action-btn" bindtap="onGoHistory">查看批改历史</button>
+
+  </block>
+
+</view>

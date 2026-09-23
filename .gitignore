@@ -1,0 +1,42 @@
+# ===== 敏感 / 密钥（绝对不进库）=====
+.env
+.env.*
+!.env.example
+multi_project_settings.json
+smartedu_session.json
+project.private.config.json
+.smartedu_profile/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+venv_broken/
+.pytest_cache/
+.mypy_cache/
+
+# ===== 前端 / Node =====
+node_modules/
+dist/
+bun.lockb
+*.tsbuildinfo
+*.local
+
+# ===== 运行时数据（大文件 / 学生答题卡数据）=====
+grading_data_all/
+temp/
+_zyk_legacy_backup_*/
+
+# ===== 日志 =====
+*.log
+
+# ===== 调试图片 / 一次性输出 =====
+_lines.png
+_strip_*.png
+*_out.txt
+
+# ===== 系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,58 @@
+import type { TranslationDict } from "../../types";
+
+export const examManageZh: TranslationDict = {
+  "nav.settings-exam": "考试管理",
+  "examManage.title": "考试管理",
+  "examManage.subtitle": "查看全校考试记录，可按班级 / 科目筛选与管理",
+  "examManage.filter.allClasses": "全部班级",
+  "examManage.filter.classPlaceholder": "按班级筛选",
+  "examManage.filter.allSubjects": "全部科目",
+  "examManage.filter.subjectPlaceholder": "按科目筛选",
+  "examManage.count": "共 {count} 场考试",
+  "examManage.table.name": "考试名称",
+  "examManage.table.class": "班级",
+  "examManage.table.subject": "科目",
+  "examManage.table.totalScore": "满分",
+  "examManage.table.examDate": "考试日期",
+  "examManage.table.action": "操作",
+  "examManage.delete": "删除",
+  "examManage.deleteTitle": "删除考试记录",
+  "examManage.deleteConfirmDesc": "确定要删除这场考试吗？删除后不可恢复。",
+  "examManage.error": "考试数据加载失败",
+  "examManage.errorRetry": "重试",
+  "examManage.empty": "暂无考试记录",
+  "examManage.emptyHint": "在班级「成绩管理」中创建的考试会展示在这里",
+  "examManage.noClasses": "暂无班级",
+  "examManage.noClassesHint": "请先创建班级后再查看考试记录",
+  "examManage.loading": "加载中…",
+};
+
+export const examManageEn: TranslationDict = {
+  "nav.settings-exam": "Exam Management",
+  "examManage.title": "Exam Management",
+  "examManage.subtitle":
+    "View all exam records across the school; filter by class / subject",
+  "examManage.filter.allClasses": "All Classes",
+  "examManage.filter.classPlaceholder": "Filter by class",
+  "examManage.filter.allSubjects": "All Subjects",
+  "examManage.filter.subjectPlaceholder": "Filter by subject",
+  "examManage.count": "{count} exam(s)",
+  "examManage.table.name": "Exam Name",
+  "examManage.table.class": "Class",
+  "examManage.table.subject": "Subject",
+  "examManage.table.totalScore": "Total Score",
+  "examManage.table.examDate": "Exam Date",
+  "examManage.table.action": "Action",
+  "examManage.delete": "Delete",
+  "examManage.deleteTitle": "Delete Exam",
+  "examManage.deleteConfirmDesc":
+    "Are you sure you want to delete this exam? This cannot be undone.",
+  "examManage.error": "Failed to load exam data",
+  "examManage.errorRetry": "Retry",
+  "examManage.empty": "No exam records",
+  "examManage.emptyHint":
+    "Exams created in a class's Score Management will appear here",
+  "examManage.noClasses": "No classes",
+  "examManage.noClassesHint": "Create a class first to view exam records",
+  "examManage.loading": "Loading…",
+};

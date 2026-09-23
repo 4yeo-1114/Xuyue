@@ -1,0 +1,7 @@
+feature_flags: missing=['is_enabled'] | cols=['id', 'key', 'label', 'enabled', 'scope', 'scope_id', 'updated_at', 'updated_by']
+exam_scores: missing=[] | cols=['id', 'user_id', 'exam_id', 'student_id', 'score', 'created_at', 'updated_at', 'class_id', 'school_id', 'class_avg', 'class_rank', 'grade']
+access_logs: missing=['ip_address'] | cols=['id', 'user_id', 'user_role', 'action', 'target_type', 'target_id', 'detail', 'created_at']
+students: missing=[] | cols=['id', 'class_id', 'user_id', 'name', 'student_number', 'created_at', 'updated_at', 'gender', 'tier', 'status', 'birthday', 'phone', 'parent_name', 'parent_phone', 'address', 'enroll_date', 'seat_row', 'seat_col']
+classes: missing=[] | cols=['id', 'user_id', 'school_level', 'grade', 'name', 'student_count', 'created_at', 'updated_at', 'school_id']
+knowledge_points: missing=['subject', 'grade'] | cols=['id', 'user_id', 'unit_id', 'code', 'name', 'level', 'mastery', 'is_weak', 'prerequisite', 'postrequisite', 'related', 'hours', 'key_point', 'difficulty', 'common_errors', 'resources', 'created_at', 'updated_at']
+users: missing=['school_id', 'identity_type'] | cols=['id', 'email', 'password_hash', 'display_name', 'created_at', 'updated_at', 'phone', 'teaching_subject', 'roles', 'job_title', 'plain_password', 'personal_email', 'ui_locale']

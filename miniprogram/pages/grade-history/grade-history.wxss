@@ -1,0 +1,41 @@
+/* 批改历史页 */
+
+.grade-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.grade-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.grade-item-name {
+  font-size: 28rpx;
+  color: #1f2329;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 8rpx;
+}
+
+.grade-item-meta {
+  font-size: 23rpx;
+  color: #9aa0a8;
+}
+
+.grade-item-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  flex-shrink: 0;
+  margin-left: 20rpx;
+}
+
+.grade-item-del {
+  margin-top: 12rpx;
+  font-size: 23rpx;
+  color: #9aa0a8;
+  padding: 4rpx 8rpx;
+}

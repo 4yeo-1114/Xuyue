@@ -1,0 +1,35 @@
+<view class="page">
+
+  <view wx:if="{{loading}}" class="empty">正在加载…</view>
+
+  <view wx:elif="{{error}}" class="empty">
+    <text class="empty-emoji">😕</text>
+    {{error}}
+  </view>
+
+  <view wx:elif="{{jobs.length === 0}}" class="empty">
+    <text class="empty-emoji">📄</text>
+    还没有打印过作业
+  </view>
+
+  <block wx:else>
+    <view
+      class="card job-item"
+      wx:for="{{jobs}}"
+      wx:key="job_id"
+      data-index="{{index}}"
+      bindtap="onTapJob"
+    >
+      <view class="job-head">
+        <view class="job-title">{{item.title}}</view>
+        <view class="tag tag-{{item.status}}">{{item.statusText}}</view>
+      </view>
+      <view class="job-meta">{{item.metaText}}</view>
+      <view class="job-foot">
+        <text class="muted">{{item.timeText}}</text>
+        <text class="muted">共 {{item.countText}} · {{item.copies}} 份 · {{item.pageLabel}}</text>
+      </view>
+    </view>
+  </block>
+
+</view>

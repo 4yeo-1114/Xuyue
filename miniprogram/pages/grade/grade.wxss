@@ -1,0 +1,179 @@
+/* 批改作业页 */
+
+/* ── 上传 ── */
+.grade-upload {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 280rpx;
+  border: 2rpx dashed #c9d3e6;
+  border-radius: 16rpx;
+  background: #f8fbff;
+}
+
+/* 标准答案卷上传区，次要入口，矮一点 */
+.grade-upload-mini {
+  height: 200rpx;
+}
+
+.grade-upload-icon {
+  font-size: 72rpx;
+  margin-bottom: 16rpx;
+}
+
+.grade-upload-text {
+  font-size: 28rpx;
+  color: #2f6bff;
+}
+
+.preview-wrap {
+  margin-top: 8rpx;
+}
+
+.preview-img {
+  width: 100%;
+  border-radius: 12rpx;
+  background: #f2f4f7;
+}
+
+.preview-tip {
+  text-align: center;
+  color: #9aa0a8;
+  font-size: 23rpx;
+  margin-top: 12rpx;
+}
+
+/* ── 批改进度 ── */
+.grading-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20rpx 0;
+}
+
+.grading-emoji {
+  font-size: 72rpx;
+  margin-bottom: 16rpx;
+}
+
+.grading-title {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: #1f2329;
+  margin-bottom: 24rpx;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 12rpx;
+  background: #eef0f3;
+  border-radius: 999rpx;
+  overflow: hidden;
+  margin-bottom: 20rpx;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #2f6bff;
+  border-radius: 999rpx;
+  transition: width 0.3s ease;
+}
+
+/* ── 结果图片切换 ── */
+.img-tabs {
+  display: flex;
+  gap: 12rpx;
+  margin-bottom: 16rpx;
+}
+
+.img-tab {
+  padding: 12rpx 28rpx;
+  border-radius: 999rpx;
+  background: #f2f4f7;
+  color: #646a73;
+  font-size: 26rpx;
+}
+
+.img-tab-active {
+  background: #2f6bff;
+  color: #fff;
+}
+
+.result-img {
+  width: 100%;
+  height: 100%;
+}
+
+/* ── 图片查看器（可放大缩小拖动）── */
+.img-viewport {
+  width: 100%;
+  height: 60vh;
+  background: #17191c;
+  border-radius: 12rpx;
+  overflow: hidden;
+}
+
+.img-movable {
+  width: 100%;
+  height: 100%;
+}
+
+.zoom-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24rpx;
+  margin-top: 20rpx;
+}
+
+.zoom-btn {
+  min-width: 76rpx;
+  height: 60rpx;
+  line-height: 60rpx;
+  padding: 0 22rpx;
+  text-align: center;
+  font-size: 32rpx;
+  color: #333;
+  background: #eef1f6;
+  border-radius: 999rpx;
+}
+
+.zoom-btn-disabled {
+  color: #c0c4cc;
+  background: #f7f8fa;
+}
+
+.zoom-label {
+  min-width: 96rpx;
+  text-align: center;
+  font-size: 26rpx;
+  color: #646a73;
+}
+
+/* ── 批改明细文本 ── */
+.result-text {
+  margin-top: 24rpx;
+  padding-top: 24rpx;
+  border-top: 1rpx solid #eef0f3;
+}
+
+.result-text-title {
+  font-size: 26rpx;
+  color: #646a73;
+  margin-bottom: 12rpx;
+}
+
+.result-text-body {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 27rpx;
+  line-height: 1.7;
+  color: #1f2329;
+}
+
+/* ── 底部操作按钮 ── */
+.action-btn {
+  margin-top: 24rpx;
+}

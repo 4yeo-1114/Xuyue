@@ -1,0 +1,32 @@
+-- 食堂电子台账（canteen_records）：P0-4 纯软件 MVP，防篡改 = 只增不改。
+-- 幂等：CREATE TABLE IF NOT EXISTS，可重复执行。
+CREATE TABLE IF NOT EXISTS canteen_records (
+    `id` VARCHAR(36) NOT NULL,
+    `type` VARCHAR(32) NOT NULL COMMENT 'health_check/sample/accompany/disinfection/menu',
+    `date` VARCHAR(16) NOT NULL COMMENT '台账日期 YYYY-MM-DD',
+    `occurred_at` DATETIME NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录时间',
+    `created_by` VARCHAR(36) NULL COMMENT '记录人 user_id',
+    `staff_name` VARCHAR(128) NULL COMMENT '晨检：工作人员姓名',
+    `temperature` DOUBLE NULL COMMENT '晨检：体温',
+    `health_status` VARCHAR(64) NULL COMMENT '晨检：健康状况',
+    `pass` TINYINT(1) NULL COMMENT '晨检：是否通过',
+    `meal_type` VARCHAR(64) NULL COMMENT '餐次：早餐/午餐/晚餐',
+    `dish_name` VARCHAR(128) NULL COMMENT '留样：菜品名称',
+    `sample_qty` INT NULL COMMENT '留样：留样数量',
+    `sampler_name` VARCHAR(128) NULL COMMENT '留样：留样人',
+    `storage_temp` DOUBLE NULL COMMENT '留样：保存温度',
+    `review_result` VARCHAR(64) NULL COMMENT '留样：检验结果',
+    `person_name` VARCHAR(128) NULL COMMENT '陪餐：陪餐人',
+    `person_role` VARCHAR(64) NULL COMMENT '陪餐：陪餐人身份',
+    `comments` VARCHAR(1024) NULL COMMENT '陪餐：备注',
+    `area` VARCHAR(128) NULL COMMENT '消毒：消毒区域',
+    `method` VARCHAR(128) NULL COMMENT '消毒：消毒方式',
+    `operator_name` VARCHAR(128) NULL COMMENT '消毒：操作人',
+    `result` VARCHAR(64) NULL COMMENT '消毒：结果',
+    `dishes` VARCHAR(2048) NULL COMMENT '菜单：菜品',
+    `nutrition_note` VARCHAR(2048) NULL COMMENT '菜单：营养说明',
+    `created_at` DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_canteen_type_created` (`type`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

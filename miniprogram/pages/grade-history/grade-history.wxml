@@ -1,0 +1,29 @@
+<view class="page">
+
+  <view wx:if="{{loading}}" class="empty">正在加载…</view>
+
+  <view wx:elif="{{error}}" class="empty">
+    <text class="empty-emoji">😕</text>
+    {{error}}
+  </view>
+
+  <view wx:elif="{{items.length === 0}}" class="empty">
+    <text class="empty-emoji">📚</text>
+    还没有批改记录
+  </view>
+
+  <block wx:else>
+    <view class="card grade-item" wx:for="{{items}}" wx:key="id"
+      data-index="{{index}}" bindtap="onTapItem">
+      <view class="grade-item-main">
+        <view class="grade-item-name">{{item.name}}</view>
+        <view class="grade-item-meta">{{item.timeText}}</view>
+      </view>
+      <view class="grade-item-right">
+        <view class="tag {{item.status === 'done' ? 'tag-done' : (item.status === 'failed' ? 'tag-failed' : 'tag-pending')}}">{{item.statusText}}</view>
+        <view class="grade-item-del" data-index="{{index}}" catchtap="onDelete">删除</view>
+      </view>
+    </view>
+  </block>
+
+</view>

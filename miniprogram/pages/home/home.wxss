@@ -1,0 +1,101 @@
+/* 主页门户 */
+
+.home-page {
+  padding-top: 40rpx;
+}
+
+.home-head {
+  padding: 8rpx 8rpx 40rpx;
+}
+
+.home-brand {
+  font-size: 56rpx;
+  font-weight: 700;
+  color: #1f2329;
+  line-height: 1.2;
+}
+
+.home-slogan {
+  font-size: 26rpx;
+  color: #9aa0a8;
+  margin-top: 12rpx;
+}
+
+/* ── 两大功能卡片 ── */
+.home-grid {
+  display: flex;
+  gap: 24rpx;
+  margin-bottom: 24rpx;
+}
+
+.home-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 36rpx 32rpx;
+  border-radius: 24rpx;
+  box-shadow: 0 4rpx 16rpx rgba(15, 23, 42, 0.06);
+}
+
+.home-card-primary {
+  background: linear-gradient(160deg, #2f6bff, #4f8bff);
+  color: #fff;
+}
+
+.home-card-accent {
+  background: linear-gradient(160deg, #12a150, #2fbf6d);
+  color: #fff;
+}
+
+.home-card-icon {
+  font-size: 56rpx;
+  margin-bottom: 20rpx;
+}
+
+.home-card-title {
+  font-size: 34rpx;
+  font-weight: 600;
+  margin-bottom: 10rpx;
+}
+
+.home-card-desc {
+  font-size: 22rpx;
+  opacity: 0.85;
+  line-height: 1.5;
+}
+
+/* ── 次级入口 ── */
+.home-links {
+  padding: 8rpx 28rpx;
+}
+
+.home-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 96rpx;
+  border-bottom: 1rpx solid #eef0f3;
+}
+
+.home-link:last-child {
+  border-bottom: none;
+}
+
+.home-link-label {
+  font-size: 28rpx;
+  color: #1f2329;
+}
+
+.home-link-arrow {
+  color: #c0c4cc;
+  font-size: 36rpx;
+}
+
+/* ── 退出 ── */
+.home-logout {
+  text-align: center;
+  color: #9aa0a8;
+  font-size: 26rpx;
+  padding: 40rpx 0;
+}

@@ -1,0 +1,7 @@
+class_analysis.report OK -> code=0 message='success' data={'report': {'id': '2b329624-293d-4e4e-9f38-0b629e59dea9', 'class_id': '69a08a54-01e6-4994-a0a1-fe0b870e81a0', 'class_name': '演示-小学
+
+class_analysis.grade_summary OK -> code=0 message='success' data={'grade': '小学三年级', 'subject': '语文', 'totalStudents': 204, 'subjectAverage': 84.1, 'passRate': 99.5, 'attentionCount': 18, 'classRo
+
+class_analysis.grade_comparison OK -> code=0 message='success' data={'currentClass': {'classId': '69a08a54-01e6-4994-a0a1-fe0b870e81a0', 'className': '演示-小学三年级1班', 'averageScore': 84.5, 'passRate': 
+
+class_review.report OK -> code=0 message='success' data={'report': {'id': 'c927420c-78f7-4517-bc0e-221b8cd7a0d4', 'class_id': '69a08a54-01e6-4994-a0a1-fe0b870e81a0', 'subject': '语文', 'ti

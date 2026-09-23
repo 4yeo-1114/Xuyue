@@ -1,0 +1,30 @@
+.job-item {
+  padding: 26rpx 28rpx;
+}
+
+.job-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+
+.job-title {
+  flex: 1;
+  font-size: 30rpx;
+  font-weight: 500;
+  margin-right: 16rpx;
+  line-height: 1.4;
+}
+
+.job-meta {
+  color: #646a73;
+  font-size: 25rpx;
+  margin-bottom: 14rpx;
+}
+
+.job-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}

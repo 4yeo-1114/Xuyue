@@ -1,0 +1,7 @@
+exams=288
+exam_scores=13850
+wrong_questions=9
+targeted_improvement_reports=379
+knowledge_points=21
+subjects=ERR (pymysql.err.ProgrammingError) (1146, "Table 'grade.subjects' doesn't exist")
+[S

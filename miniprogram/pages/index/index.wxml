@@ -1,0 +1,186 @@
+<view class="page">
+
+  <view class="topbar">
+    <view class="topbar-title">布置作业</view>
+    <view class="topbar-actions">
+      <view class="topbar-link" bindtap="onGoHistory">打印记录</view>
+      <view class="topbar-link" bindtap="onLogout">退出</view>
+    </view>
+  </view>
+
+  <!-- ── 作业信息 ── -->
+  <view class="card">
+    <view class="card-title">作业信息</view>
+
+    <view class="field">
+      <text class="field-label">标题</text>
+      <input class="field-input" placeholder="留空自动生成" placeholder-class="field-placeholder"
+        value="{{title}}" bindinput="onTitleInput" />
+    </view>
+
+    <picker mode="selector" range="{{subjectLabels}}" value="{{subjectIndex}}" bindchange="onSubjectChange">
+      <view class="field">
+        <text class="field-label">学科</text>
+        <view class="field-value field-arrow">{{subjectLabels[subjectIndex]}}</view>
+      </view>
+    </picker>
+
+    <picker mode="selector" range="{{gradeLabels}}" value="{{gradeIndex}}" bindchange="onGradeChange">
+      <view class="field">
+        <text class="field-label">年级</text>
+        <view class="field-value field-arrow">{{gradeLabels[gradeIndex]}}</view>
+      </view>
+    </picker>
+
+    <view class="field">
+      <text class="field-label">班级</text>
+      <input class="field-input" placeholder="选填" placeholder-class="field-placeholder"
+        value="{{className}}" bindinput="onClassInput" />
+    </view>
+
+    <view class="field">
+      <text class="field-label">布置老师</text>
+      <input class="field-input" placeholder="选填" placeholder-class="field-placeholder"
+        value="{{teacher}}" bindinput="onTeacherInput" />
+    </view>
+  </view>
+
+  <!-- ── 出题方式 ── -->
+  <view class="card">
+    <view class="card-title">出题方式</view>
+
+    <view class="segmented segmented-3">
+      <view class="segmented-item {{mode === 'ai' ? 'segmented-item-active' : ''}}"
+        data-mode="ai" bindtap="onModeChange">AI 生成</view>
+      <view class="segmented-item {{mode === 'self' ? 'segmented-item-active' : ''}}"
+        data-mode="self" bindtap="onModeChange">自己出题</view>
+      <view class="segmented-item {{mode === 'upload' ? 'segmented-item-active' : ''}}"
+        data-mode="upload" bindtap="onModeChange">上传材料</view>
+    </view>
+
+    <!-- AI 生成 -->
+    <block wx:if="{{mode === 'ai'}}">
+      <view class="hint">AI 按学科、年级和知识点自动出题，生成后可以先预览再决定打不打。</view>
+
+      <view class="field">
+        <text class="field-label">知识点</text>
+        <input class="field-input" placeholder="选填，多个用顿号分隔，如：一元一次方程、移项"
+          placeholder-class="field-placeholder" value="{{aiTopic}}" bindinput="onAiTopicInput" />
+      </view>
+
+      <picker mode="selector" range="{{terms}}" value="{{aiTermIndex}}" bindchange="onAiTermChange">
+        <view class="field">
+          <text class="field-label">学期</text>
+          <view class="field-value field-arrow">{{terms[aiTermIndex]}}</view>
+        </view>
+      </picker>
+
+      <picker mode="selector" range="{{difficulties}}" value="{{aiDifficultyIndex}}" bindchange="onAiDifficultyChange">
+        <view class="field">
+          <text class="field-label">难度</text>
+          <view class="field-value field-arrow">{{difficulties[aiDifficultyIndex]}}</view>
+        </view>
+      </picker>
+
+      <view class="type-head">题型与数量</view>
+      <view class="type-row" wx:for="{{aiTypes}}" wx:key="value">
+        <text class="type-label">{{item.label}}</text>
+        <view class="stepper">
+          <view class="stepper-btn" data-index="{{index}}" bindtap="onAiCountMinus">−</view>
+          <input class="stepper-input" type="number" value="{{item.count}}"
+            data-index="{{index}}" bindinput="onAiCountInput" />
+          <view class="stepper-btn" data-index="{{index}}" bindtap="onAiCountPlus">＋</view>
+        </view>
+      </view>
+    </block>
+
+    <!-- 自己出题 -->
+    <block wx:elif="{{mode === 'self'}}">
+      <view class="hint">只出空白作业纸，题目由老师课上口述或板书，学生直接在答题线上作答。</view>
+      <view class="field">
+        <text class="field-label">题目数量</text>
+        <view class="stepper">
+          <view class="stepper-btn" bindtap="onCountMinus">−</view>
+          <input class="stepper-input" type="number" value="{{questionCount}}" bindinput="onCountInput" />
+          <view class="stepper-btn" bindtap="onCountPlus">＋</view>
+        </view>
+      </view>
+    </block>
+
+    <!-- 上传材料 -->
+    <block wx:else>
+      <view class="hint">把现成的题目拍照或选文档传上来，原样排进作业纸打印。</view>
+
+      <view class="upload-btns">
+        <view class="upload-btn" bindtap="onChooseImage">
+          <text class="upload-icon">📷</text>
+          <text>拍照 / 选图片</text>
+        </view>
+        <view class="upload-btn" bindtap="onChooseFile">
+          <text class="upload-icon">📄</text>
+          <text>选文档</text>
+        </view>
+      </view>
+
+      <view class="upload-tip">支持图片、PDF、Word(.docx)、txt。老版 .doc 请先另存为 .docx 或 PDF。</view>
+
+      <view wx:if="{{uploading}}" class="muted upload-status">正在上传…</view>
+
+      <view wx:if="{{uploads.length}}" class="upload-list">
+        <view class="upload-item" wx:for="{{uploads}}" wx:key="upload_id">
+          <view class="upload-item-main">
+            <text class="upload-name">{{item.name}}</text>
+            <text class="upload-meta">{{item.sizeText}}{{item.extra ? ' · ' + item.extra : ''}}</text>
+          </view>
+          <view class="upload-remove" data-index="{{index}}" bindtap="onRemoveUpload">✕</view>
+        </view>
+      </view>
+    </block>
+  </view>
+
+  <!-- ── 打印设置 ── -->
+  <view class="card">
+    <view class="card-title">打印设置</view>
+
+    <picker mode="selector" range="{{paperLabels}}" value="{{paperIndex}}" bindchange="onPaperChange">
+      <view class="field">
+        <text class="field-label">纸张大小</text>
+        <view class="field-value field-arrow">{{paperLabels[paperIndex]}}</view>
+      </view>
+    </picker>
+
+    <picker mode="selector" range="{{layoutLabels}}" value="{{layoutIndex}}" bindchange="onLayoutChange">
+      <view class="field">
+        <text class="field-label">排版</text>
+        <view class="field-value field-arrow">{{layoutLabels[layoutIndex]}}</view>
+      </view>
+    </picker>
+
+    <view class="layout-hint">{{layoutHint}}</view>
+
+    <picker mode="selector" range="{{answerLineOptions}}" value="{{answerLineIndex}}" bindchange="onAnswerLinesChange">
+      <view class="field">
+        <text class="field-label">每题答题行</text>
+        <view class="field-value field-arrow">{{answerLineOptions[answerLineIndex]}}</view>
+      </view>
+    </picker>
+
+    <picker mode="selector" range="{{copiesOptions}}" value="{{copiesIndex}}" bindchange="onCopiesChange">
+      <view class="field">
+        <text class="field-label">打印份数</text>
+        <view class="field-value field-arrow">{{copiesOptions[copiesIndex]}}</view>
+      </view>
+    </picker>
+
+    <view class="field">
+      <text class="field-label">卷首提示</text>
+      <input class="field-input" placeholder="选填" placeholder-class="field-placeholder"
+        value="{{note}}" bindinput="onNoteInput" />
+    </view>
+  </view>
+
+  <button class="btn btn-bottom" loading="{{generating}}" disabled="{{generating}}" bindtap="onSubmit">
+    生成作业
+  </button>
+
+</view>

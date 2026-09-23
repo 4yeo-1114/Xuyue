@@ -1,0 +1,56 @@
+{
+  "_说明": "复制本文件为同目录下的 billing_config.json 即可覆盖默认计费规则。",
+  "_覆盖方式": "只需写要改的字段，未写的字段沿用内置默认值（见 app/services/billing_pricing.py）。",
+  "_注意": "billing_config.json 存在且格式非法时会静默回退默认值，不会导致接口不可用。",
+
+  "currency": "CNY",
+  "note": "单价按实际商务合同填写；默认值仅参照七牛云对象存储公开口径，仅供演示。",
+
+  "items": {
+    "storage": {
+      "label": "试卷图片存储",
+      "unit": "GB·月",
+      "free_quota": 10.0,
+      "resource_pack": 0.0,
+      "tiers": [
+        { "up_to": 51200, "price": 0.099 },
+        { "up_to": 512000, "price": 0.096 },
+        { "up_to": null, "price": 0.093 }
+      ]
+    },
+    "upload": {
+      "label": "上传请求（PUT）",
+      "unit": "万次",
+      "free_quota": 10.0,
+      "resource_pack": 0.0,
+      "tiers": [{ "up_to": null, "price": 0.0 }]
+    },
+    "grading": {
+      "label": "AI 批改处理",
+      "unit": "千次",
+      "free_quota": 0.0,
+      "resource_pack": 0.0,
+      "tiers": [
+        { "up_to": 100, "price": 0.6 },
+        { "up_to": null, "price": 0.45 }
+      ]
+    },
+    "download": {
+      "label": "导出下载流量",
+      "unit": "GB",
+      "free_quota": 0.0,
+      "resource_pack": 0.0,
+      "tiers": [
+        { "up_to": 102400, "price": 0.29 },
+        { "up_to": null, "price": 0.26 }
+      ]
+    }
+  },
+
+  "_字段说明": {
+    "free_quota": "每月免费额度（按该项 unit 计），先于资源包与阶梯价抵扣",
+    "resource_pack": "已购资源包余量（按该项 unit 计），在免费额度之后抵扣",
+    "tiers": "累进阶梯：up_to 为该档上界（含），price 为该档单价；up_to=null 表示最后一档不限量",
+    "round_up": "不成对外的内部字段，见源码：次数类计量不足 1 单位进位，容量类按实际值"
+  }
+}

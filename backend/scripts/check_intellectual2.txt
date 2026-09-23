@@ -1,0 +1,28 @@
+== exam_scores by grade (join students/classes) ==
+  grade=小学一年级 students=209 scores=2368
+  grade=小学三年级 students=204 scores=2313
+  grade=小学二年级 students=207 scores=2348
+  grade=小学五年级 students=200 scores=2262
+  grade=小学六年级 students=191 scores=2168
+  grade=小学四年级 students=211 scores=2391
+== exam_scores date range (via exams.exam_date) ==
+  exam_date 2026-03-20 .. 2026-07-05
+== exams by grade ==
+  grade=小学四年级 exams=48
+  grade=小学二年级 exams=48
+  grade=小学五年级 exams=48
+  grade=小学六年级 exams=48
+  grade=小学三年级 exams=48
+  grade=小学一年级 exams=48
+== wrong_questions ==
+  wq student=003ce972-c9b2-4315-a04b-2b8fa7d9fc25 corrected_at=None status=open
+  wq student=003ce972-c9b2-4315-a04b-2b8fa7d9fc25 corrected_at=None status=open
+  wq student=003ce972-c9b2-4315-a04b-2b8fa7d9fc25 corrected_at=None status=open
+  wq student=003ce972-c9b2-4315-a04b-2b8fa7d9fc25 corrected_at=None status=open
+  wq student=003ce972-c9b2-4315-a04b-2b8fa7d9fc25 corrected_at=None status=open
+  wq student=003ce972-c9b2-4315-a04b-2b8fa7d9fc25 corrected_at=None status=open
+  wq student=003ce972-c9b2-4315-a04b-2b8fa7d9fc25 corrected_at=None status=open
+  wq student=003ce972-c9b2-4315-a04b-2b8fa7d9fc25 corrected_at=None status=open
+  wq student=003ce972-c9b2-4315-a04b-2b8fa7d9fc25 corrected_at=None status=open
+== targeted_improvement_reports date range ==
+  generated_at 2026-05-20 05:33:36 .. 2026-08-28 10:27:39

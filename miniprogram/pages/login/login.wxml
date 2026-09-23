@@ -1,0 +1,38 @@
+<view class="login-page">
+  <view class="brand">
+    <view class="brand-logo">叙</view>
+    <view class="brand-name">{{appName}}</view>
+    <view class="brand-sub">老师端 · 作业打印</view>
+  </view>
+
+  <view class="login-card">
+    <view class="field">
+      <text class="field-label">账号</text>
+      <input
+        class="field-input"
+        type="text"
+        placeholder="请输入邮箱账号"
+        placeholder-class="field-placeholder"
+        value="{{email}}"
+        bindinput="onEmailInput"
+      />
+    </view>
+    <view class="field">
+      <text class="field-label">密码</text>
+      <input
+        class="field-input"
+        password
+        placeholder="请输入密码"
+        placeholder-class="field-placeholder"
+        value="{{password}}"
+        bindinput="onPasswordInput"
+      />
+    </view>
+  </view>
+
+  <button class="btn login-btn" loading="{{loading}}" disabled="{{loading}}" bindtap="onSubmit">
+    登录
+  </button>
+
+  <view class="login-tip">用与网页版相同的账号登录</view>
+</view>

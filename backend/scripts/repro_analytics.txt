@@ -1,0 +1,10 @@
+subjects [200] {"code":0,"message":"success","data":["语文","数学","英语","科学","物理","化学","生物","历史","地理","政治"]}
+report [HTTP 500] Internal Server Error
+grade-summary [HTTP 500] Internal Server Error
+grade-comparison [HTTP 500] Internal Server Error
+mastery-distribution [200] {"code":0,"message":"success","data":[{"knowledge_point_id":null,"name":"未标注知识点","mastery":0.0,"wrong_count":762,"total":762}]}
+students [200] {"code":0,"message":"success","data":[{"id":"e5273ca5-aeef-40a8-82e1-08cb6b4bb5c3","class_id":"69a08a54-01e6-4994-a0a1-fe0b870e81a0","user_id":"8f452d3e-e98a-428d-af96-a3067d588e48","name":"萧伟民","student_number":"09003","gender":"男","tier":
+student-analysis/list [200] {"code":0,"message":"success","data":[{"id":"012fa7f0-0811-414f-b5ec-c2932d086c4a","class_id":"69a08a54-01e6-4994-a0a1-fe0b870e81a0","student_name":"陈浩然","subject":"语文","target_score":87,"current_score":81},{"id":"0b071b99-4829-4346-a1a5-9a
+class-review/report [HTTP 500] Internal Server Error
+class-review/subjects [200] {"code":0,"message":"success","data":["语文","数学","英语","科学","物理","化学","生物","历史","地理","政治"]}
+info: {"uid": "e4ab6262-e8f3-485d-a433-4c1faa57de8f", "own_class": "69a08a54-01e6-4994-a0a1-fe0b870e81a0", "own_school": "7aaf2653-3b45-4431-b629-336fad2dd930", "own_name": "演示-小学三年级1班", "own_subject": null}

@@ -1,0 +1,390 @@
+class_analysis.report TRACEBACK:
+Traceback (most recent call last):
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1969, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 159, in execute
+    result = self._query(query)
+             ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 330, in _query
+    conn.query(q)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 582, in query
+    self._affected_rows = self._read_query_result(unbuffered=unbuffered)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 847, in _read_query_result
+    result.read()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 1245, in read
+    first_packet = self.connection._read_packet()
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 803, in _read_packet
+    packet.raise_for_error()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\protocol.py", line 219, in raise_for_error
+    err.raise_mysql_exception(self._data)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\err.py", line 154, in raise_mysql_exception
+    raise errorclass(errno, errval, sqlstate=sqlstate)
+pymysql.err.OperationalError: (1054, "Unknown column 'class_analysis_reports.is_ai' in 'field list'")
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<string>", line 19, in <module>
+  File "D:\job2\批改君\grade-buddy-scan-back_end\app\routers\class_analysis.py", line 920, in get_report
+    ).first()
+      ^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\query.py", line 2766, in first
+    return self.limit(1)._iter().first()  # type: ignore
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\query.py", line 2864, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\session.py", line 2372, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\session.py", line 2270, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+             ^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1421, in execute
+    return meth(
+           ^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\sql\elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1643, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1848, in _execute_context
+    return self._exec_single_context(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1988, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 2365, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1969, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 159, in execute
+    result = self._query(query)
+             ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 330, in _query
+    conn.query(q)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 582, in query
+    self._affected_rows = self._read_query_result(unbuffered=unbuffered)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 847, in _read_query_result
+    result.read()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 1245, in read
+    first_packet = self.connection._read_packet()
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 803, in _read_packet
+    packet.raise_for_error()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\protocol.py", line 219, in raise_for_error
+    err.raise_mysql_exception(self._data)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\err.py", line 154, in raise_mysql_exception
+    raise errorclass(errno, errval, sqlstate=sqlstate)
+sqlalchemy.exc.OperationalError: (pymysql.err.OperationalError) (1054, "Unknown column 'class_analysis_reports.is_ai' in 'field list'")
+[SQL: SELECT class_analysis_reports.id AS class_analysis_reports_id, class_analysis_reports.report_uuid AS class_analysis_reports_report_uuid, class_analysis_reports.class_id AS class_analysis_reports_class_id, class_analysis_reports.class_name AS class_analysis_reports_class_name, class_analysis_reports.subject AS class_analysis_reports_subject, class_analysis_reports.exam_names_json AS class_analysis_reports_exam_names_json, class_analysis_reports.imported_folder_names_json AS class_analysis_reports_imported_folder_names_json, class_analysis_reports.source_summary_json AS class_analysis_reports_source_summary_json, class_analysis_reports.analysis_json AS class_analysis_reports_analysis_json, class_analysis_reports.is_ai AS class_analysis_reports_is_ai, class_analysis_reports.ai_meta AS class_analysis_reports_ai_meta, class_analysis_reports.generated_at AS class_analysis_reports_generated_at, class_analysis_reports.created_at AS class_analysis_reports_created_at, class_analysis_reports.updated_at AS class_analysis_reports_updated_at 
+FROM class_analysis_reports 
+WHERE class_analysis_reports.class_id = %(class_id_1)s AND class_analysis_reports.subject = %(subject_1)s 
+ LIMIT %(param_1)s]
+[parameters: {'class_id_1': '69a08a54-01e6-4994-a0a1-fe0b870e81a0', 'subject_1': '语文', 'param_1': 1}]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+
+
+class_analysis.grade_summary TRACEBACK:
+Traceback (most recent call last):
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1969, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 159, in execute
+    result = self._query(query)
+             ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 330, in _query
+    conn.query(q)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 582, in query
+    self._affected_rows = self._read_query_result(unbuffered=unbuffered)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 847, in _read_query_result
+    result.read()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 1245, in read
+    first_packet = self.connection._read_packet()
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 803, in _read_packet
+    packet.raise_for_error()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\protocol.py", line 219, in raise_for_error
+    err.raise_mysql_exception(self._data)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\err.py", line 154, in raise_mysql_exception
+    raise errorclass(errno, errval, sqlstate=sqlstate)
+pymysql.err.OperationalError: (1054, "Unknown column 'class_analysis_reports.is_ai' in 'field list'")
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<string>", line 19, in <module>
+  File "D:\job2\批改君\grade-buddy-scan-back_end\app\routers\class_analysis.py", line 1308, in get_grade_summary
+    reports = _load_grade_reports(db, [c.id for c in class_rows], subject)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\job2\批改君\grade-buddy-scan-back_end\app\routers\class_analysis.py", line 1190, in _load_grade_reports
+    ).all()
+      ^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\query.py", line 2711, in all
+    return self._iter().all()  # type: ignore
+           ^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\query.py", line 2864, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\session.py", line 2372, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\session.py", line 2270, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+             ^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1421, in execute
+    return meth(
+           ^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\sql\elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1643, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1848, in _execute_context
+    return self._exec_single_context(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1988, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 2365, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1969, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 159, in execute
+    result = self._query(query)
+             ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 330, in _query
+    conn.query(q)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 582, in query
+    self._affected_rows = self._read_query_result(unbuffered=unbuffered)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 847, in _read_query_result
+    result.read()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 1245, in read
+    first_packet = self.connection._read_packet()
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 803, in _read_packet
+    packet.raise_for_error()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\protocol.py", line 219, in raise_for_error
+    err.raise_mysql_exception(self._data)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\err.py", line 154, in raise_mysql_exception
+    raise errorclass(errno, errval, sqlstate=sqlstate)
+sqlalchemy.exc.OperationalError: (pymysql.err.OperationalError) (1054, "Unknown column 'class_analysis_reports.is_ai' in 'field list'")
+[SQL: SELECT class_analysis_reports.id AS class_analysis_reports_id, class_analysis_reports.report_uuid AS class_analysis_reports_report_uuid, class_analysis_reports.class_id AS class_analysis_reports_class_id, class_analysis_reports.class_name AS class_analysis_reports_class_name, class_analysis_reports.subject AS class_analysis_reports_subject, class_analysis_reports.exam_names_json AS class_analysis_reports_exam_names_json, class_analysis_reports.imported_folder_names_json AS class_analysis_reports_imported_folder_names_json, class_analysis_reports.source_summary_json AS class_analysis_reports_source_summary_json, class_analysis_reports.analysis_json AS class_analysis_reports_analysis_json, class_analysis_reports.is_ai AS class_analysis_reports_is_ai, class_analysis_reports.ai_meta AS class_analysis_reports_ai_meta, class_analysis_reports.generated_at AS class_analysis_reports_generated_at, class_analysis_reports.created_at AS class_analysis_reports_created_at, class_analysis_reports.updated_at AS class_analysis_reports_updated_at 
+FROM class_analysis_reports 
+WHERE class_analysis_reports.class_id IN (%(class_id_1_1)s, %(class_id_1_2)s, %(class_id_1_3)s, %(class_id_1_4)s, %(class_id_1_5)s) AND class_analysis_reports.subject = %(subject_1)s]
+[parameters: {'subject_1': '语文', 'class_id_1_1': '61ddb792-7ceb-4d67-970a-e277c1433a8e', 'class_id_1_2': '69a08a54-01e6-4994-a0a1-fe0b870e81a0', 'class_id_1_3': 'b208ff91-fcec-449b-8c0b-7d38f5997a1f', 'class_id_1_4': 'bc9bb44f-edda-4be4-aa7a-0e62a0256db9', 'class_id_1_5': 'da079a6a-33e7-499d-92e4-dddedef6663f'}]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+
+
+class_analysis.grade_comparison TRACEBACK:
+Traceback (most recent call last):
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1969, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 159, in execute
+    result = self._query(query)
+             ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 330, in _query
+    conn.query(q)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 582, in query
+    self._affected_rows = self._read_query_result(unbuffered=unbuffered)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 847, in _read_query_result
+    result.read()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 1245, in read
+    first_packet = self.connection._read_packet()
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 803, in _read_packet
+    packet.raise_for_error()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\protocol.py", line 219, in raise_for_error
+    err.raise_mysql_exception(self._data)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\err.py", line 154, in raise_mysql_exception
+    raise errorclass(errno, errval, sqlstate=sqlstate)
+pymysql.err.OperationalError: (1054, "Unknown column 'class_analysis_reports.is_ai' in 'field list'")
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<string>", line 19, in <module>
+  File "D:\job2\批改君\grade-buddy-scan-back_end\app\routers\class_analysis.py", line 1402, in get_grade_comparison
+    reports = _load_grade_reports(db, [c.id for c in class_rows], subject)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\job2\批改君\grade-buddy-scan-back_end\app\routers\class_analysis.py", line 1190, in _load_grade_reports
+    ).all()
+      ^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\query.py", line 2711, in all
+    return self._iter().all()  # type: ignore
+           ^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\query.py", line 2864, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\session.py", line 2372, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\session.py", line 2270, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+             ^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1421, in execute
+    return meth(
+           ^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\sql\elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1643, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1848, in _execute_context
+    return self._exec_single_context(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1988, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 2365, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1969, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 159, in execute
+    result = self._query(query)
+             ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 330, in _query
+    conn.query(q)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 582, in query
+    self._affected_rows = self._read_query_result(unbuffered=unbuffered)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 847, in _read_query_result
+    result.read()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 1245, in read
+    first_packet = self.connection._read_packet()
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 803, in _read_packet
+    packet.raise_for_error()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\protocol.py", line 219, in raise_for_error
+    err.raise_mysql_exception(self._data)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\err.py", line 154, in raise_mysql_exception
+    raise errorclass(errno, errval, sqlstate=sqlstate)
+sqlalchemy.exc.OperationalError: (pymysql.err.OperationalError) (1054, "Unknown column 'class_analysis_reports.is_ai' in 'field list'")
+[SQL: SELECT class_analysis_reports.id AS class_analysis_reports_id, class_analysis_reports.report_uuid AS class_analysis_reports_report_uuid, class_analysis_reports.class_id AS class_analysis_reports_class_id, class_analysis_reports.class_name AS class_analysis_reports_class_name, class_analysis_reports.subject AS class_analysis_reports_subject, class_analysis_reports.exam_names_json AS class_analysis_reports_exam_names_json, class_analysis_reports.imported_folder_names_json AS class_analysis_reports_imported_folder_names_json, class_analysis_reports.source_summary_json AS class_analysis_reports_source_summary_json, class_analysis_reports.analysis_json AS class_analysis_reports_analysis_json, class_analysis_reports.is_ai AS class_analysis_reports_is_ai, class_analysis_reports.ai_meta AS class_analysis_reports_ai_meta, class_analysis_reports.generated_at AS class_analysis_reports_generated_at, class_analysis_reports.created_at AS class_analysis_reports_created_at, class_analysis_reports.updated_at AS class_analysis_reports_updated_at 
+FROM class_analysis_reports 
+WHERE class_analysis_reports.class_id IN (%(class_id_1_1)s, %(class_id_1_2)s, %(class_id_1_3)s, %(class_id_1_4)s, %(class_id_1_5)s) AND class_analysis_reports.subject = %(subject_1)s]
+[parameters: {'subject_1': '语文', 'class_id_1_1': '61ddb792-7ceb-4d67-970a-e277c1433a8e', 'class_id_1_2': '69a08a54-01e6-4994-a0a1-fe0b870e81a0', 'class_id_1_3': 'b208ff91-fcec-449b-8c0b-7d38f5997a1f', 'class_id_1_4': 'bc9bb44f-edda-4be4-aa7a-0e62a0256db9', 'class_id_1_5': 'da079a6a-33e7-499d-92e4-dddedef6663f'}]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+
+
+class_review.report TRACEBACK:
+Traceback (most recent call last):
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1969, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 159, in execute
+    result = self._query(query)
+             ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 330, in _query
+    conn.query(q)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 582, in query
+    self._affected_rows = self._read_query_result(unbuffered=unbuffered)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 847, in _read_query_result
+    result.read()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 1245, in read
+    first_packet = self.connection._read_packet()
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 803, in _read_packet
+    packet.raise_for_error()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\protocol.py", line 219, in raise_for_error
+    err.raise_mysql_exception(self._data)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\err.py", line 154, in raise_mysql_exception
+    raise errorclass(errno, errval, sqlstate=sqlstate)
+pymysql.err.OperationalError: (1054, "Unknown column 'class_review_sessions.is_ai' in 'field list'")
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<string>", line 19, in <module>
+  File "D:\job2\批改君\grade-buddy-scan-back_end\app\routers\class_review.py", line 461, in get_report
+    ).first()
+      ^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\query.py", line 2766, in first
+    return self.limit(1)._iter().first()  # type: ignore
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\query.py", line 2864, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\session.py", line 2372, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\session.py", line 2270, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\orm\context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+             ^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1421, in execute
+    return meth(
+           ^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\sql\elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1643, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1848, in _execute_context
+    return self._exec_single_context(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1988, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 2365, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\base.py", line 1969, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\sqlalchemy\engine\default.py", line 952, in do_execute
+    cursor.execute(statement, parameters)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 159, in execute
+    result = self._query(query)
+             ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\cursors.py", line 330, in _query
+    conn.query(q)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 582, in query
+    self._affected_rows = self._read_query_result(unbuffered=unbuffered)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 847, in _read_query_result
+    result.read()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 1245, in read
+    first_packet = self.connection._read_packet()
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\connections.py", line 803, in _read_packet
+    packet.raise_for_error()
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\protocol.py", line 219, in raise_for_error
+    err.raise_mysql_exception(self._data)
+  File "C:\Users\123\AppData\Roaming\Python\Python312\site-packages\pymysql\err.py", line 154, in raise_mysql_exception
+    raise errorclass(errno, errval, sqlstate=sqlstate)
+sqlalchemy.exc.OperationalError: (pymysql.err.OperationalError) (1054, "Unknown column 'class_review_sessions.is_ai' in 'field list'")
+[SQL: SELECT class_review_sessions.id AS class_review_sessions_id, class_review_sessions.class_id AS class_review_sessions_class_id, class_review_sessions.subject AS class_review_sessions_subject, class_review_sessions.title AS class_review_sessions_title, class_review_sessions.exam_names_json AS class_review_sessions_exam_names_json, class_review_sessions.imported_folder_names_json AS class_review_sessions_imported_folder_names_json, class_review_sessions.source_summary_json AS class_review_sessions_source_summary_json, class_review_sessions.pre_class_json AS class_review_sessions_pre_class_json, class_review_sessions.tracking_json AS class_review_sessions_tracking_json, class_review_sessions.consolidation_json AS class_review_sessions_consolidation_json, class_review_sessions.post_feedback_json AS class_review_sessions_post_feedback_json, class_review_sessions.ai_raw_json AS class_review_sessions_ai_raw_json, class_review_sessions.is_ai AS class_review_sessions_is_ai, class_review_sessions.ai_meta AS class_review_sessions_ai_meta, class_review_sessions.generated_at AS class_review_sessions_generated_at, class_review_sessions.created_at AS class_review_sessions_created_at, class_review_sessions.updated_at AS class_review_sessions_updated_at 
+FROM class_review_sessions 
+WHERE class_review_sessions.class_id = %(class_id_1)s AND class_review_sessions.subject = %(subject_1)s 
+ LIMIT %(param_1)s]
+[parameters: {'class_id_1': '69a08a54-01e6-4994-a0a1-fe0b870e81a0', 'subject_1': '语文', 'param_1': 1}]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)

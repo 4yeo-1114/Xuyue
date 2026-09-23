@@ -1,0 +1,4 @@
+report [200] {"code":0,"message":"success","data":{"report":{"id":"2b329624-293d-4e4e-9f38-0b629e59dea9","class_id":"69a08a54-01e6-49
+grade-summary [200] {"code":0,"message":"success","data":{"grade":"小学三年级","subject":"语文","totalStudents":204,"subjectAverage":84.1,"passRate
+grade-comparison [200] {"code":0,"message":"success","data":{"currentClass":{"classId":"69a08a54-01e6-4994-a0a1-fe0b870e81a0","className":"演示-小
+class-review/report [200] {"code":0,"message":"success","data":{"report":{"id":"c927420c-78f7-4517-bc0e-221b8cd7a0d4","class_id":"69a08a54-01e6-49
