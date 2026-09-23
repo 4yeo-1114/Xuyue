@@ -473,9 +473,9 @@ def _backfill_class_teacher_heads():
 
 
 def _ensure_dingtalk_sync_columns():
-    """钉钉通讯录同步补列（幂等）：classes.dingtalk_dept_id / students.dingtalk_userid。
+    """钉钉通讯录同步补列（幂等）：classes.dingtalk_dept_id / students.dingtalk_userid / users.dingtalk_userid。
 
-    在 init_db 中无条件调用（不依赖 AUTO_DDL），保证重启后两列立即存在，
+    在 init_db 中无条件调用（不依赖 AUTO_DDL），保证重启后三列立即存在，
     避免新增 ORM 字段后 list_classes 等查询因缺列报错。
     """
     try:
@@ -490,6 +490,22 @@ def _ensure_dingtalk_sync_columns():
         with engine.connect() as conn:
             conn.execute(
                 text("ALTER TABLE students ADD COLUMN dingtalk_userid VARCHAR(64) NULL")
+            )
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text("ALTER TABLE users ADD COLUMN dingtalk_userid VARCHAR(64) NULL")
+            )
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text("CREATE INDEX ix_users_dingtalk_userid ON users (dingtalk_userid)")
             )
             conn.commit()
     except Exception:
