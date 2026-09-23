@@ -9486,8 +9486,16 @@ async def api_cancel_grade_by_reference(folder_name: str, body: dict = Body(...)
 
 # ---- 答题卡按标准答案自动比对 ----
 
-def _run_answer_key_grade(job_id: str, safe: str, answers: dict) -> None:
-    """异步逐张卷：取 manual 切题 blocks → 答案比对 → 复用 _save_manual_slot_decisions 落盘。"""
+def _run_answer_key_grade(job_id: str, safe: str, answers: dict, ctx_uid: str) -> None:
+    """异步逐张卷：取 manual 切题 blocks → 答案比对 → 复用 _save_manual_slot_decisions 落盘。
+
+    线程体用 run_with_grading_user 恢复 grading 用户上下文——裸 threading.Thread 不继承
+    ContextVar，否则首行 _read_grading_history 就会抛「grading user context 未设置」。
+    """
+    run_with_grading_user(ctx_uid, _run_answer_key_grade_impl, job_id, safe, answers)
+
+
+def _run_answer_key_grade_impl(job_id: str, safe: str, answers: dict) -> None:
     with _grading_history_lock:
         data = _read_grading_history(safe, "manual")
     completed = data.get("completed") if isinstance(data.get("completed"), dict) else {}
@@ -9667,6 +9675,7 @@ async def api_start_grade_by_answer_key(folder_name: str):
         raise HTTPException(status_code=400, detail="没有找到已切题的学生答题卡，请先完成切题分析")
 
     job_id = str(uuid.uuid4())
+    ctx_uid = get_grading_user_id()
     with _ref_grade_lock:
         _ref_grade_results[job_id] = {
             "completed": [],
@@ -9677,13 +9686,13 @@ async def api_start_grade_by_answer_key(folder_name: str):
             "engine": "answer_key",
             "manual_analyzed": False,
             "manual_paper_cut_tasks": {},
-            "user_id": get_grading_user_id(),
+            "user_id": ctx_uid,
         }
     _ref_grade_stop_events[job_id] = threading.Event()
 
     threading.Thread(
         target=_run_answer_key_grade,
-        args=(job_id, safe, answers),
+        args=(job_id, safe, answers, ctx_uid),
         daemon=True,
     ).start()
 
