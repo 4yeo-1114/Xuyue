@@ -67,6 +67,11 @@ def init_db():
     """导入所有 model 后调用，若无表则自动建表"""
     sync_database_schema()
     _ensure_dingtalk_sync_columns()
+    # users/students 补列**必须无条件执行**：这两个 ensure 原只挂在 sync_database_schema() 里，
+    # 会被 `if not AUTO_DDL: return` 挡掉（生产默认 AUTO_DDL=false），导致 users.teaching_grade
+    # 等列加了模型却没加到库，auth/register 直接 1054 → 500（D-1 事故同因）。
+    _ensure_user_extra_columns()
+    _ensure_student_extra_columns()
     _ensure_class_review_sessions_user_id()
     # R2 作业采集补列：无条件幂等执行（同 _ensure_dingtalk_sync_columns），
     # 保证 write_response_logs 插入 grade/homework_type 前列必已存在，避免静默写失败。
