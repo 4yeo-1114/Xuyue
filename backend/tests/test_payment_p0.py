@@ -654,9 +654,24 @@ def test_p0_6_scan_billing_untouched():
     assert src.count("@router.delete(") == 0
 
 
-def test_p0_6_payment_router_has_no_phase2_endpoints():
-    """本批不写 Phase 2：⛔ 无 /orders、无 /callback、无 /admin/grant。"""
+def test_p0_6_payment_router_endpoint_whitelist():
+    """payment 路由的端点**白名单**（⛔ 不接受未申报的新端点）。
+
+    ⚠️ **断言更新申报（2026-09-24，支付 Phase 2 批）**：本用例原名
+    `test_p0_6_payment_router_has_no_phase2_endpoints`，原断言是
+    `paths == {account, ledger, usage}` —— 那是 Phase 0 批「⛔ 不写 Phase 2」的范围锁。
+    本批（P2-1/P2-3）**按设计稿 §9 Phase 2 表**新增了正好两个端点
+    （`POST /payment/orders`、`POST /payment/callback/{channel}`），
+    故把「无 Phase 2」改写成「**这几个，且只有这几个**」——
+    ⛔ 不是放宽：`/payment/admin/grant`（后台人工开通）与退款相关端点**仍不在白名单**。
+    """
     from app.routers import payment as payment_router
 
     paths = {r.path for r in payment_router.router.routes}
-    assert paths == {"/payment/account", "/payment/ledger", "/payment/usage"}, sorted(paths)
+    assert paths == {
+        "/payment/account",                  # P0-6 只读
+        "/payment/ledger",                   # P0-6 只读
+        "/payment/usage",                    # P0-6 只读
+        "/payment/orders",                   # P2-1 下单
+        "/payment/callback/{channel}",       # P2-3 回调
+    }, sorted(paths)

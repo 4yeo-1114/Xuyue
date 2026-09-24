@@ -62,6 +62,28 @@ class Settings(BaseSettings):
     # C5：生产库禁止启动时自动 DDL（CREATE/ALTER），显式迁移后才打开
     AUTO_DDL: bool = False
 
+    # ── 口径 B · 支付通道凭据（Phase 2，见 docs/payment/payment-design.md §2.2 §10 Q1/Q2）──
+    # ⚠️ 收款主体资质尚未申请 ⇒ **全部字段允许缺失**，缺省即空串。
+    #    缺失时**下单必须明确报错**（HTTP 501「通道未配置」），⛔ 绝不静默走假成功。
+    # ⚠️ 凭据只能走环境变量/.env（`.env*` 已进 .gitignore）——
+    #    ⛔ 不许写进 `payment_pricing.json` / `billing_config.json` 这类**会被提交**的价格文件。
+    # PEM 类字段允许两种写法：① PEM 全文（含 BEGIN/END 行）；② `@/绝对/路径/key.pem` 从文件读。
+    PAYMENT_PAYEE_ENTITY_ID: str = ""          # 收款主体标识（① 类未拍：主导者未给执照/主体名）
+    PAYMENT_CALLBACK_BASE_URL: str = ""        # 通道回调地址前缀，如 https://foil.6108.net
+    # 微信支付（APIv3）
+    PAYMENT_WECHAT_APP_ID: str = ""
+    PAYMENT_WECHAT_MCH_ID: str = ""
+    PAYMENT_WECHAT_CERT_SERIAL_NO: str = ""    # 商户 API 证书序列号
+    PAYMENT_WECHAT_PRIVATE_KEY: str = ""       # 商户 API 私钥（PKCS#8 / PKCS#1 PEM 均可）
+    PAYMENT_WECHAT_API_V3_KEY: str = ""        # APIv3 密钥（32 字符），回调 resource 解密用
+    PAYMENT_WECHAT_PUBLIC_KEY: str = ""        # 微信支付公钥（验签回调用）
+    PAYMENT_WECHAT_API_BASE: str = "https://api.mch.weixin.qq.com"
+    # 支付宝（开放平台 RSA2）
+    PAYMENT_ALIPAY_APP_ID: str = ""
+    PAYMENT_ALIPAY_PRIVATE_KEY: str = ""       # 应用私钥
+    PAYMENT_ALIPAY_PUBLIC_KEY: str = ""        # 支付宝公钥（验签回调/响应用）
+    PAYMENT_ALIPAY_GATEWAY: str = "https://openapi.alipay.com/gateway.do"
+
     # H5：多项目超级管理员邮箱，逗号分隔；不再硬编码
     MULTI_PROJECT_ADMIN_EMAILS: str = ""
 

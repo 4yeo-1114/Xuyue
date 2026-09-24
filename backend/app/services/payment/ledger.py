@@ -12,11 +12,15 @@
   I5 冲正 = 反向分录           → `entry_type='consume'` + `amount_fen > 0`，`description='冲正：…'`
   I6 口径 A 用量变动不直接改账本 → 本模块只被 `metering.py`（读 `usage_events`）调用
 
-⚠️ 本模块**永不 import 任何通道 SDK**（§2.3）：资金入口隔离在单一方法后面，
-   Phase 0/1 用「手工插入一笔 grant 分录」（`grant_manual`）验收，完全绕开支付通道。
+⚠️ 本模块**永不 import 任何通道 SDK**（§2.3）：资金入口隔离在单一方法后面。
+   两个资金入口：
+     · `grant_manual(...)` —— 人工入账（§9：后台补开 / 对公转账人工核销），完全绕开通道；
+     · `apply_payment_confirmed(...)` —— §2.3 的**唯一**通道侧入口
+       （Phase 2 起由 `routers/payment.py` 的回调路由调用；通道层⛔ 不许自己写账本）。
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import logging
 from typing import Any, Optional
@@ -28,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.models.ledger_entry import LedgerEntry
 from app.models.payment_account import PaymentAccount
+from app.models.payment_order import PaymentOrder
 from app.models.usage_event import UsageEvent
 
 logger = logging.getLogger(__name__)
@@ -42,6 +47,13 @@ ENTRY_ADJUST = "adjust"
 STATUS_ACTIVE = "active"
 STATUS_SUSPENDED = "suspended"
 
+# 订单状态（`payment_orders.status`，§7.2 P2-1）
+ORDER_PENDING = "pending"
+ORDER_PAID = "paid"
+ORDER_FAILED = "failed"
+ORDER_CANCELLED = "cancelled"
+ORDER_REFUNDED = "refunded"
+
 # 「独立老师」所绑定的既有角色名（与前端 constants/systemRoles.ts 同源，⛔ 不新增角色）
 TEACHER_ROLE = "任课教师"
 
@@ -55,6 +67,18 @@ class InsufficientBalanceError(Exception):
 
 class AccountSuspendedError(Exception):
     """账户被风控冻结，禁止任何新的扣减。"""
+
+
+class OrderNotFoundError(Exception):
+    """订单不存在 ⇒ 路由映射为 404。"""
+
+    http_status = 404
+
+
+class OrderStateError(Exception):
+    """订单状态不允许本次入账（已退款/已取消）⇒ 路由映射为 409。"""
+
+    http_status = 409
 
 
 # ────────────────────────── 账户 ──────────────────────────
@@ -213,6 +237,91 @@ def grant_manual(
         operator_id=operator_id,
         allow_suspended=True,
     )
+
+
+# ────────────────────────── 通道确认入账（§2.3 · 账本对通道的唯一依赖）──────────────────────────
+
+def payment_confirm_key(order_id: str) -> str:
+    """回调/充值入账的幂等键：**只由我方订单 id 决定**。
+
+    ⛔ **不得**掺入时间戳 / 随机数 / 通道交易号（§3.5「反例」逐字：掺入即等于每次重试都扣一次）。
+    ⛔ **不得**改成 `(user, …)` 之类会随业务变化的组合 —— 一笔订单只能充值一次。
+    ⇒ 本函数的**确定性**就是 I1 的判据本身，有回归用例钉住
+      （`tests/test_payment_p2.py`：把本函数换成非确定版本 ⇒ 「同一回调投两次只有 1 条分录」立刻变红）。
+    """
+    return "pay-confirm|{}".format(str(order_id or "").strip())
+
+
+def apply_payment_confirmed(
+    db: Session,
+    *,
+    order_id: str,
+    channel_trade_no: str,
+    paid_amount_fen: int,
+    paid_at: Optional[datetime.datetime] = None,
+) -> tuple[LedgerEntry, bool]:
+    """§2.3：账本侧**唯一**的资金入口 —— 「订单 X 已被通道确认收款」。
+
+    由通道 adapter 的回调解析器（`routers/payment.py`）或人工核销入口调用。
+    ⛔ 本模块**永不 import 任何通道 SDK**；通道侧也**永不**直接写 `ledger_entries`（§2.3 边界）。
+
+    **幂等**：幂等键 = `payment_confirm_key(order_id)`（只由订单决定）⇒ 同一订单重复确认
+    只会落 1 条分录，第二次返回既有分录且 `created=False`（I1，最后由
+    `ledger_entries.uk_ledger_idempotency` 唯一索引兜底，⛔ 不只靠应用层 `if`）。
+
+    **金额**：§6.3 D3「以**通道实收**入账」⇒ 按 `paid_amount_fen` 入账；
+    与订单 `amount_fen` 不符时**记 error 留痕**（需人工核查），但不阻断入账。
+
+    raise `OrderNotFoundError`（404）/ `OrderStateError`（409）。
+    """
+    oid = str(order_id or "").strip()
+    if not oid:
+        raise ValueError("order_id 不能为空")
+
+    order = db.query(PaymentOrder).filter(PaymentOrder.id == oid).first()
+    if order is None:
+        raise OrderNotFoundError(f"订单不存在：{oid}")
+    if order.status == ORDER_REFUNDED:
+        raise OrderStateError(f"订单 {oid} 已退款，不能再确认收款")
+    if order.status == ORDER_CANCELLED:
+        raise OrderStateError(f"订单 {oid} 已取消，不能确认收款")
+
+    amount = int(paid_amount_fen)
+    if amount <= 0:
+        raise ValueError(f"通道实收金额必须为正，实得 {amount}")
+
+    expected = int(order.amount_fen or 0)
+    if amount != expected:
+        # ⛔ 留痕，不静默：金额不符是收错钱/伪造/优惠三类问题的共同表征，必须可查。
+        logger.error(
+            "支付确认金额与订单不符（按通道实收入账，需人工核查）：order_id=%s 订单=%s 实收=%s "
+            "channel=%s trade_no=%s",
+            oid, expected, amount, order.channel, channel_trade_no,
+        )
+
+    if order.status != ORDER_PAID:
+        if order.status != ORDER_PENDING:
+            logger.warning("订单 %s 处于非 pending 状态（%s）却收到收款确认，按已收款处理", oid, order.status)
+        order.status = ORDER_PAID
+        order.paid_amount_fen = amount
+        order.paid_at = paid_at or datetime.datetime.now(datetime.timezone.utc)
+        if str(channel_trade_no or "").strip():
+            order.channel_trade_no = str(channel_trade_no).strip()
+
+    # ⚠️ 上面订单字段的修改与下面这笔分录**同一个 session、同一次 commit** ⇒ 原子
+    #    （`post_entry` 末尾 `db.commit()` 会把脏订单一起 flush）。
+    #    唯一索引冲突时 `post_entry` 内部 `db.rollback()` 会把订单改动一并回滚 ——
+    #    那种情形说明「首投已成功写库」，订单此刻已经是 paid，无需再改。
+    entry, created = post_entry(
+        db,
+        user_id=order.user_id,
+        entry_type=ENTRY_RECHARGE,
+        amount_fen=amount,
+        idempotency_key=payment_confirm_key(oid),
+        description="{} 收款确认（通道交易号 {}）".format(order.channel, channel_trade_no or "-"),
+        order_id=oid,
+    )
+    return entry, created
 
 
 # ────────────────────────── net-diff 记账（§3.5）──────────────────────────

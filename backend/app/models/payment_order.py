@@ -27,6 +27,18 @@ class PaymentOrder(Base):
     status = Column(String(16), nullable=False, default="pending")
     amount_fen = Column(Integer, nullable=False)
     paid_amount_fen = Column(Integer, nullable=True)
+    # ── 价税分离（设计稿 §10 Q3「开普票/专票 ⇒ 必须价税分离」；P3-2 提前到 Phase 2）──
+    # ⚠️ 单位口径与 `amount_fen` 一致：**分**（整数），`tax_rate_bps` 是**整数基点**（1% = 100bps）。
+    # ⚠️ **可空**：存量订单没有这些值；且**税率尚未拍**（主导者 2026-09-24 只拍了「要开票 ⇒
+    #    需价税分离」，没给税率、也没说 `amount_fen` 是含税价还是不含税价）
+    #    ⇒ ⛔ 本批**不编税率、不臆定取整口径**，列先立着，等口径到位再填。
+    # ⚠️ **账本不动**（§10 Q3 逐字：「建议**含税记账**，税额只在订单层拆，避免账本多一套
+    #    一致性约束」）⇒ `ledger_entries` 继续是纯「分」整数，⛔ 不加税字段。
+    # ⚠️ 加列靠 `app/database.py::_ensure_payment_order_tax_columns()`（幂等 ALTER + 挂无条件段）：
+    #    Phase 0 已把本表建出来了，`create_all` **不会**给已存在的表补列。
+    amount_excl_tax_fen = Column(Integer, nullable=True)
+    tax_amount_fen = Column(Integer, nullable=True)
+    tax_rate_bps = Column(Integer, nullable=True)
     plan_id = Column(String(36), nullable=True)
     subject_type = Column(String(32), nullable=False, default="recharge")
     payee_entity_id = Column(String(64), nullable=True)

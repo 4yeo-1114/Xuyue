@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PaymentAccountOut(BaseModel):
@@ -51,3 +51,24 @@ class UsageOut(BaseModel):
     total_upload: int
     folders: list[dict[str, Any]]
     recent: list[UsageItemOut]
+
+
+class OrderCreateIn(BaseModel):
+    """`POST /payment/orders` 请求体（P2-1）。
+
+    ⛔ **没有 `user_id` 字段** —— 收款对象只来自 JWT（§7.3 越权纪律，照 `routers/payment.py` 顶部）。
+    """
+
+    amount_fen: int = Field(..., ge=1, description="订单金额（**分**，正整数）")
+    channel: str = Field(..., min_length=1, max_length=32, description="支付通道：wechat_pay / alipay")
+
+
+class OrderCreateOut(BaseModel):
+    """下单响应：我方订单号 ＋ **交给客户端的通道支付参数**（§7.3）。"""
+
+    order_id: str
+    channel: str
+    amount_fen: int
+    status: str
+    payee_entity_id: Optional[str] = None
+    pay_params: dict[str, Any] = Field(default_factory=dict)

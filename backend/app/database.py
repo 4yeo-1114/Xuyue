@@ -90,6 +90,7 @@ def init_db():
     # payment_plans / subscriptions / payment_orders）。同上：挂在**无条件段**，
     # ⛔ 不许上移回 sync_database_schema() 的 return 之后（生产默认 AUTO_DDL=false）。
     _ensure_payment_tables()
+    _ensure_payment_order_tax_columns()   # 价税分离补列（§10 Q3）：必须排在建表**之后**
 
 
 def sync_database_schema():
@@ -272,6 +273,55 @@ def _ensure_flow_tables():
         )
     except Exception:
         pass
+
+
+def _ensure_payment_order_tax_columns():
+    """口径 B 价税分离补列（`payment_orders` 3 列）幂等 ALTER。
+
+    设计依据：docs/payment/payment-design.md §10 Q3 逐字 ——「**开普票/专票** ⇒ 必须价税分离：
+    `payment_orders` 增 `amount_excl_tax_fen` / `tax_amount_fen` / `tax_rate_bps`」
+    （P3-2 的**数据层**提前到 Phase 2；⛔ 不含 P3-1 的发票实体/开票流程）。
+
+    ⚠️ **必须显式 ALTER，不能只靠 create_all**：Phase 0 已经把 `payment_orders` 建出来了，
+       `create_all` 对**已存在的表**是空操作（`checkfirst` 只判表在不在，不判列齐不齐）
+       ⇒ 生产库（AUTO_DDL=false）永远不会长出这 3 列，直到首次写发票才发现 1054。
+    ⚠️ **幂等**：先 `inspect(engine).get_columns()` 比对，只 ALTER **缺的**列；
+       重复调用不抛、库态不变（本仓硬纪律：必须有回归用例钉住二次调用幂等）。
+    ⚠️ 列类型从**模型**取（`CreateColumn` 按当前方言编译）⇒ 模型是唯一真值来源，
+       不在这里手抄 `INTEGER`/`INT`（SQLite 与 MySQL 的类型串不同）。
+    ⚠️ **挂载位置**：`init_db()` 的**无条件段**，且必须排在 `_ensure_payment_tables()` **之后**
+       （先保证表在，再补列）。⛔ 不许上移回 `sync_database_schema()` 的
+       `if not AUTO_DDL: return` 之后 —— 否则生产默认配置下一次都不执行（D-1 事故同因）。
+    """
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy.schema import CreateColumn
+
+    from app.models.payment_order import PaymentOrder
+
+    try:
+        inspector = sa_inspect(engine)
+        if not inspector.has_table(PaymentOrder.__tablename__):
+            return  # 表都没有 ⇒ 交给 _ensure_payment_tables（create_all 会带上这 3 列）
+        existing = {c["name"] for c in inspector.get_columns(PaymentOrder.__tablename__)}
+        table = PaymentOrder.__tablename__
+        for name in ("amount_excl_tax_fen", "tax_amount_fen", "tax_rate_bps"):
+            column = PaymentOrder.__table__.columns.get(name)
+            if column is None:  # pragma: no cover - 模型被改名时才会走到
+                logging.getLogger(__name__).error(
+                    "价税分离列 %s 不在 PaymentOrder 模型里 —— 补列清单与模型脱节，请立即核查", name
+                )
+                continue
+            if name in existing:
+                continue  # 幂等：已在则一字不动
+            ddl = CreateColumn(column).compile(dialect=engine.dialect)
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
+    except Exception:
+        logging.getLogger(__name__).error(
+            "口径 B 价税分离补列（payment_orders.amount_excl_tax_fen/tax_amount_fen/"
+            "tax_rate_bps）失败：开票时拆税会 1054 Unknown column，请立即核查 DDL 权限与库结构",
+            exc_info=True,
+        )
 
 
 def _ensure_payment_tables():
