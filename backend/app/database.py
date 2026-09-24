@@ -93,6 +93,9 @@ def init_db():
     # ⛔ 不许上移回 sync_database_schema() 的 return 之后（生产默认 AUTO_DDL=false）。
     _ensure_payment_tables()
     _ensure_payment_order_tax_columns()   # 价税分离补列（§10 Q3）：必须排在建表**之后**
+    # 登录/注册合规：验证码表 + 手机号普通索引（幂等兜底，同 _ensure_flow_tables 模式）
+    _ensure_verification_codes_table()
+    _ensure_user_phone_index()
 
 
 def sync_database_schema():
@@ -228,7 +231,7 @@ def _ensure_grading_daily_stats_table():
                         KEY ix_grading_daily_stats_folder_safe (folder_safe),
                         KEY ix_grading_daily_stats_stat_date (stat_date),
                         CONSTRAINT fk_grading_daily_stats_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
                     """
                 )
             )
@@ -252,7 +255,7 @@ def _ensure_grading_quota_tables():
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uq_grading_quota_user_id (user_id),
             CONSTRAINT fk_grading_quota_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
         """,
         """
         CREATE TABLE IF NOT EXISTS grading_quota_recharge_logs (
@@ -268,7 +271,7 @@ def _ensure_grading_quota_tables():
             KEY ix_grading_quota_recharge_logs_user_id (user_id),
             UNIQUE KEY uq_grading_quota_recharge_source_order (source_order_id),
             CONSTRAINT fk_grading_quota_recharge_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
         """,
     ]
     for stmt in stmts:
@@ -288,6 +291,44 @@ def _ensure_grading_quota_tables():
     try:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE grading_quota_recharge_logs ADD UNIQUE KEY uq_grading_quota_recharge_source_order (source_order_id)"))
+            conn.commit()
+    except Exception:
+        pass
+
+
+def _ensure_verification_codes_table():
+    """验证码表（登录/注册合规，幂等兜底，CREATE TABLE IF NOT EXISTS）。"""
+    stmt = """
+        CREATE TABLE IF NOT EXISTS verification_codes (
+            id VARCHAR(36) NOT NULL PRIMARY KEY,
+            target VARCHAR(255) NOT NULL,
+            channel VARCHAR(16) NOT NULL,
+            purpose VARCHAR(32) NOT NULL,
+            code_hash VARCHAR(64) NOT NULL,
+            expires_at DATETIME NOT NULL,
+            consumed TINYINT(1) NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            KEY ix_verification_codes_target (target),
+            KEY ix_verification_codes_target_channel_purpose (target, channel, purpose)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(stmt))
+            conn.commit()
+    except Exception:
+        pass
+
+
+def _ensure_user_phone_index():
+    """给 users.phone 加普通索引（非唯一）——手机号登录按 phone 反查用户时提速。
+
+    ⚠️ 用普通索引而非唯一索引：存量库 phone 可能存在非 NULL 重复，唯一索引会 ALTER 失败。
+    唯一性由应用层在 bind/register 前查重强制。
+    """
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE INDEX ix_users_phone ON users (phone)"))
             conn.commit()
     except Exception:
         pass
