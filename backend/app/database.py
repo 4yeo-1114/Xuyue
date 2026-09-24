@@ -2,6 +2,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from typing import Optional
 from app.config import Settings, settings
+import logging
 import threading
 
 _engine_lock = threading.Lock()
@@ -70,11 +71,28 @@ def init_db():
     # R2 作业采集补列：无条件幂等执行（同 _ensure_dingtalk_sync_columns），
     # 保证 write_response_logs 插入 grade/homework_type 前列必已存在，避免静默写失败。
     _ensure_response_log_extra_columns()
+    # ── 漂移收口：以下补列/建表**不依赖 AUTO_DDL**，必须与 _ensure_dingtalk_sync_columns 并列 ──
+    # 理由：真库基线（2026-09-24 只读探针）为 3 表 / 10 列漂移 + 5 张缺表，8 个模型因此查不动
+    # （1054 Unknown column / 1146 Table doesn't exist ⇒ 启动即 500）。D-1 事故同因：
+    # 这些 ensure 若只写在 sync_database_schema() 里，会被它第 5 行 `if not AUTO_DDL: return`
+    # 全部挡掉，生产默认配置（AUTO_DDL=false）下一次都不执行。⛔ 不许上移回该函数 return 之后。
+    _ensure_lesson_plan_extra_columns()          # lesson_plans 5 列（textbook_id/unit_id/catalog_id/edition/chapter）
+    _ensure_student_wrong_questions_extra_columns()  # student_wrong_questions 4 列
+    _ensure_textbook_catalogs_table()            # 缺表 1/5
+    _ensure_wrong_question_kp_bridge_table()     # 缺表 2/5
+    _ensure_bandit_arm_stats_table()             # 缺表 3/5
+    _ensure_response_logs_table()                # 缺表 4/5
+    _ensure_ai_generation_history_table()        # 缺表 5/5
     _backfill_class_teacher_heads()
     # 流水阅卷：AUTO_DDL=false 时靠此幂等建表（同 _ensure_response_logs_table 模式）
     _ensure_flow_tables()
     # 批改额度：AUTO_DDL=false 时靠此幂等建表（同 _ensure_grading_daily_stats_table 模式）
     _ensure_grading_quota_tables()
+    # 口径 B 独立老师支付：7 张表（payment_accounts / usage_events / ledger_entries /
+    # payment_plans / subscriptions / payment_orders / payment_invoices）。同上：挂在**无条件段**，
+    # ⛔ 不许上移回 sync_database_schema() 的 return 之后（生产默认 AUTO_DDL=false）。
+    _ensure_payment_tables()
+    _ensure_payment_order_tax_columns()   # 价税分离补列（§10 Q3）：必须排在建表**之后**
 
 
 def sync_database_schema():
@@ -159,6 +177,15 @@ def sync_database_schema():
         flow_grading,
         # 批改额度账户 / 充值流水
         grading_quota,
+        # ── 口径 B 独立老师支付七表（AUTO_DDL=true 时 create_all 建表）──
+        payment_account,
+        usage_event,
+        ledger_entry,
+        payment_plan,
+        subscription,
+        payment_order,
+        # P3-1 发票（payment_invoices；新表 ⇒ AUTO_DDL=false 时靠 _ensure_payment_tables）
+        payment_invoice,
     )
     Base.metadata.create_all(bind=engine)
     _ensure_grading_daily_stats_table()
@@ -178,6 +205,7 @@ def sync_database_schema():
     _ensure_class_review_sessions_longtext()
     _ensure_sanfeng_alter_columns()
     _ensure_flow_tables()
+    _ensure_payment_tables()
 
 
 def _ensure_grading_daily_stats_table():
@@ -292,6 +320,140 @@ def _ensure_flow_tables():
         )
     except Exception:
         pass
+
+
+def _ensure_payment_order_tax_columns():
+    """口径 B 价税分离补列（`payment_orders` 3 列）幂等 ALTER。
+
+    设计依据：docs/payment/payment-design.md §10 Q3 逐字 ——「**开普票/专票** ⇒ 必须价税分离：
+    `payment_orders` 增 `amount_excl_tax_fen` / `tax_amount_fen` / `tax_rate_bps`」
+    （P3-2 的**数据层**提前到 Phase 2；⛔ 不含 P3-1 的发票实体/开票流程）。
+
+    ⚠️ **必须显式 ALTER，不能只靠 create_all**：Phase 0 已经把 `payment_orders` 建出来了，
+       `create_all` 对**已存在的表**是空操作（`checkfirst` 只判表在不在，不判列齐不齐）
+       ⇒ 生产库（AUTO_DDL=false）永远不会长出这 3 列，直到首次写发票才发现 1054。
+    ⚠️ **幂等**：先 `inspect(engine).get_columns()` 比对，只 ALTER **缺的**列；
+       重复调用不抛、库态不变（本仓硬纪律：必须有回归用例钉住二次调用幂等）。
+    ⚠️ 列类型从**模型**取（`CreateColumn` 按当前方言编译）⇒ 模型是唯一真值来源，
+       不在这里手抄 `INTEGER`/`INT`（SQLite 与 MySQL 的类型串不同）。
+    ⚠️ **挂载位置**：`init_db()` 的**无条件段**，且必须排在 `_ensure_payment_tables()` **之后**
+       （先保证表在，再补列）。⛔ 不许上移回 `sync_database_schema()` 的
+       `if not AUTO_DDL: return` 之后 —— 否则生产默认配置下一次都不执行（D-1 事故同因）。
+    """
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy.schema import CreateColumn
+
+    from app.models.payment_order import PaymentOrder
+
+    try:
+        inspector = sa_inspect(engine)
+        if not inspector.has_table(PaymentOrder.__tablename__):
+            return  # 表都没有 ⇒ 交给 _ensure_payment_tables（create_all 会带上这 3 列）
+        existing = {c["name"] for c in inspector.get_columns(PaymentOrder.__tablename__)}
+        table = PaymentOrder.__tablename__
+        for name in ("amount_excl_tax_fen", "tax_amount_fen", "tax_rate_bps"):
+            column = PaymentOrder.__table__.columns.get(name)
+            if column is None:  # pragma: no cover - 模型被改名时才会走到
+                logging.getLogger(__name__).error(
+                    "价税分离列 %s 不在 PaymentOrder 模型里 —— 补列清单与模型脱节，请立即核查", name
+                )
+                continue
+            if name in existing:
+                continue  # 幂等：已在则一字不动
+            ddl = CreateColumn(column).compile(dialect=engine.dialect)
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
+    except Exception:
+        logging.getLogger(__name__).error(
+            "口径 B 价税分离补列（payment_orders.amount_excl_tax_fen/tax_amount_fen/"
+            "tax_rate_bps）失败：开票时拆税会 1054 Unknown column，请立即核查 DDL 权限与库结构",
+            exc_info=True,
+        )
+
+
+def _ensure_payment_tables():
+    """口径 B 独立老师支付七表幂等建表。
+
+    表：payment_accounts / usage_events / ledger_entries / payment_plans /
+        subscriptions / payment_orders / payment_invoices
+        （docs/payment/payment-design.md §3.2 §5.1 §9-Phase3「P3-1 发票」）。
+
+    AUTO_DDL=true 时 create_all 已建；此处显式 ensure（照抄 `_ensure_flow_tables` 范式，
+    §7.2 明文要求），**失败不阻断启动**。
+    ⚠️ 与既有 `_ensure_*` 的唯一差异：**失败要打 error 日志**（§12 第 3 条）——
+    本仓既有范式是 `except Exception: pass`，建表失败静默 ⇒ 首次记账才 500，无从排查。
+    ⚠️ 挂载位置：`init_db()` 的**无条件段**（与 `_ensure_flow_tables` 并列），
+    ⛔ 不许上移回 `sync_database_schema()` 的 `if not AUTO_DDL: return` 之后 ——
+    否则生产默认配置（AUTO_DDL=false）下一次都不执行（D-1 事故同因）。
+
+    ⚠️ **P3-1 的 `payment_invoices` 为什么只需建表、不需要 `_ensure_*_columns()` 补列**：
+      本表是**全新表**（P3-1 之前全仓无载体），没有「已存在的表缺列」这种存量对象
+       ⇒ `create_all(checkfirst)` 建出来的就是全列。
+      `_ensure_payment_order_tax_columns()` 那种显式 ALTER 是**改已存在的表**（P3-2 给
+      Phase 0 建好的 `payment_orders` 补 3 列）才需要的；将来本表真加列时，照它写一个即可。
+      ⛔ 现在不写空壳 ALTER —— 没有可补的列 = 死代码（增生源）。
+    """
+    try:
+        from app.models.payment_account import PaymentAccount
+        from app.models.usage_event import UsageEvent
+        from app.models.ledger_entry import LedgerEntry
+        from app.models.payment_plan import PaymentPlan
+        from app.models.subscription import Subscription
+        from app.models.payment_order import PaymentOrder
+        from app.models.payment_invoice import PaymentInvoice
+
+        Base.metadata.create_all(
+            bind=engine,
+            tables=[
+                PaymentAccount.__table__,
+                UsageEvent.__table__,
+                LedgerEntry.__table__,
+                PaymentPlan.__table__,
+                Subscription.__table__,
+                PaymentOrder.__table__,
+                PaymentInvoice.__table__,
+            ],
+        )
+    except Exception:
+        logging.getLogger(__name__).error(
+            "口径 B 支付表（payment_* / usage_events / ledger_entries）幂等建表失败："
+            "首次记账/查账/开票将 500，请立即核查 DDL 权限与库结构",
+            exc_info=True,
+        )
+
+
+def _ensure_ai_generation_history_table():
+    """G4 AI 生成历史表（ai_generation_history）幂等兜底，按模型 metadata 建表。
+
+    AUTO_DDL=true 时 create_all 已建；此处显式 ensure，失败不阻断启动。
+    缺表时 routers/ai_resources 的 list/get 直接 1146，故与其它 ensure 并列在无条件段。
+    """
+    try:
+        from app.models.ai_generation_history import AiGenerationHistory  # noqa: F401
+
+        Base.metadata.create_all(bind=engine, tables=[AiGenerationHistory.__table__])
+    except Exception:
+        pass
+
+
+def _ensure_single_column_indexes(table, col_names):
+    """为 ORM 声明了 index=True 的单列补索引。
+
+    索引名与列名一律取自 ORM（`table.indexes`），⛔ 不自创；多列复合索引不在此处理。
+    幂等：索引已存在时 MySQL 抛 1061 被 except 吞掉，失败不阻断启动。
+    """
+    for idx in table.indexes:
+        cols = list(idx.columns)
+        if len(cols) != 1 or cols[0].name not in col_names:
+            continue
+        try:
+            with engine.connect() as conn:
+                conn.execute(
+                    text(f"CREATE INDEX {idx.name} ON {table.name} ({cols[0].name})")
+                )
+                conn.commit()
+        except Exception:
+            pass
 
 
 def _ensure_response_log_extra_columns():
@@ -458,6 +620,13 @@ def _ensure_student_wrong_questions_extra_columns():
                 conn.commit()
         except Exception:
             pass
+    # ORM 对 school_id / knowledge_point_id 声明了 index=True，补齐（否则补出来的库与 create_all 建的库不一致）
+    try:
+        from app.models.student_analysis import StudentWrongQuestion
+
+        _ensure_single_column_indexes(StudentWrongQuestion.__table__, [n for n, _ in cols])
+    except Exception:
+        pass
 
 
 def _ensure_student_score_history_extra_columns():
@@ -518,9 +687,9 @@ def _backfill_class_teacher_heads():
 
 
 def _ensure_dingtalk_sync_columns():
-    """钉钉通讯录同步补列（幂等）：classes.dingtalk_dept_id / students.dingtalk_userid。
+    """钉钉通讯录同步补列（幂等）：classes.dingtalk_dept_id / students.dingtalk_userid / users.dingtalk_userid。
 
-    在 init_db 中无条件调用（不依赖 AUTO_DDL），保证重启后两列立即存在，
+    在 init_db 中无条件调用（不依赖 AUTO_DDL），保证重启后三列立即存在，
     避免新增 ORM 字段后 list_classes 等查询因缺列报错。
     """
     try:
@@ -535,6 +704,22 @@ def _ensure_dingtalk_sync_columns():
         with engine.connect() as conn:
             conn.execute(
                 text("ALTER TABLE students ADD COLUMN dingtalk_userid VARCHAR(64) NULL")
+            )
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text("ALTER TABLE users ADD COLUMN dingtalk_userid VARCHAR(64) NULL")
+            )
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text("CREATE INDEX ix_users_dingtalk_userid ON users (dingtalk_userid)")
             )
             conn.commit()
     except Exception:
@@ -655,6 +840,13 @@ def _ensure_lesson_plan_extra_columns():
                 conn.commit()
         except Exception:
             pass
+    # ORM 对 textbook_id / unit_id / catalog_id 声明了 index=True，补齐（否则补出来的库与 create_all 建的库不一致）
+    try:
+        from app.models.lesson_plan import LessonPlan
+
+        _ensure_single_column_indexes(LessonPlan.__table__, [n for n, _ in cols])
+    except Exception:
+        pass
 
 
 def _ensure_class_teachers_table():

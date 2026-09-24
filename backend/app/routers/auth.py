@@ -12,8 +12,6 @@ from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_user_id
 from app.grading.user_paths import ensure_user_grading_layout
-from app.models.class_model import Class
-from app.models.class_teacher import ClassTeacher
 from app.models.user import User
 from app.schemas.auth import (
     ChangePasswordRequest,
@@ -85,9 +83,15 @@ def _validate_loose_email(raw: str) -> str:
 
 
 # ── 免审核自助注册（演示环境）──────────────────────────────
-REGISTER_ROLE_WHITELIST = ("任课教师", "班主任", "年级组长", "校级管理者", "系统管理员")
-DEMO_SUBJECTS = ("语文", "数学", "英语", "科学")
-DEMO_CLASS_PREFIX = "演示-"
+# 可注册角色白名单的闸门在 app/schemas/auth.py 的 RegisterRole（Literal，Pydantic 校验阶段拦截）。
+# 此处不再保留第二份角色清单：两个事实源必然分叉。
+#
+# 独立老师（不挂靠学校的个体老师）经此注册进来后**不绑定任何班级**：注册完就是一个没有班的
+# 老师，自己去建班加学生。故此处不再挑选演示班（原 _pick_demo_class / DEMO_CLASS_PREFIX 已删）。
+#
+# 科目自由填写：长度上限取两条相关列定义中**较小**者 ——
+# users.teaching_subject = String(32)、class_teachers.subject = String(32) ⇒ 32。
+MAX_TEACHING_SUBJECT_LEN = 32
 
 # 注册限流（内存实现，独立于登录锁定）
 _REGISTER_LOCK = threading.Lock()
@@ -117,21 +121,6 @@ def _record_register(ip: str) -> None:
     with _REGISTER_LOCK:
         _prune_register_counts(ip)
         _REGISTER_COUNTS.setdefault(ip, []).append(now)
-
-
-def _pick_demo_class(db: Session) -> Class:
-    """从演示班中挑选 class_teachers 绑定数最少的班（负载均衡），池空抛 503。"""
-    cls = (
-        db.query(Class)
-        .outerjoin(ClassTeacher, ClassTeacher.class_id == Class.id)
-        .filter(Class.name.like(f"{DEMO_CLASS_PREFIX}%"))
-        .group_by(Class.id)
-        .order_by(func.count(ClassTeacher.id).asc(), Class.name.asc())
-        .first()
-    )
-    if cls is None:
-        raise HTTPException(status_code=503, detail="演示数据未初始化")
-    return cls
 
 
 @router.api_route("/login", methods=["OPTIONS"])
@@ -188,7 +177,10 @@ def login(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
 
 @router.post("/register", response_model=TokenResponse)
 def register(data: RegisterRequest, request: Request, db: Session = Depends(get_db)):
-    """免审核自助注册测试账号：注册成功即返回 token（自动登录），并自动获得对应层级演示数据权限。"""
+    """免审核自助注册（独立老师入口）：注册成功即返回 token（自动登录）。
+
+    不绑定任何班级、不预置演示数据 —— 注册者自己建班、自己加学生。
+    """
     if not getattr(settings, "ALLOW_PUBLIC_REGISTRATION", True):
         raise HTTPException(status_code=403, detail="暂未开放自助注册")
 
@@ -207,17 +199,13 @@ def register(data: RegisterRequest, request: Request, db: Session = Depends(get_
     if exists:
         raise HTTPException(status_code=409, detail="该邮箱已被注册")
 
-    # 科目校验：任课教师必填且须在演示科目内；其他角色不得带科目
-    if data.role == "任课教师":
-        subject = (data.teaching_subject or "").strip()
-        if not subject:
-            raise HTTPException(status_code=400, detail="任课教师必须选择科目")
-        if subject not in DEMO_SUBJECTS:
-            raise HTTPException(status_code=400, detail=f"科目仅支持：{'、'.join(DEMO_SUBJECTS)}")
-    else:
-        if data.teaching_subject:
-            raise HTTPException(status_code=400, detail="该角色无需绑定科目")
-        subject = None
+    # 科目：可选、自由填写（独立老师可能教任意科目，不做白名单）；只保留 strip 与长度上限
+    subject = (data.teaching_subject or "").strip() or None
+    if subject and len(subject) > MAX_TEACHING_SUBJECT_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"科目名称过长（最多 {MAX_TEACHING_SUBJECT_LEN} 个字符）",
+        )
 
     display_name = (data.display_name or "").strip() or None
     new_user = User(
@@ -234,18 +222,7 @@ def register(data: RegisterRequest, request: Request, db: Session = Depends(get_
         db.rollback()
         raise HTTPException(status_code=409, detail="该邮箱已被注册")
 
-    # 任课教师/班主任自动绑定演示班（年级组长/校级管理者/系统管理员全局可见，不绑班）
-    if data.role in ("任课教师", "班主任"):
-        demo_class = _pick_demo_class(db)
-        db.add(
-            ClassTeacher(
-                class_id=demo_class.id,
-                user_id=new_user.id,
-                role="head" if data.role == "班主任" else "teacher",
-                subject=subject if data.role == "任课教师" else None,
-            )
-        )
-
+    # 不绑定任何班级：独立老师注册完就是一个没有班的老师，自己去建班加学生。
     db.commit()
     _record_register(ip)
     ensure_user_grading_layout(new_user.id)

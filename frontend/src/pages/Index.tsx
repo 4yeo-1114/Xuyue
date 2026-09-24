@@ -1,14 +1,8 @@
 import { useState, useRef, useEffect, useMemo, Suspense, lazy } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { isPlatformAdmin, isParent } from "@/lib/adminAccess";
-import { isSingleSubjectTeacher } from "@/lib/teacherAccess";
-import {
-  NAV_ITEMS,
-  TEACHER_NAV_ITEMS,
-  TEACHER_NAV_SECTIONS,
-  Sidebar,
-} from "@/components/Sidebar";
+import { isPlatformAdmin, isParent, isNavPageAllowed } from "@/lib/adminAccess";
+import { NAV_ITEMS, Sidebar } from "@/components/Sidebar";
 import { TopHeader } from "@/components/TopHeader";
 import { ClassManageDialog } from "@/components/ClassManageDialog";
 import { StudentManageDialog } from "@/components/StudentManageDialog";
@@ -21,7 +15,6 @@ import { PhotoGradingDialog } from "@/components/home/PhotoGradingDialog";
 import { StatsOverview } from "@/components/home/StatsOverview";
 import { StudentMatrixPreview } from "@/components/home/StudentMatrixPreview";
 import { TodoAndQuickActions } from "@/components/home/TodoAndQuickActions";
-import { TeacherHome } from "@/components/home/TeacherHome";
 import { OnboardingTour } from "@/components/home/OnboardingTour";
 import { GlobalSearchBar } from "@/components/home/GlobalSearchBar";
 import { NewFeaturesPage } from "@/components/new-features/NewFeaturesPage";
@@ -163,6 +156,17 @@ const MyQuotaPage = lazy(() =>
     default: m.MyQuotaPage,
   })),
 );
+/* 独立老师个人账本（口径 B，与 scan-billing 口径 A 物理分离、并列不合并） */
+const PaymentWalletPage = lazy(() =>
+  import("@/components/payment/PaymentWalletPage").then((m) => ({
+    default: m.PaymentWalletPage,
+  })),
+);
+const PaymentLedgerPage = lazy(() =>
+  import("@/components/payment/PaymentLedgerPage").then((m) => ({
+    default: m.PaymentLedgerPage,
+  })),
+);
 
 /* ── Placeholder component for future pages ── */
 function PlaceholderPage({
@@ -196,6 +200,25 @@ function NeedsClassPlaceholder() {
       <p className="text-muted-foreground text-sm">
         {t("common.selectClassHint")}
       </p>
+    </div>
+  );
+}
+
+/* ── 无权访问该功能域（独立老师深链越界时的中性态：明说 + 给回首页的出口，⛔ 不静默回落） ── */
+function NavDeniedPlaceholder({ onBackHome }: { onBackHome: () => void }) {
+  const { t } = useLocale();
+  return (
+    <div className="flex flex-col items-center justify-center h-[60vh]">
+      <ShieldOff className="w-16 h-16 text-muted-foreground/30 mb-4" />
+      <h2 className="text-lg font-semibold text-foreground mb-1">
+        {t("account.accessDenied.title")}
+      </h2>
+      <p className="text-muted-foreground text-sm mb-5">
+        {t("common.navDeniedDesc")}
+      </p>
+      <Button variant="outline" size="sm" onClick={onBackHome}>
+        {t("auth.backToHome")}
+      </Button>
     </div>
   );
 }
@@ -299,14 +322,10 @@ NAV_ITEMS.forEach((group) => {
   });
 });
 
-export default function Index({
-  teacherMode = false,
-}: {
-  teacherMode?: boolean;
-}) {
+export default function Index() {
   const { user } = useAuth();
   const { t } = useLocale();
-  const navPrefix = teacherMode ? "/teacher" : "/nav";
+  const navPrefix = "/nav";
 
   // E08 学校级 AI 管控：走后端 feature-flags，关闭后隐藏对应入口
   const { data: featureFlags } = useFeatureFlags();
@@ -319,7 +338,7 @@ export default function Index({
     return set;
   }, [featureFlags]);
 
-  const lockedSubject = teacherMode ? user?.teaching_subject || "语文" : undefined;
+  const lockedSubject = undefined;
   const {
     schoolLevel: selectedSchoolLevel,
     grade: selectedGrade,
@@ -356,13 +375,6 @@ export default function Index({
       // 隐私模式/存储不可用时静默跳过，默认落在首页
     }
   }, [navId, navigate]);
-
-  // 单科老师误入通用首页/导航时，重定向到老师端
-  useEffect(() => {
-    if (!teacherMode && user && isSingleSubjectTeacher(user)) {
-      navigate("/teacher", { replace: true });
-    }
-  }, [teacherMode, user, navigate]);
 
   // For cross-page student selection (e.g. portrait → student list)
   const [pendingStudent, setPendingStudent] = useState<string | undefined>();
@@ -413,6 +425,15 @@ export default function Index({
 
   /* ── Content renderer ── */
   const renderContent = () => {
+    // 深链闸：独立老师（仅任课教师账号）请求白名单外的功能域 ⇒ 明确拒绝渲染。
+    // ⛔ 与侧栏共用同一份白名单（constants/systemRoles.ts），不另建第二份谓词。
+    // 位置刻意在 CLASS_REQUIRED_IDS 之前：拒绝优先于「请先选班」，且不改后者语义。
+    if (!isNavPageAllowed(user, activeNavId)) {
+      return (
+        <NavDeniedPlaceholder onBackHome={() => handleNavChange("home")} />
+      );
+    }
+
     // Pages that need a class selected
     if (CLASS_REQUIRED_IDS.has(activeNavId) && !selectedClass) {
       return <NeedsClassPlaceholder />;
@@ -455,20 +476,6 @@ export default function Index({
     switch (activeNavId) {
       /* ── 首页 ── */
       case "home":
-        if (teacherMode) {
-          return (
-            <TeacherHome
-              subject={selectedSubject}
-              classes={classes}
-              onNavChange={handleNavChange}
-              onOpenClass={(classId) => {
-                setSelectedClass(classId);
-                handleNavChange("class-dashboard");
-              }}
-              onPhotoClick={() => setPhotoDialogOpen(true)}
-            />
-          );
-        }
         return (
           <div className="space-y-6" ref={gradingRef}>
             <GlobalSearchBar
@@ -751,6 +758,12 @@ export default function Index({
       case "usage-summary":
         return <UsageSummaryPage />;
 
+      /* ── 我的账户（口径 B · 个人账本） ── */
+      case "payment-wallet":
+        return <PaymentWalletPage />;
+      case "payment-ledger":
+        return <PaymentLedgerPage />;
+
       default:
         return (
           <PlaceholderPage
@@ -768,8 +781,6 @@ export default function Index({
       <Sidebar
         activeNavId={activeNavId}
         onNavChange={handleNavChange}
-        navItems={teacherMode ? TEACHER_NAV_ITEMS : undefined}
-        navSections={teacherMode ? TEACHER_NAV_SECTIONS : undefined}
       />
 
       <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
@@ -793,10 +804,13 @@ export default function Index({
 
         {/* 中间内容区域：唯一可以滑动的地方 */}
         <main className="flex-1 p-6 overflow-y-auto overflow-x-hidden relative">
-          <ContentBreadcrumb
-            activeNavId={activeNavId}
-            onNavChange={handleNavChange}
-          />
+          {/* 被深链闸拒的功能域不渲染面包屑（否则会把无权访问的页面名露出来） */}
+          {isNavPageAllowed(user, activeNavId) && (
+            <ContentBreadcrumb
+              activeNavId={activeNavId}
+              onNavChange={handleNavChange}
+            />
+          )}
           <Suspense
             fallback={
               <div className="flex h-[400px] flex-col items-center justify-center gap-3 text-muted-foreground">

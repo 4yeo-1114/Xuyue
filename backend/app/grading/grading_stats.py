@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import date
 from pathlib import Path
@@ -14,7 +15,57 @@ from app.database import SessionLocal
 from app.models.grading_daily_stat import GradingDailyStat
 from app.models.user import User
 
+logger = logging.getLogger(__name__)
+
 _STAT_UPLOAD_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".pdf", ".doc", ".docx"}
+
+
+# ── 口径 B 计量旁路（docs/payment/payment-design.md §7.1）──────────────────────────
+# ⛔ 禁忌：本函数**绝不**放在 `_increment` 的 try 内、也**绝不**放进
+#    `record_graded_state_change` 的 `try/except: pass` 里 —— 那里吞异常且无日志，
+#    计费事件被吞 = 静默少收钱。因此：所有 `_emit_*` 调用点一律写在**吞异常区之外**，
+#    且 `emit_usage_event` 自己带 session 与异常处理（失败 logging.error 留痕，不阻塞主流程）。
+def _emit_usage(kind: str, user_id: str, folder_safe: str, subject_key: str,
+                delta: int, count: int = 1, occurrence: str = "") -> None:
+    """旁路投递口径 B 用量事件。失败只留痕，⛔ 绝不向批改主流程抛异常。"""
+    if not str(subject_key or "").strip():
+        # ⚠️ 实测（脚本与原始输出见交付报告，2026-09-24）：
+        #   · 空串路径**当前不可达**：两个调用点传的都是真实文件名
+        #     （`grading/router.py:859` `target_file.name` / `:3890` `save_name`），
+        #     `Path.name` 不可能为空。
+        #   · 但**纯空白 stem 可达**：`get_stat_student_key("   .jpg") == "   "`
+        #     （前后空格在 Windows/Linux 都是合法文件名），它同样落到本分支。
+        #   真发生时的后果：口径 A 的 `grading_daily_stats` **已经把这 1 份计进去了**
+        #   （实测 `upload_count=1`），口径 B 却不落 `usage_events` ⇒
+        #   **两边口径不一致 = 静默少收钱** —— 正是 §7.1 全篇要防的那个形态。
+        #   ⛔ 所以绝不静默 return：必须留痕（与同函数 except 分支同款）。
+        #   根治不在此处：placeholder 归并键属 ① 类业务口径，未擅自发明；
+        #   应在上游拒绝空/纯空白文件名，或 Phase 1 定 placeholder 规则。
+        logger.error(
+            "口径 B 计量丢弃：subject_key 为空/纯空白，本次不投用量事件"
+            "（口径 A 的 grading_daily_stats 可能已把这份计入）："
+            "kind=%s user_id=%s folder=%s subject=%r delta=%s",
+            kind, user_id, folder_safe, subject_key, delta,
+        )
+        return
+    try:
+        from app.services.payment.metering import emit_usage_events
+
+        emit_usage_events(
+            user_id=user_id,
+            kind=kind,
+            folder_safe=folder_safe,
+            subject_key=subject_key,
+            count=count,
+            delta=delta,
+            occurrence=occurrence,
+        )
+    except Exception:
+        # 连 import / 调用都没起来（如计量模块被误删）也必须留痕，⛔ 不静默
+        logger.error(
+            "口径 B 计量旁路调用失败：kind=%s user_id=%s folder=%s subject=%s delta=%s",
+            kind, user_id, folder_safe, subject_key, delta, exc_info=True,
+        )
 
 
 def display_folder_name(folder_safe: str) -> str:
@@ -164,8 +215,18 @@ def _increment(
         db.close()
 
 
-def record_upload(user_id: str, folder_safe: str, count: int = 1) -> None:
-    _increment(user_id, folder_safe, upload_delta=max(1, int(count or 1)))
+def record_upload(
+    user_id: str,
+    folder_safe: str,
+    count: int = 1,
+    *,
+    subject_key: Optional[str] = None,
+    occurrence: str = "",
+) -> None:
+    n = max(1, int(count or 1))
+    _increment(user_id, folder_safe, upload_delta=n)
+    # ↓ 旁路：在 _increment 的吞异常 try **之外**（§7.1 禁忌）
+    _emit_usage("upload", user_id, folder_safe, subject_key or "", +1, count=n, occurrence=occurrence)
 
 
 def record_upload_for_file(user_id: str, folder_safe: str, filename: str) -> None:
@@ -176,11 +237,21 @@ def record_upload_for_file(user_id: str, folder_safe: str, filename: str) -> Non
             continue
         if get_stat_student_key(fname) == key:
             return
-    record_upload(user_id, folder_safe, 1)
+    record_upload(user_id, folder_safe, 1, subject_key=key)
 
 
-def record_grade(user_id: str, folder_safe: str, count: int = 1) -> None:
-    _increment(user_id, folder_safe, grade_delta=max(1, int(count or 1)))
+def record_grade(
+    user_id: str,
+    folder_safe: str,
+    count: int = 1,
+    *,
+    subject_key: Optional[str] = None,
+    occurrence: str = "",
+) -> None:
+    n = max(1, int(count or 1))
+    _increment(user_id, folder_safe, grade_delta=n)
+    # ↓ 旁路：在 _increment 的吞异常 try **之外**（§7.1 禁忌）
+    _emit_usage("grade", user_id, folder_safe, subject_key or "", +1, count=n, occurrence=occurrence)
 
 
 def _decrement_field(user_id: str, folder_safe: str, field: str, amount: int = 1) -> None:
@@ -220,12 +291,31 @@ def _decrement_field(user_id: str, folder_safe: str, field: str, amount: int = 1
         db.close()
 
 
-def record_upload_decrement(user_id: str, folder_safe: str, count: int = 1) -> None:
-    _decrement_field(user_id, folder_safe, "upload_count", max(1, int(count or 1)))
+def record_upload_decrement(
+    user_id: str,
+    folder_safe: str,
+    count: int = 1,
+    *,
+    subject_key: Optional[str] = None,
+    occurrence: str = "",
+) -> None:
+    n = max(1, int(count or 1))
+    _decrement_field(user_id, folder_safe, "upload_count", n)
+    _emit_usage("upload", user_id, folder_safe, subject_key or "", -1, count=n, occurrence=occurrence)
 
 
-def record_grade_decrement(user_id: str, folder_safe: str, count: int = 1) -> None:
-    _decrement_field(user_id, folder_safe, "grade_count", max(1, int(count or 1)))
+def record_grade_decrement(
+    user_id: str,
+    folder_safe: str,
+    count: int = 1,
+    *,
+    subject_key: Optional[str] = None,
+    occurrence: str = "",
+) -> None:
+    n = max(1, int(count or 1))
+    _decrement_field(user_id, folder_safe, "grade_count", n)
+    # ↓ 旁路：口径 A 的扣减**不得**直接改账本（§3.3 I6）；账本只认 usage_events 的 delta
+    _emit_usage("grade", user_id, folder_safe, subject_key or "", -1, count=n, occurrence=occurrence)
 
 
 def record_paper_deleted_for_file(user_id: str, folder_safe: str, filename: str) -> None:
@@ -237,17 +327,22 @@ def record_paper_deleted_for_file(user_id: str, folder_safe: str, filename: str)
         if fname != filename
     )
     if not has_other_files:
-        record_upload_decrement(user_id, folder_safe, 1)
+        record_upload_decrement(user_id, folder_safe, 1, subject_key=key)
 
     was_group_graded = _student_group_shows_graded(folder_safe, key)
     still_group_graded = _student_group_shows_graded(
         folder_safe, key, exclude_filenames={filename}
     )
     if was_group_graded and not still_group_graded:
-        record_grade_decrement(user_id, folder_safe, 1)
+        record_grade_decrement(user_id, folder_safe, 1, subject_key=key)
 
 
 def remove_folder_stats(user_id: str, folder_safe: str) -> None:
+    """清空文件夹统计行（口径 A 会**一次性抹掉历史**，§1.3 陷阱 3）。
+
+    ⛔ 口径 B 的账本**不得**被抹掉（§3.3 I6）：改为对该文件夹下净额仍为 +1 的每个学生
+    补投 `delta=-1` 冲正事件 ⇒ 净额归 0 ⇒ net-diff 自动产生反向分录，历史一行不动。
+    """
     uid = str(user_id or "").strip()
     if not uid:
         return
@@ -263,6 +358,15 @@ def remove_folder_stats(user_id: str, folder_safe: str) -> None:
         db.rollback()
     finally:
         db.close()
+    # ↓ 旁路：在吞异常的 try **之外**（§7.1 禁忌）
+    try:
+        from app.services.payment.metering import emit_folder_removed
+
+        emit_folder_removed(uid, folder)
+    except Exception:
+        logger.error(
+            "口径 B 文件夹冲正投递失败：user_id=%s folder=%s", uid, folder, exc_info=True
+        )
 
 
 def is_placeholder_completed_item(item: dict) -> bool:
@@ -300,7 +404,14 @@ def record_graded_state_change(
     source: str,
     filename: str,
 ) -> None:
-    """按学生维度统计：同一学生多张试卷仅计 1 份批改。"""
+    """按学生维度统计：同一学生多张试卷仅计 1 份批改。
+
+    ⚠️ 结构变更（相对改动前，已申报）：原实现把 `record_grade` / `record_grade_decrement`
+    也包在 `try/except: pass` 里。现改为**只把「跃迁判定」放在 try 内**，两个写调用移到
+    try **之外** —— 否则口径 B 的计量旁路会随 `except: pass` 一起被静默吞掉（§7.1 禁忌）。
+    两个写函数自身（`_increment` / `_decrement_field`）内部仍各自吞异常，故**无新增异常路径**。
+    """
+    transition = 0
     try:
         key = get_stat_student_key(filename)
         was = _student_group_shows_graded(
@@ -318,11 +429,25 @@ def record_graded_state_change(
             override_source=source,
         )
         if not was and now:
-            record_grade(user_id, folder_safe, 1)
+            transition = 1
         elif was and not now:
-            record_grade_decrement(user_id, folder_safe, 1)
+            transition = -1
     except Exception:
-        pass
+        return
+
+    if transition == 0:
+        return
+    try:
+        from app.services.payment.metering import payload_occurrence
+
+        occurrence = payload_occurrence(new_entry)
+    except Exception:
+        occurrence = ""
+    # ↓ 旁路：在吞异常的 try **之外**（§7.1 禁忌）
+    if transition > 0:
+        record_grade(user_id, folder_safe, 1, subject_key=key, occurrence=occurrence)
+    else:
+        record_grade_decrement(user_id, folder_safe, 1, subject_key=key, occurrence=occurrence)
 
 
 def query_grading_stats(

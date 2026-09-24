@@ -26,3 +26,13 @@ os.environ.setdefault(
     "JWT_SECRET_KEY",
     "test-only-secret-key-01234567890123456789",  # 占位密钥，仅用于通过长度 >= 32 校验
 )
+
+# 测试永不对数据库执行 DDL。
+# 理由：本机 backend/.env 里 `AUTO_DDL=true`，会让 app/database.py 在**导入期**就调用
+# _ensure_database() 去连库；而上面把 DB_HOST 设成 localhost（pydantic-settings 口径：
+# 环境变量 > .env 文件）⇒ 实际去连 localhost:3306 ⇒ 2003 Connection refused ⇒
+# 任何在模块级 import app.database 的测试文件都在 **collection 阶段**就挂掉。
+# 用 setdefault（⛔ 不是强制赋值）以保住本文件既有语义：只设缺省键、不覆盖真实环境变量，
+# CI / 已自带配置的环境不受影响。收口自 test_e04/e05/e08/e09/e10 与
+# test_users_dingtalk_userid_upgrade 各自重复的那 6 行 setdefault("AUTO_DDL", "false")。
+os.environ.setdefault("AUTO_DDL", "false")

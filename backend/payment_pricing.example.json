@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "currency": "CNY",
+  "unit": "fen",
+  "note": "口径 B（向独立老师收费）价格表样例。⛔ 与 billing_config.example.json（口径 A · 平台成本核算）并列，不合并、不互相读取。所有数值 = ① 类未拍项（设计稿 §10 Q4），此处仅为占位示例，上线前须由业务方填真实值。复制为 payment_pricing.json 后生效；文件不存在时服务回落到内置默认。",
+  "items": {
+    "grade": {
+      "label": "AI 批改",
+      "unit_label": "份",
+      "billed": true,
+      "unit_price_fen": 50,
+      "note": "单位 = 学生·份（同一学生多张图仅计 1 份）。unit_price_fen 是**记账**用的整数单价（分/份），账本按「净额变化 × 单价」落分录，保证 SUM(amount_fen) 可复算（§3.3 I3）。",
+      "tiers": [{ "up_to": null, "price": 0.5 }],
+      "tiers_note": "tiers 只用于只读投影/预估（复用 billing_pricing.tiered_price，§1.4），⛔ 不参与记账 —— 累进阶梯的分段金额无法反解回单价。"
+    },
+    "upload": {
+      "label": "上传请求",
+      "unit_label": "次",
+      "billed": false,
+      "unit_price_fen": 0,
+      "note": "次项，默认不收（§3.1）：已有「同一学生多张仅计 1 份」的去重语义，单独收费价值低、争议高。事件仍写入 usage_events，只是不产生 ledger_entries。",
+      "tiers": []
+    }
+  }
+}

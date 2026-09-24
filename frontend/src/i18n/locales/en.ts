@@ -178,6 +178,8 @@ export const en: TranslationDict = {
   "common.selectClassFirst": "Select a Class",
   "common.selectClassHint":
     "Please select a class in the top bar to view content.",
+  "common.navDeniedDesc":
+    "Your account doesn't have access to this feature. Please contact your administrator.",
   "common.multiDevice": "Multi-device",
   "common.multiDeviceDesc":
     "Student/parent apps, DingTalk integration, permissions & push policies",
@@ -222,19 +224,15 @@ export const en: TranslationDict = {
   "auth.displayName": "Display Name (optional)",
   "auth.displayNamePlaceholder": "Enter display name",
   "auth.role": "Role",
-  "auth.selectRole": "Select a role",
-  "auth.subject": "Teaching subject",
-  "auth.selectSubject": "Select a subject",
+  "auth.subject": "Teaching subject (optional)",
+  "auth.subjectPlaceholder": "e.g. Chinese — free text",
   "auth.registerSuccess": "Registered & signed in",
   "auth.registerFailed": "Registration failed",
   "auth.emailExists": "Email already registered",
   "auth.registerRateLimited": "Too many registrations, try later",
-  "auth.registerHint": "You'll get demo data access for your role",
+  "auth.registerHint":
+    "After signing up you create your own classes and add students",
   "auth.register.roleSubjectTeacher": "Subject Teacher",
-  "auth.register.roleHeadTeacher": "Head Teacher",
-  "auth.register.roleGradeLeader": "Grade Leader",
-  "auth.register.rolePrincipal": "Principal",
-  "auth.register.roleAdmin": "Admin",
 
   "admin.denied": "Only platform admins can access the admin panel.",
   ...adminEn,

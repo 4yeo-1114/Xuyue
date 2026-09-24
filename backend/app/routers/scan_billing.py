@@ -7,6 +7,10 @@
   3. GET /scan-billing/breakdown     — 按文件夹维度的消耗明细
   4. GET /scan-billing/monthly       — 月度用量汇总
   5. GET /scan-billing/user-ranking  — 教师用量排名
+  6. GET /scan-billing/pricing       — 计费规则与价格表（计费项/单位/免费额度/累进阶梯/抵扣顺序）
+  7. GET /scan-billing/estimate      — 按量计费预估（本月至今，含免费额度抵扣与阶梯分段）
+  8. GET /scan-billing/bill          — 月度账单（指定月份完整用量与费用）
+  9. GET /scan-billing/usage-stats   — 用量统计（汇总 + 序列 + 维度明细）
 
 数据源：grading_daily_stats（app/models/grading_daily_stat.py），
 由 app/grading/grading_stats.py 在批改主流程旁路累加，无需新增表。
@@ -25,8 +29,47 @@ from app.dependencies import get_current_user_id
 from app.models.grading_daily_stat import GradingDailyStat
 from app.models.user import User
 from app.schemas.common import ApiResponse
+from app.utils.school_access import get_user_roles
 
 router = APIRouter(prefix="/scan-billing", tags=["scan_billing"])
+
+# 「独立老师」所绑定的既有角色名（与前端 constants/systemRoles.ts 同源，⛔ 不新增角色）
+TEACHER_ROLE = "任课教师"
+
+
+def _roles_are_teacher_only(roles: set[str]) -> bool:
+    """角色集合是否恰为「仅任课教师」。
+
+    与 frontend/src/constants/systemRoles.ts 的 isTeacherOnlyAccount 同口径：
+    **非空、且每一项都是「任课教师」**。多出任何一个其他角色
+    （含「测试账号」「班主任」）即 false ⇒ 不受本收敛约束。
+    """
+    return bool(roles) and all(r == TEACHER_ROLE for r in roles)
+
+
+def _is_teacher_only_account(db: Session, user_id: str) -> bool:
+    """调用者是否为「仅任课教师」账号（独立老师）。"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        # 验签通过的 token 却查不到 users 行属异常态：判据不可得时按最保守一侧收窄到本人。
+        # 宁可让管理员少看全平台，也不让任课教师看到全平台。
+        return True
+    return _roles_are_teacher_only(get_user_roles(user))
+
+
+def resolve_scope_user_id(
+    db: Session, current_user_id: str, requested_user_id: Optional[str]
+) -> Optional[str]:
+    """把「请求里声明的 user_id」收敛为「调用者有权查看的 user_id」。
+
+    - **仅任课教师**账号（独立老师）：query 参数不可信，**忽略**显式传入的 user_id，
+      强制回落为调用者本人 —— 传别人的 id 也仍然只能拿到自己的数据。
+    - 其他角色（系统管理员 / 子系统管理员 / 校级管理者 / 年级组长 / 班主任 / 测试账号）：
+      原样透传，None 仍表示全平台 —— 行为与改动前逐字一致。
+    """
+    if _is_teacher_only_account(db, current_user_id):
+        return current_user_id
+    return requested_user_id
 
 
 def _today() -> date:
@@ -58,10 +101,12 @@ def get_consumption(
     end = _today()
     start = end - timedelta(days=days - 1)
 
+    scope_user_id = resolve_scope_user_id(db, _uid, user_id)
+
     # 基础查询条件
     base_filter = [GradingDailyStat.stat_date >= start, GradingDailyStat.stat_date <= end]
-    if user_id:
-        base_filter.append(GradingDailyStat.user_id == user_id)
+    if scope_user_id:
+        base_filter.append(GradingDailyStat.user_id == scope_user_id)
 
     rows = (
         db.query(GradingDailyStat)
@@ -102,7 +147,7 @@ def get_consumption(
         "total_grade": total_grade,
         "total_operations": total_upload + total_grade,
         "daily_trend": daily_trend,
-        "estimated_storage_mb": _estimate_storage_mb(user_id),
+        "estimated_storage_mb": _estimate_storage_mb(scope_user_id),
     })
 
 
@@ -159,12 +204,14 @@ def get_trends(
     if start_date > end_date:
         start_date, end_date = end_date, start_date
 
+    scope_user_id = resolve_scope_user_id(db, _uid, user_id)
+
     base_filter = [
         GradingDailyStat.stat_date >= start_date,
         GradingDailyStat.stat_date <= end_date,
     ]
-    if user_id:
-        base_filter.append(GradingDailyStat.user_id == user_id)
+    if scope_user_id:
+        base_filter.append(GradingDailyStat.user_id == scope_user_id)
 
     rows = (
         db.query(GradingDailyStat)
@@ -233,12 +280,14 @@ def get_breakdown(
     end = _today()
     start = end - timedelta(days=days - 1)
 
+    scope_user_id = resolve_scope_user_id(db, _uid, user_id)
+
     base_filter = [
         GradingDailyStat.stat_date >= start,
         GradingDailyStat.stat_date <= end,
     ]
-    if user_id:
-        base_filter.append(GradingDailyStat.user_id == user_id)
+    if scope_user_id:
+        base_filter.append(GradingDailyStat.user_id == scope_user_id)
 
     rows = (
         db.query(
@@ -284,6 +333,7 @@ def get_monthly_summary(
     _uid: str = Depends(get_current_user_id),
 ):
     """月度用量汇总（类比七牛云月度账单）。"""
+    scope_user_id = resolve_scope_user_id(db, _uid, user_id)
     end = _today()
     # 回溯到 months 个月前的 1 号
     start_month = end.month - (months - 1)
@@ -297,8 +347,8 @@ def get_monthly_summary(
         GradingDailyStat.stat_date >= start,
         GradingDailyStat.stat_date <= end,
     ]
-    if user_id:
-        base_filter.append(GradingDailyStat.user_id == user_id)
+    if scope_user_id:
+        base_filter.append(GradingDailyStat.user_id == scope_user_id)
 
     rows = (
         db.query(GradingDailyStat)
@@ -348,9 +398,22 @@ def get_user_ranking(
     db: Session = Depends(get_db),
     _uid: str = Depends(get_current_user_id),
 ):
-    """教师用量排名：按操作总量降序。"""
+    """教师用量排名：按操作总量降序。
+
+    仅任课教师账号（独立老师）：收窄为「只有自己一人」的名单
+    （返回本人用量，rank 恒为 1），⛔ 不返回全体教师排名、⛔ 不 403 ——
+    与其余 8 个端点「只返回自己的数据」保持同一口径，前端的「按教师」视图不落空。
+    """
+    scope_user_id = resolve_scope_user_id(db, _uid, None)
     end = _today()
     start = end - timedelta(days=days - 1)
+
+    ranking_filter = [
+        GradingDailyStat.stat_date >= start,
+        GradingDailyStat.stat_date <= end,
+    ]
+    if scope_user_id:
+        ranking_filter.append(GradingDailyStat.user_id == scope_user_id)
 
     rows = (
         db.query(
@@ -358,10 +421,7 @@ def get_user_ranking(
             func.sum(GradingDailyStat.upload_count).label("upload"),
             func.sum(GradingDailyStat.grade_count).label("grade"),
         )
-        .filter(
-            GradingDailyStat.stat_date >= start,
-            GradingDailyStat.stat_date <= end,
-        )
+        .filter(*ranking_filter)
         .group_by(GradingDailyStat.user_id)
         .order_by(text("upload + grade DESC"))
         .limit(limit)
@@ -508,11 +568,12 @@ def get_estimate(
     """
     from app.services import billing_pricing as bp
 
+    scope_user_id = resolve_scope_user_id(db, _uid, user_id)
     today = _today()
     first = today.replace(day=1)
-    info = bp.monthly_avg_storage_gb(today.year, today.month, user_id, up_to_today=True)
+    info = bp.monthly_avg_storage_gb(today.year, today.month, scope_user_id, up_to_today=True)
     return ApiResponse(data=_build_estimate(
-        db, first, today, user_id,
+        db, first, today, scope_user_id,
         proration=info["proration"],
         period_label=f"{today.year}年{today.month}月（截至 {today.isoformat()}）",
     ))
@@ -532,6 +593,7 @@ def get_bill(
     import calendar
     from app.services import billing_pricing as bp
 
+    scope_user_id = resolve_scope_user_id(db, _uid, user_id)
     today = _today()
     if month:
         try:
@@ -557,8 +619,8 @@ def get_bill(
         end = first
 
     data = _build_estimate(
-        db, first, end, user_id,
-        proration=1.0 if is_settled else bp.monthly_avg_storage_gb(year, mon, user_id)["proration"],
+        db, first, end, scope_user_id,
+        proration=1.0 if is_settled else bp.monthly_avg_storage_gb(year, mon, scope_user_id)["proration"],
         period_label=f"{year}年{mon}月",
     )
     data.update({
@@ -591,12 +653,14 @@ def get_usage_stats(
     if start_date > end_date:
         start_date, end_date = end_date, start_date
 
+    scope_user_id = resolve_scope_user_id(db, _uid, user_id)
+
     base = [
         GradingDailyStat.stat_date >= start_date,
         GradingDailyStat.stat_date <= end_date,
     ]
-    if user_id:
-        base.append(GradingDailyStat.user_id == user_id)
+    if scope_user_id:
+        base.append(GradingDailyStat.user_id == scope_user_id)
 
     rows = db.query(GradingDailyStat).filter(*base).all()
 

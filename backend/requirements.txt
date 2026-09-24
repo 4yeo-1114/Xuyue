@@ -5,6 +5,10 @@ certifi==2026.5.20
 charset-normalizer==3.4.7
 click==8.1.8
 colorama==0.4.6
+# 口径 B 支付通道（Phase 2）：微信支付 APIv3 回调 resource 的 AES-256-GCM 解密
+# ＋ 微信/支付宝的 RSASSA-PKCS1-v1_5(SHA-256) 签名验签。⛔ 不用 `rsa` 包顶替 ——
+# 它读不了 PKCS#8 私钥，且没有 AES（手写 AES 的失败模式是「静默验签通过」）。
+cryptography==44.0.0
 distro==1.9.0
 dnspython==2.7.0
 ecdsa==0.19.2

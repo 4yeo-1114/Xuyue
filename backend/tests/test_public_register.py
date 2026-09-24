@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
-"""免审核自助注册测试账号接口验收测试。
+"""免审核自助注册（独立老师入口）接口验收测试。
 
 覆盖：
-  1. 任课教师+数学 注册成功：users.roles / teaching_subject、class_teachers 新增 1 行
-     role="teacher" subject="数学"、响应含 access_token
-  2. 班主任注册成功：class_teachers role="head"
-  3. 年级组长/校级管理者/系统管理员注册成功：不产生 class_teachers 行
-  4. 重复邮箱 → 409；非法角色 → 422；任课教师缺科目/非法科目 → 400；
-     其他角色带科目 → 400；演示池空 → 503；限流 → 429
+  1. 任课教师注册成功：users.roles / teaching_subject 落库、响应含 access_token，
+     且**不新增任何 class_teachers 行**（独立老师注册完没有班，自己去建班）
+  2. 免审核自助注册只允许「任课教师」：班主任/年级组长/校级管理者/系统管理员
+     一律在 Pydantic 校验阶段被拒（ValidationError）——公网无法自封管理员
+  3. 科目可选、自由填写：不填 → None；任意科目名 → 原样落库；
+     超长（> MAX_TEACHING_SUBJECT_LEN）→ 400
+  4. 重复邮箱 → 409；非法角色 → 422；限流 → 429
   5. settings.ALLOW_PUBLIC_REGISTRATION=False → 403
 
 测试方式：直接调用 auth.register（与 test_admin_batch_delete 同款 fake db 风格），
@@ -22,7 +23,6 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.database import get_db
-from app.models.class_model import Class
 from app.models.class_teacher import ClassTeacher
 from app.models.user import User
 from app.routers import auth
@@ -59,9 +59,8 @@ class _FakeQuery:
 
 
 class _FakeDb:
-    def __init__(self, existing_users=None, demo_classes=None):
+    def __init__(self, existing_users=None):
         self.existing_users = existing_users or []
-        self.demo_classes = demo_classes or []
         self.added = []
         self.flushed = False
         self.committed = False
@@ -70,8 +69,6 @@ class _FakeDb:
     def query(self, model):
         if model is User:
             return _FakeQuery(self.existing_users)
-        if model is Class:
-            return _FakeQuery(self.demo_classes)
         return _FakeQuery([])
 
     def add(self, obj):
@@ -94,8 +91,8 @@ class _FakeDb:
 class _StatefulDb(_FakeDb):
     """注册→登录跨请求共享：注册写入 users，后续登录查询能查到。"""
 
-    def __init__(self, demo_classes=None):
-        super().__init__(existing_users=[], demo_classes=demo_classes or [])
+    def __init__(self):
+        super().__init__(existing_users=[])
 
     def add(self, obj):
         super().add(obj)
@@ -105,10 +102,6 @@ class _StatefulDb(_FakeDb):
 
 def _request(host="127.0.0.1"):
     return SimpleNamespace(client=SimpleNamespace(host=host))
-
-
-def _demo_class(cls_id="cls-demo-1"):
-    return SimpleNamespace(id=cls_id, name="演示-三年级1班")
 
 
 def _existing_user(email="used@example.com"):
@@ -150,7 +143,8 @@ def _default_mocks(monkeypatch):
 
 
 def test_register_subject_teacher_success():
-    db = _FakeDb(demo_classes=[_demo_class()])
+    """独立老师注册成功：只落 users 一行，**不绑任何班**。"""
+    db = _FakeDb()
     resp = auth.register(
         RegisterRequest(email="math@example.com", password="123456", role="任课教师", teaching_subject="数学"),
         _request(),
@@ -165,49 +159,25 @@ def test_register_subject_teacher_success():
     assert user.teaching_subject == "数学"
     assert user.password_hash == "hashed-pw"
 
-    ct = db.added[1]
-    assert isinstance(ct, ClassTeacher)
-    assert ct.class_id == "cls-demo-1"
-    assert ct.user_id == user.id
-    assert ct.role == "teacher"
-    assert ct.subject == "数学"
-    assert db.committed
-
-
-def test_register_head_teacher_success():
-    db = _FakeDb(demo_classes=[_demo_class()])
-    resp = auth.register(
-        RegisterRequest(email="head@example.com", password="123456", role="班主任"),
-        _request(),
-        db=db,
-    )
-
-    assert resp.access_token.startswith("token-")
-    ct = db.added[1]
-    assert isinstance(ct, ClassTeacher)
-    assert ct.role == "head"
-    assert ct.subject is None
+    # 关键：注册路径不得再写入 class_teachers（原 _pick_demo_class 绑定演示班的行为已移除）
+    assert not any(isinstance(o, ClassTeacher) for o in db.added)
+    assert len(db.added) == 1
     assert db.committed
 
 
 @pytest.mark.parametrize(
     "role",
-    ["年级组长", "校级管理者", "系统管理员"],
+    ["班主任", "年级组长", "校级管理者", "系统管理员"],
 )
-def test_register_global_roles_no_class_teacher(role):
-    db = _FakeDb()
-    resp = auth.register(
-        RegisterRequest(email=f"{role}@example.com", password="123456", role=role),
-        _request(),
-        db=db,
-    )
+def test_register_privileged_role_rejected(role):
+    """闸门：免审核自助注册只允许「任课教师」。
 
-    assert resp.access_token.startswith("token-")
-    user = db.added[0]
-    assert user.roles == role
-    # 全局角色不绑定演示班 → 只新增了 User，没有 ClassTeacher
-    assert len([o for o in db.added if isinstance(o, ClassTeacher)]) == 0
-    assert db.committed
+    这四个角色都能经 is_school_admin() 拿到后台权限；自助注册若可选，
+    等于任何人对公网打一个请求就能自封平台管理员（提权）。
+    断言它们在 Pydantic 校验阶段（路由函数体执行之前）就被拒。
+    """
+    with pytest.raises(ValidationError):
+        RegisterRequest(email=f"{role}@example.com", password="123456", role=role)
 
 
 # ── 校验分支 ─────────────────────────────────────────────
@@ -231,49 +201,85 @@ def test_register_invalid_role_422():
         RegisterRequest(email="boss@example.com", password="123456", role="校长")
 
 
-def test_register_teacher_missing_subject_400():
-    db = _FakeDb(demo_classes=[_demo_class()])
-    with pytest.raises(HTTPException) as exc_info:
-        auth.register(
-            RegisterRequest(email="nosubj@example.com", password="123456", role="任课教师"),
-            _request(),
-            db=db,
-        )
-    assert exc_info.value.status_code == 400
-
-
-def test_register_teacher_invalid_subject_400():
-    db = _FakeDb(demo_classes=[_demo_class()])
-    with pytest.raises(HTTPException) as exc_info:
-        auth.register(
-            RegisterRequest(email="phys@example.com", password="123456", role="任课教师", teaching_subject="物理"),
-            _request(),
-            db=db,
-        )
-    assert exc_info.value.status_code == 400
-
-
-def test_register_non_teacher_with_subject_400():
+def test_register_teacher_subject_optional_success():
+    """科目改为可选：不填也注册成功，落库为 None（原「必须选择科目」的 400 已被产品推翻）。"""
     db = _FakeDb()
+    resp = auth.register(
+        RegisterRequest(email="nosubj@example.com", password="123456", role="任课教师"),
+        _request(),
+        db=db,
+    )
+    assert resp.access_token == "token-user-1"
+    assert db.added[0].teaching_subject is None
+    assert db.committed
+
+
+def test_register_teacher_free_text_subject_success():
+    """科目改为自由填写：「物理」不在原 4 科白名单内，现在应原样落库（原 400 已被产品推翻）。"""
+    db = _FakeDb()
+    auth.register(
+        RegisterRequest(email="phys@example.com", password="123456", role="任课教师", teaching_subject="物理"),
+        _request(),
+        db=db,
+    )
+    assert db.added[0].teaching_subject == "物理"
+    assert db.committed
+
+
+def test_register_teacher_subject_is_stripped():
+    """只保留 strip()：首尾空白被裁掉，中间空白保留。"""
+    db = _FakeDb()
+    auth.register(
+        RegisterRequest(
+            email="strip@example.com",
+            password="123456",
+            role="任课教师",
+            teaching_subject="  通用 技术  ",
+        ),
+        _request(),
+        db=db,
+    )
+    assert db.added[0].teaching_subject == "通用 技术"
+
+
+def test_register_teacher_subject_whitespace_only_is_none():
+    """纯空白等价于未填 → None（不是空串落库）。"""
+    db = _FakeDb()
+    auth.register(
+        RegisterRequest(email="blank@example.com", password="123456", role="任课教师", teaching_subject="   "),
+        _request(),
+        db=db,
+    )
+    assert db.added[0].teaching_subject is None
+
+
+def test_register_teacher_subject_at_max_len_ok():
+    """长度上限边界：恰好 MAX_TEACHING_SUBJECT_LEN 允许通过。
+
+    上限 32 = min(users.teaching_subject String(32), class_teachers.subject String(32))。
+    """
+    db = _FakeDb()
+    subject = "科" * auth.MAX_TEACHING_SUBJECT_LEN
+    auth.register(
+        RegisterRequest(email="maxlen@example.com", password="123456", role="任课教师", teaching_subject=subject),
+        _request(),
+        db=db,
+    )
+    assert db.added[0].teaching_subject == subject
+    assert db.committed
+
+
+def test_register_teacher_subject_too_long_400():
+    """超长即 400：超出列宽（String(32)）的名字存不下，必须在入口拦掉。"""
+    db = _FakeDb()
+    subject = "科" * (auth.MAX_TEACHING_SUBJECT_LEN + 1)
     with pytest.raises(HTTPException) as exc_info:
         auth.register(
-            RegisterRequest(email="head@example.com", password="123456", role="班主任", teaching_subject="数学"),
+            RegisterRequest(email="toolong@example.com", password="123456", role="任课教师", teaching_subject=subject),
             _request(),
             db=db,
         )
     assert exc_info.value.status_code == 400
-
-
-def test_register_demo_pool_empty_503():
-    db = _FakeDb(demo_classes=[])
-    with pytest.raises(HTTPException) as exc_info:
-        auth.register(
-            RegisterRequest(email="teacher@example.com", password="123456", role="任课教师", teaching_subject="语文"),
-            _request(),
-            db=db,
-        )
-    assert exc_info.value.status_code == 503
-    # flush 成功但 commit 前因池空中止 → 未提交
     assert not db.committed
 
 
@@ -282,7 +288,7 @@ def test_register_rate_limited_429(monkeypatch):
     db = _FakeDb()
     with pytest.raises(HTTPException) as exc_info:
         auth.register(
-            RegisterRequest(email="spam@example.com", password="123456", role="年级组长"),
+            RegisterRequest(email="spam@example.com", password="123456", role="任课教师", teaching_subject="数学"),
             _request(),
             db=db,
         )
@@ -294,7 +300,7 @@ def test_register_disabled_by_config_403(monkeypatch):
     db = _FakeDb()
     with pytest.raises(HTTPException) as exc_info:
         auth.register(
-            RegisterRequest(email="blocked@example.com", password="123456", role="年级组长"),
+            RegisterRequest(email="blocked@example.com", password="123456", role="任课教师", teaching_subject="数学"),
             _request(),
             db=db,
         )
@@ -323,7 +329,7 @@ def test_register_rate_limit_window_real_logic(monkeypatch):
 
 
 def test_http_register_local_email_success(monkeypatch):
-    db = _FakeDb(demo_classes=[_demo_class()])
+    db = _FakeDb()
     client = _make_client(monkeypatch, db)
     resp = client.post(
         "/auth/register",
@@ -333,13 +339,35 @@ def test_http_register_local_email_success(monkeypatch):
     body = resp.json()
     assert body["access_token"].startswith("token-")
     assert body["user"]["email"] == "teacher@grade.local"
-    # 落库校验
+    # 落库校验：只有 users 一行，不绑班
     user = db.added[0]
     assert user.roles == "任课教师"
     assert user.teaching_subject == "数学"
-    ct = db.added[1]
-    assert ct.role == "teacher"
-    assert ct.subject == "数学"
+    assert not any(isinstance(o, ClassTeacher) for o in db.added)
+
+
+def test_http_register_without_subject_success(monkeypatch):
+    """HTTP 层闭环：不带 teaching_subject 字段也能注册（原契约里它标注为「必填」）。"""
+    db = _FakeDb()
+    client = _make_client(monkeypatch, db)
+    resp = client.post(
+        "/auth/register",
+        json={"email": "noSubject@grade.local", "password": "123456", "role": "任课教师"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["user"]["teaching_subject"] is None
+
+
+def test_http_register_free_text_subject_success(monkeypatch):
+    """HTTP 层闭环：自由填写的科目名（非原 4 科）不再被 400 拦掉。"""
+    db = _FakeDb()
+    client = _make_client(monkeypatch, db)
+    resp = client.post(
+        "/auth/register",
+        json={"email": "art@grade.local", "password": "123456", "role": "任课教师", "teaching_subject": "美术"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["user"]["teaching_subject"] == "美术"
 
 
 def test_http_register_invalid_email_400(monkeypatch):
@@ -355,7 +383,7 @@ def test_http_register_invalid_email_400(monkeypatch):
 
 
 def test_http_register_com_email_success(monkeypatch):
-    db = _FakeDb(demo_classes=[_demo_class()])
+    db = _FakeDb()
     client = _make_client(monkeypatch, db)
     resp = client.post(
         "/auth/register",
@@ -367,23 +395,23 @@ def test_http_register_com_email_success(monkeypatch):
 
 def test_http_register_then_login_local_email(monkeypatch):
     # 闭环：.local 邮箱注册成功 → 自动登录 OK → 退出后走 /auth/login 也应能登录
-    db = _StatefulDb(demo_classes=[_demo_class()])
+    db = _StatefulDb()
     client = _make_client(monkeypatch, db)
 
     reg = client.post(
         "/auth/register",
-        json={"email": "head@grade.local", "password": "123456", "role": "班主任"},
+        json={"email": "teacher@grade.local", "password": "123456", "role": "任课教师", "teaching_subject": "数学"},
     )
     assert reg.status_code == 200, reg.text
 
     login = client.post(
         "/auth/login",
-        json={"email": "head@grade.local", "password": "123456"},
+        json={"email": "teacher@grade.local", "password": "123456"},
     )
     assert login.status_code == 200, login.text
     body = login.json()
     assert body["access_token"].startswith("token-")
-    assert body["user"]["email"] == "head@grade.local"
+    assert body["user"]["email"] == "teacher@grade.local"
 
 
 def test_http_login_com_email_success(monkeypatch):

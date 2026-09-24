@@ -293,6 +293,11 @@ app.include_router(scan_billing.router, prefix="/api/v1")
 from app.routers import grading_quota
 app.include_router(grading_quota.router, prefix="/api/v1")
 
+# ── 口径 B 独立老师支付（余额/流水/用量只读投影；⛔ 与上面的 scan_billing 口径 A 物理分离，
+#    两套端点、两套数据源，见 docs/payment/payment-design.md §1.2 §7.3）────────────────
+from app.routers import payment
+app.include_router(payment.router, prefix="/api/v1")
+
 # ── 小程序打印队列（布置作业 → 生成作业纸 → 本机打印代理拉取打印）────────
 from app.routers import print_jobs
 app.include_router(print_jobs.router, prefix="/api/v1")

@@ -86,6 +86,17 @@ from app.models.flow_grading import (
     FlowArbitration,
 )
 
+# ── 口径 B 独立老师支付系统（payment_accounts / usage_events / ledger_entries /
+#    payment_plans / subscriptions / payment_orders / payment_invoices），
+#    见 docs/payment/payment-design.md §3.2 §5.1 §9-Phase3（P3-1）──
+from app.models.payment_account import PaymentAccount
+from app.models.usage_event import UsageEvent
+from app.models.ledger_entry import LedgerEntry
+from app.models.payment_plan import PaymentPlan
+from app.models.subscription import Subscription
+from app.models.payment_order import PaymentOrder
+from app.models.payment_invoice import PaymentInvoice
+
 __all__ = [
     "User",
     "gen_uuid",
@@ -169,4 +180,12 @@ __all__ = [
     "FlowAssignment",
     "FlowReview",
     "FlowArbitration",
+    # 口径 B 独立老师支付系统
+    "PaymentAccount",
+    "UsageEvent",
+    "LedgerEntry",
+    "PaymentPlan",
+    "Subscription",
+    "PaymentOrder",
+    "PaymentInvoice",
 ]

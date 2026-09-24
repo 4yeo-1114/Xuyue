@@ -49,7 +49,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { exitPackagedApp } from "@/services/gradingApi";
-import { isPlatformAdmin, isSchoolAdmin, isParent } from "@/lib/adminAccess";
+import { isPlatformAdmin, isNavItemVisible } from "@/lib/adminAccess";
 import { useProjectBranding } from "@/contexts/ProjectBrandingContext";
 import { BrandLogo } from "@/components/BrandLogo";
 import { useLocale } from "@/contexts/LocaleContext";
@@ -194,7 +194,12 @@ export const NAV_ITEMS: NavGroup[] = [
     label: "家长",
     icon: Users,
     children: [
-      { id: "parent-wuyu", label: "孩子五育画像", icon: UserSquare2, parentOnly: true },
+      {
+        id: "parent-wuyu",
+        label: "孩子五育画像",
+        icon: UserSquare2,
+        parentOnly: true,
+      },
     ],
   },
   {
@@ -264,6 +269,25 @@ export const NAV_ITEMS: NavGroup[] = [
       { id: "usage-summary", label: "用量汇总", icon: BarChart4 },
     ],
   },
+  {
+    id: "payment",
+    label: "我的账户",
+    icon: Wallet,
+    children: [
+      {
+        id: "payment-wallet",
+        label: "我的余额",
+        icon: Wallet,
+        adminOnly: true,
+      },
+      {
+        id: "payment-ledger",
+        label: "资金流水",
+        icon: Receipt,
+        adminOnly: true,
+      },
+    ],
+  },
 ];
 
 /* ── 视觉分组：将顶级组归入小节（仅视觉呈现，不改 NAV_ITEMS 的 id 契约） ── */
@@ -303,6 +327,11 @@ const NAV_SECTIONS: NavSection[] = [
     key: "bureau",
     label: { zh: "教育局", en: "Education Bureau" },
     items: ["bureau"],
+  },
+  {
+    key: "wallet",
+    label: { zh: "我的账户", en: "My Account" },
+    items: ["payment"],
   },
   { key: "system", label: { zh: "系统", en: "System" }, items: ["settings"] },
   {
@@ -438,8 +467,6 @@ export function Sidebar({
   });
 
   const isAdmin = useMemo(() => isPlatformAdmin(user), [user]);
-  const isSchoolAdminUser = useMemo(() => isSchoolAdmin(user), [user]);
-  const isParentUser = useMemo(() => isParent(user), [user]);
 
   const { data: featureFlags } = useFeatureFlags();
   const disabledFeatureKeys = useMemo(() => {
@@ -477,6 +504,7 @@ export function Sidebar({
   const isGroupActive = (group: NavGroup) =>
     group.children?.some((c) => c.id === activeNavId) ?? false;
 
+  // 角色闸：判据统一在 lib/adminAccess.isNavItemVisible（⛔ 勿在本文件另建第二份谓词）
   const filteredNavItems = useMemo(() => {
     return navItems.map((group) => {
       if (!group.children) return group;
@@ -484,16 +512,12 @@ export function Sidebar({
         ...group,
         children: group.children.filter(
           (child) =>
-            (child.parentOnly
-              ? isParentUser
-              : child.id === "school-dashboard" || child.id === "school-warning"
-                ? isSchoolAdminUser
-                : !child.adminOnly || isAdmin) &&
+            isNavItemVisible(user, child) &&
             (!child.featureKey || !disabledFeatureKeys.has(child.featureKey)),
         ),
       };
     }).filter((group) => !group.children || group.children.length > 0);
-  }, [isAdmin, isSchoolAdminUser, isParentUser, disabledFeatureKeys]);
+  }, [user, disabledFeatureKeys]);
 
   // 按 section 编排顶级组（id → NavGroup 映射，便于按 SECTIONS 顺序渲染）
   const navById = useMemo(() => {
@@ -512,10 +536,7 @@ export function Sidebar({
     >
       {/* Logo 品牌区 */}
       <div className="px-5 pt-4 pb-4 border-b border-sidebar-border/70 flex items-center gap-2.5">
-        <BrandLogo
-          className="w-8 h-8 rounded-lg bg-white"
-          alt={projectName}
-        />
+        <BrandLogo className="w-8 h-8 rounded-lg bg-white" alt={projectName} />
         <div className="min-w-0">
           <h1 className="text-[15px] font-bold text-sidebar-foreground truncate leading-tight">
             {projectName}
@@ -687,7 +708,7 @@ export function Sidebar({
                 } else {
                   toast.error(res?.msg || t("sidebar.exitFailed"));
                 }
-              } catch (e: any) {
+              } catch (e) {
                 const msg = String(e?.message || "");
                 if (msg.includes("仅打包版支持")) {
                   toast.error(t("sidebar.exitDevOnly"));

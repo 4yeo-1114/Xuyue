@@ -11,14 +11,20 @@ import { GlobalStudentImportDialog } from "./GlobalStudentImportDialog";
 import { useClasses } from "@/hooks/useClasses";
 import { useStudents } from "@/hooks/useStudents";
 import { useAuth } from "@/hooks/useAuth";
+import { useGlobalFilters } from "@/hooks/useGlobalFilters";
 import { useQuery } from "@tanstack/react-query";
 import { listClassTeachers } from "@/services/api";
 import { useLocale } from "@/contexts/LocaleContext";
+import { Button } from "@/components/ui/button";
+import { ClassManageDialog } from "@/components/ClassManageDialog";
+import { Plus } from "lucide-react";
 
 export function ClassManagePage() {
   const { user } = useAuth();
   const { t } = useLocale();
+  const { schoolLevel, grade } = useGlobalFilters();
   const { data: dbClasses = [] } = useClasses();
+  const [classDialogOpen, setClassDialogOpen] = useState(false);
 
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
   const activeClassId = selectedClassId || dbClasses[0]?.id || "";
@@ -87,11 +93,29 @@ export function ClassManagePage() {
   if (!user) return null;
 
   if (!dbClasses.length) {
+    // 零班级不是死胡同：复用已有的建班能力（ClassManageDialog → useCreateClass → POST /classes），
+    // ⛔ 不新造建班流程 / 不新接口。这一脚对「独立老师」（注册完零班级）是必需的。
     return (
-      <div className="rounded-xl border border-border bg-card p-8 text-center text-muted-foreground">
-        <p className="text-sm">{t("settingsClass.noClasses")}</p>
-        <p className="text-xs mt-1">{t("settingsClass.noClassesHint")}</p>
-      </div>
+      <>
+        <div className="rounded-xl border border-border bg-card p-8 text-center text-muted-foreground">
+          <p className="text-sm">{t("settingsClass.noClasses")}</p>
+          <p className="text-xs mt-1">{t("settingsClass.noClassesHint")}</p>
+          <Button
+            className="mt-4 gap-1.5"
+            size="sm"
+            onClick={() => setClassDialogOpen(true)}
+          >
+            <Plus className="w-4 h-4" />
+            {t("account.classManage.addClass")}
+          </Button>
+        </div>
+        <ClassManageDialog
+          open={classDialogOpen}
+          onOpenChange={setClassDialogOpen}
+          schoolLevel={schoolLevel}
+          grade={grade}
+        />
+      </>
     );
   }
 
