@@ -154,6 +154,16 @@ export function PaymentWalletPage() {
           <p className="mt-2 text-xs text-muted-foreground">
             账户由系统在你首次使用后自动开通；余额变更的每一笔都会记入资金流水。
           </p>
+
+          {/* ── 退款规则（设计稿 §10 Q5 / §9 P2-4 的「前端明示」要求）──
+             ⚠️ 文案**逐字**采用主导者 2026-09-24 拍定口径，⛔ 不自创法律措辞、⛔ 不承诺未拍项。 */}
+          <div className="mt-3 flex items-start gap-2 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              <span className="font-medium text-foreground">退款规则：</span>
+              余额不可退，只退套餐未使用部分。
+            </span>
+          </div>
         </CardContent>
       </Card>
 
