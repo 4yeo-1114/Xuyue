@@ -482,6 +482,107 @@ def verify_invariant_e1(db: Session, user_id: str) -> dict[str, Any]:
     }
 
 
+def verify_invariant_e1_all(db: Session) -> dict[str, Any]:
+    """E1 全平台巡检：**逐个账户调用 `verify_invariant_e1()`**（§6.2 L459 / §6.4 L479）。
+
+    ⛔ 本函数**不重写** E1 的判据 —— 判据只有 `verify_invariant_e1()` 一处
+       （改那里即改全部）。本函数只做“挂出来 + 汇总”。
+    ⚠️ ③ 类取值（写明理由）：逐账户循环 = N+1 次查询。但对账是**只读、低频、人工触发**的巡检
+       （§6.4：对账 = 一条只读查询 + 一份可复算的报告），独立老师账户的数量级很小。
+       换来的是「E1 判据只有一份」—— 比省几次查询值钱；⛔ 不为此再写一条批量 SQL（那就是第二份判据）。
+    """
+    user_ids = [
+        str(uid)
+        for (uid,) in db.query(PaymentAccount.user_id).order_by(PaymentAccount.user_id).all()
+    ]
+    discrepancies: list[dict[str, Any]] = []
+    total_balance = 0
+    total_sum = 0
+    for uid in user_ids:
+        one = verify_invariant_e1(db, uid)
+        total_balance += int(one.get("balance_fen") or 0)
+        total_sum += int(one.get("sum_amount_fen") or 0)
+        if not one.get("ok"):
+            discrepancies.append(one)
+    return {
+        "ok": not discrepancies,
+        "accounts_checked": len(user_ids),
+        "unbalanced_count": len(discrepancies),
+        "total_balance_fen": total_balance,
+        "total_sum_amount_fen": total_sum,
+        "discrepancies": discrepancies,
+    }
+
+
+def verify_invariant_e2(db: Session) -> dict[str, Any]:
+    """E2（收入一致，§6.2 L460）**纯 SQL**：
+
+        SUM(ledger_entries.amount_fen WHERE entry_type='recharge')
+            == SUM(payment_orders.amount_fen WHERE status='paid')
+
+    ⚠️ §6.2 该行尾注「（减去退款、手续费口径见下）」在本阶段**两项都不适用**，故不减：
+       · 手续费 = **平台承担**（已拍）⇒ 手续费**不进老师账本**，E2 两侧本就都不含它；
+       · 退款 = 余额不可退（已拍）+ 红冲本阶段不做 ⇒ 本阶段不存在 `refund` 分录。
+       将来任一条口径变了，**只改这里一处**（判据 = 本 docstring）并补用例。
+    ⛔ 不引入新依赖、不建差异表（§6.4 L478）。
+    """
+    recharge_fen = int(
+        db.query(func.coalesce(func.sum(LedgerEntry.amount_fen), 0))
+        .filter(LedgerEntry.entry_type == ENTRY_RECHARGE)
+        .scalar()
+        or 0
+    )
+    paid_fen = int(
+        db.query(func.coalesce(func.sum(PaymentOrder.amount_fen), 0))
+        .filter(PaymentOrder.status == ORDER_PAID)
+        .scalar()
+        or 0
+    )
+
+    # 差异明细按人展开（入账方 = 账户的 user_id；付款方 = 订单的 user_id）
+    recharge_by_user = {
+        str(u): int(v or 0)
+        for u, v in db.query(
+            PaymentAccount.user_id, func.coalesce(func.sum(LedgerEntry.amount_fen), 0)
+        )
+        .join(LedgerEntry, LedgerEntry.account_id == PaymentAccount.id)
+        .filter(LedgerEntry.entry_type == ENTRY_RECHARGE)
+        .group_by(PaymentAccount.user_id)
+        .all()
+    }
+    paid_by_user = {
+        str(u): int(v or 0)
+        for u, v in db.query(
+            PaymentOrder.user_id, func.coalesce(func.sum(PaymentOrder.amount_fen), 0)
+        )
+        .filter(PaymentOrder.status == ORDER_PAID)
+        .group_by(PaymentOrder.user_id)
+        .all()
+    }
+    discrepancies = [
+        {
+            "user_id": u,
+            "recharge_fen": recharge_by_user.get(u, 0),
+            "paid_orders_fen": paid_by_user.get(u, 0),
+            "diff_fen": recharge_by_user.get(u, 0) - paid_by_user.get(u, 0),
+        }
+        for u in sorted(set(recharge_by_user) | set(paid_by_user))
+        if recharge_by_user.get(u, 0) != paid_by_user.get(u, 0)
+    ]
+    return {
+        "ok": recharge_fen == paid_fen and not discrepancies,
+        "recharge_fen": recharge_fen,
+        "paid_orders_fen": paid_fen,
+        "diff_fen": recharge_fen - paid_fen,
+        "discrepancies": discrepancies,
+    }
+
+
+def verify_invariants(db: Session) -> dict[str, Any]:
+    """§6.2 的 E1/E2 一次跑完（⛔ E3 不在本阶段 —— 见 docs/payment/payment-design.md §6.5）。"""
+    return {"e1": verify_invariant_e1_all(db), "e2": verify_invariant_e2(db)}
+
+
 # ────────────────────────── 闸门（§4.1 / §8.2）──────────────────────────
 
 def _roles_of(db: Session, user_id: str) -> set[str]:

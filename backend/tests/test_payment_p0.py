@@ -664,6 +664,15 @@ def test_p0_6_payment_router_endpoint_whitelist():
     （`POST /payment/orders`、`POST /payment/callback/{channel}`），
     故把「无 Phase 2」改写成「**这几个，且只有这几个**」——
     ⛔ 不是放宽：`/payment/admin/grant`（后台人工开通）与退款相关端点**仍不在白名单**。
+
+    ⚠️ **断言更新申报（2026-09-24，支付 Phase 3 批 P3-1 ＋ §6.4 追加）**：本批**按设计稿
+    §9 Phase 3「P3-1 发票」**新增两个老师侧端点（`POST /payment/invoices` 提交开票申请、
+    `GET /payment/invoices` 我的开票申请），**按 §6.2/§6.4** 新增一个**只读**对账端点
+    （`GET /payment/admin/reconciliation`，零写路径；E3 本阶段不落地，见设计稿 §6.5）。
+    ⇒ 白名单同步加这三条。⛔ **仍不在白名单**：`POST /payment/admin/grant`（后台人工开通，
+    **写**）、「标记已开票 / 作废」的后台入口（本批⛔ 不做，只在 service 留数据层）、
+    退款端点、E3 相关端点。⛔ 这不是放宽：`tests/test_payment_p3.py` 另有一条
+    `test_p3_51_*` 把 admin 侧**只许有那一个 GET** 再钉一遍。
     """
     from app.routers import payment as payment_router
 
@@ -674,4 +683,6 @@ def test_p0_6_payment_router_endpoint_whitelist():
         "/payment/usage",                    # P0-6 只读
         "/payment/orders",                   # P2-1 下单
         "/payment/callback/{channel}",       # P2-3 回调
+        "/payment/invoices",                 # P3-1 提交/查询开票申请（POST/GET 同路径）
+        "/payment/admin/reconciliation",     # §6.2 E1/E2 只读对账巡检（只读，非写）
     }, sorted(paths)

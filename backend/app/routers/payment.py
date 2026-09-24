@@ -13,7 +13,16 @@
   GET  /api/v1/payment/usage              我的用量（口径 B）             （登录，P0-6）
   POST /api/v1/payment/orders             下单（返回通道支付参数）       （登录，P2-1）
   POST /api/v1/payment/callback/{channel} 通道回调（**按通道验签识别身份**）（P2-3）
-⛔ `POST /payment/admin/grant`（后台人工开通）不在本批范围。
+  POST /api/v1/payment/invoices           提交开票申请（一单一票）       （登录，P3-1）
+  GET  /api/v1/payment/invoices           我的开票申请（分页）           （登录，P3-1）
+  GET  /api/v1/payment/admin/reconciliation  E1/E2 只读对账巡检（**只读**）  （**管理员**，§6.2/§6.4）
+⛔ `POST /payment/admin/grant`（后台人工开通，**写**）不在本批范围。
+
+⚠️ **P3-1 的「标记已开票 / 作废」本批⛔ 不做后台入口**：状态机只在
+   `services/payment/invoices.py`（`mark_issued` / `mark_void`）留了数据层，本模块不挂它
+   —— 上文那条「admin 端点不在本批范围」对新加的**写**路径同样成立。
+⚠️ 唯一的 admin 路由是 `GET /admin/reconciliation`，它**零写路径**（只读巡检）：
+   上面那条逐字排除的是 `POST /payment/admin/grant` 这个**写**端点，⛔ 不是「admin 一律不许」。
 
 ⚠️ 越权（§12 第 6 条）：本模块**不接 `user_id` query 参数**，一律用 JWT 里的身份 ——
 「余额/流水/账单天生强隐私」，必须自己收一道「只能查自己」，⛔ 不照抄 `scan_billing` 的
@@ -25,7 +34,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -38,16 +47,27 @@ from app.models.ledger_entry import LedgerEntry
 from app.models.usage_event import UsageEvent
 from app.schemas.common import ApiResponse
 from app.schemas.payment import (
+    InvoiceCreateIn,
+    InvoiceOut,
+    InvoicePageOut,
     LedgerEntryOut,
     LedgerPageOut,
     OrderCreateIn,
     OrderCreateOut,
     PaymentAccountOut,
+    ReconciliationOut,
+    ReconcileE1Out,
+    ReconcileE2Out,
     UsageOut,
 )
 from app.services.payment import channels
+from app.services.payment import invoices as invoices_svc
 from app.services.payment import ledger as ledger_svc
 from app.services.payment import orders as orders_svc
+
+# 管理员闸**复用**仓内既有的那一套（⛔ 不新造一套）
+# —— 照 `routers/admin_academic.py:26` / `routers/admin_dashboard.py:37` 的既有复用方式。
+from app.routers.admin import _check_admin_permission
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +84,8 @@ _PAYMENT_ERRORS: tuple[type, ...] = (
     channels.ChannelError,          # 404 未知通道 / 400 验签失败 / 501 未配置 / 503 缺密码学依赖
     ledger_svc.OrderNotFoundError,  # 404
     ledger_svc.OrderStateError,     # 409
+    invoices_svc.InvoiceNotFoundError,  # 404（订单/发票不存在，或不属于当前用户 —— 同一个 404）
+    invoices_svc.InvoiceStateError,     # 409（重复申请 / 订单未支付 / 非法状态跃迁）
 )
 
 
@@ -273,3 +295,118 @@ async def api_channel_callback(
     )
     body, media_type = adapter.callback_ack(True)
     return Response(content=body, status_code=200, media_type=media_type)
+
+
+# ────────────────────────── Phase 3：开票申请（P3-1）──────────────────────────
+
+def _invoice_out(inv: Any) -> InvoiceOut:
+    """ORM 行 → 响应体（⛔ 只回已拍票种/载体要用的字段）。"""
+    return InvoiceOut(
+        id=inv.id,
+        order_id=inv.order_id,
+        status=inv.status,
+        amount_fen=int(inv.amount_fen or 0),
+        title=inv.title,
+        taxpayer_id=inv.taxpayer_id,
+        email=inv.email,
+        invoice_no=inv.invoice_no,
+        issued_at=_iso(inv.issued_at),
+        voided_at=_iso(inv.voided_at),
+        created_at=_iso(inv.created_at),
+    )
+
+
+@router.post("/invoices", response_model=ApiResponse[InvoiceOut])
+def api_submit_invoice(
+    payload: InvoiceCreateIn,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    """提交开票申请（P3-1）。**一单一票**，且只能给自己的**已支付**订单申请。
+
+    已拍口径（逐字落实）：
+      · 票种 = **普票** ⇒ 只收「抬头 ＋ 纳税人识别号」，⛔ 无专票四字段；
+      · 载体 = **电子** ⇒ 交付 = **邮箱**，⛔ 无收件地址/邮寄字段；
+      · 金额 = **含税**（分）⇒ 开票金额**从订单取**，⛔ 不采信请求体里的任何金额；
+      · ⛔ 不出现税率/税额：本批走「老师申请 → 人工开票」，税额不由本系统计算。
+    """
+    try:
+        invoice = invoices_svc.submit_invoice_request(
+            db,
+            user_id=user_id,
+            order_id=payload.order_id,
+            title=payload.title,
+            taxpayer_id=payload.taxpayer_id,
+            email=payload.email,
+        )
+    except _PAYMENT_ERRORS as exc:
+        status = _http_status_for(exc) or 500
+        logger.warning(
+            "开票申请被拒：order_id=%s user_id=%s HTTP=%s %s",
+            payload.order_id, user_id, status, exc,
+        )
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+    return ApiResponse(data=_invoice_out(invoice))
+
+
+@router.get("/invoices", response_model=ApiResponse[InvoicePageOut])
+def api_list_my_invoices(
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=_MAX_PAGE_SIZE),
+):
+    """我的开票申请（分页，倒序）。⛔ 只能查自己（无 `user_id` 入参，照 /ledger）。"""
+    total, rows = invoices_svc.list_invoices(
+        db, user_id=user_id, page=page, page_size=page_size
+    )
+    return ApiResponse(
+        data=InvoicePageOut(
+            total=total,
+            page=page,
+            page_size=page_size,
+            items=[_invoice_out(r) for r in rows],
+        )
+    )
+
+
+# ──────────────── Phase 3 追加：E1/E2 只读对账巡检（§6.2 / §6.4）────────────────
+
+@router.get("/admin/reconciliation", response_model=ApiResponse[ReconciliationOut])
+def api_admin_reconciliation(
+    db: Session = Depends(get_db),
+    admin_id: str = Depends(get_current_user_id),
+):
+    """§6.2 的 E1/E2 只读巡检（**人工触发、低频**，⛔ 无常驻脚本、无调度框架 —— §6.4 L478/§13 L806）。
+
+    **本端点为什么只读、并因此不违 `routers/payment.py:16`**：那条逐字只把
+    `POST /payment/admin/grant`（后台**人工开通**这个**写**端点）排除在本批范围外，
+    ⛔ 不是「所有 admin 端点都不许有」。本端点**零写路径**（不建表、不落差异行、不改任何状态）。
+
+    E1/E2 的口径 = §6.2 L459/L460；判据本身**只有 `services/payment/ledger.py` 一处**
+    （E1 复用既有的 `verify_invariant_e1()`，本端点不重写它）。
+
+    ⚠️ **E3（通道一致）本阶段不落地**：三条硬阻塞与将来落点的三个前提逐条写在
+       `docs/payment/payment-design.md` §6.5。本响应里**不出现** E3 字段。
+
+    鉴权：沿用仓内既有的管理员闸 `_check_admin_permission`（`routers/admin.py:60`；
+    照 `routers/admin_academic.py:26` 的既有复用方式），**任课教师 403**。
+    """
+    _check_admin_permission(db, admin_id)
+
+    summary = ledger_svc.verify_invariants(db)
+    e1 = summary["e1"]
+    e2 = summary["e2"]
+    logger.info(
+        "对账巡检：E1 %s（%s/%s 账户不平）E2 %s（recharge=%s paid_orders=%s）",
+        "平" if e1["ok"] else "不平", e1["unbalanced_count"], e1["accounts_checked"],
+        "平" if e2["ok"] else "不平", e2["recharge_fen"], e2["paid_orders_fen"],
+    )
+    return ApiResponse(
+        data=ReconciliationOut(
+            e1=ReconcileE1Out(**e1),
+            e2=ReconcileE2Out(**e2),
+            checked_at=datetime.now(timezone.utc).isoformat(),
+        )
+    )
