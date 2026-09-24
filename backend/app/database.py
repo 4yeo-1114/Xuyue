@@ -2,6 +2,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from typing import Optional
 from app.config import Settings, settings
+import logging
 import threading
 
 _engine_lock = threading.Lock()
@@ -85,6 +86,10 @@ def init_db():
     _backfill_class_teacher_heads()
     # 流水阅卷：AUTO_DDL=false 时靠此幂等建表（同 _ensure_response_logs_table 模式）
     _ensure_flow_tables()
+    # 口径 B 独立老师支付：6 张表（payment_accounts / usage_events / ledger_entries /
+    # payment_plans / subscriptions / payment_orders）。同上：挂在**无条件段**，
+    # ⛔ 不许上移回 sync_database_schema() 的 return 之后（生产默认 AUTO_DDL=false）。
+    _ensure_payment_tables()
 
 
 def sync_database_schema():
@@ -167,6 +172,13 @@ def sync_database_schema():
         canteen_record,
         # 流水阅卷 / 集体阅卷（flow_* 六表）
         flow_grading,
+        # ── 口径 B 独立老师支付六表（AUTO_DDL=true 时 create_all 建表）──
+        payment_account,
+        usage_event,
+        ledger_entry,
+        payment_plan,
+        subscription,
+        payment_order,
     )
     Base.metadata.create_all(bind=engine)
     _ensure_grading_daily_stats_table()
@@ -186,6 +198,7 @@ def sync_database_schema():
     _ensure_class_review_sessions_longtext()
     _ensure_sanfeng_alter_columns()
     _ensure_flow_tables()
+    _ensure_payment_tables()
 
 
 def _ensure_grading_daily_stats_table():
@@ -259,6 +272,47 @@ def _ensure_flow_tables():
         )
     except Exception:
         pass
+
+
+def _ensure_payment_tables():
+    """口径 B 独立老师支付六表幂等建表。
+
+    表：payment_accounts / usage_events / ledger_entries / payment_plans /
+        subscriptions / payment_orders（docs/payment/payment-design.md §3.2 §5.1）。
+
+    AUTO_DDL=true 时 create_all 已建；此处显式 ensure（照抄 `_ensure_flow_tables` 范式，
+    §7.2 明文要求），**失败不阻断启动**。
+    ⚠️ 与既有 `_ensure_*` 的唯一差异：**失败要打 error 日志**（§12 第 3 条）——
+    本仓既有范式是 `except Exception: pass`，建表失败静默 ⇒ 首次记账才 500，无从排查。
+    ⚠️ 挂载位置：`init_db()` 的**无条件段**（与 `_ensure_flow_tables` 并列），
+    ⛔ 不许上移回 `sync_database_schema()` 的 `if not AUTO_DDL: return` 之后 ——
+    否则生产默认配置（AUTO_DDL=false）下一次都不执行（D-1 事故同因）。
+    """
+    try:
+        from app.models.payment_account import PaymentAccount
+        from app.models.usage_event import UsageEvent
+        from app.models.ledger_entry import LedgerEntry
+        from app.models.payment_plan import PaymentPlan
+        from app.models.subscription import Subscription
+        from app.models.payment_order import PaymentOrder
+
+        Base.metadata.create_all(
+            bind=engine,
+            tables=[
+                PaymentAccount.__table__,
+                UsageEvent.__table__,
+                LedgerEntry.__table__,
+                PaymentPlan.__table__,
+                Subscription.__table__,
+                PaymentOrder.__table__,
+            ],
+        )
+    except Exception:
+        logging.getLogger(__name__).error(
+            "口径 B 支付表（payment_* / usage_events / ledger_entries）幂等建表失败："
+            "首次记账/查账将 500，请立即核查 DDL 权限与库结构",
+            exc_info=True,
+        )
 
 
 def _ensure_ai_generation_history_table():

@@ -731,6 +731,39 @@ def _scan_state(user_id: str) -> dict:
 
 router = APIRouter(prefix="/grading", tags=["grading"], dependencies=[Depends(bind_grading_user_context)])
 
+
+def _payment_gate_or_402(folder_safe: str = "") -> None:
+    """口径 B 批改前置闸门（docs/payment/payment-design.md §4.1）。
+
+    余额/额度不足 ⇒ `HTTPException(402)` + 中文提示（§7.3）。
+    ⛔ **只挡「发起新批改」**：只挂在「发起」端点上，⛔ 不挂进度/结果/取消端点 ⇒
+    **已在跑的批改绝不被中断**（老师已上传 40 张卷子，不能扣到一半报错）。
+    ⛔ 只对「仅任课教师」账号生效（§8.2）⇒ 其他角色行为与改动前逐字一致。
+    闸门自身故障（查库异常）时由 `ledger.grading_gate_denied` 放行并留痕，不影响教学可用性。
+    """
+    from app.database import SessionLocal
+    from app.services.payment import ledger as payment_ledger
+
+    # ⚠️ 身份上下文由 **async 中间件**（`main.py::grading_user_context_middleware`）写入 ——
+    #    sync `Depends` 里写的 contextvar **不会**传到 async 端点（本仓 `dependencies.py:52`
+    #    的注释已点明这条）。取不到 uid 属异常态 ⇒ 与 `grading_gate_denied` 的故障策略一致：
+    #    **放行 + 留痕**，⛔ 绝不把「查不到身份」变成 500 去挡老师批改。
+    #    （能走到本端点 ⇒ 鉴权已通过 ⇒ 不存在「无身份绕过计费」。）
+    try:
+        uid = get_grading_user_id()
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).error(
+            "批改计费闸门：grading 用户上下文未绑定，本次放行（不阻塞批改）", exc_info=True
+        )
+        return
+    db = SessionLocal()
+    try:
+        payment_ledger.assert_grading_allowed(db, uid)
+    finally:
+        db.close()
+
 # C6：图片/文件直链独立于 Bearer-only 主 router（<img> 标签无法带 Authorization Header），
 # 走 user_id_from_request（Bearer 或 ?ticket= 短时下载票），并按 user_id 定位本人目录。
 file_router = APIRouter(prefix="/grading", tags=["grading-files"])
@@ -5991,6 +6024,7 @@ async def api_start_essay_grade(folder_name: str, request: Request):
     safe = _safe_folder_name(folder_name)
     if not safe:
         raise HTTPException(status_code=400, detail="无效文件夹名")
+    _payment_gate_or_402(safe)  # 口径 B 前置闸门：余额/额度不足 ⇒ 402（§4.1 P0-5）
     try:
         body = await request.json()
     except Exception:
@@ -9364,7 +9398,8 @@ async def api_start_grade_by_reference(folder_name: str, body: dict = Body(...))
     safe = _safe_folder_name(folder_name)
     if not safe:
         raise HTTPException(status_code=400, detail="无效文件夹名")
-    
+    _payment_gate_or_402(safe)  # 口径 B 前置闸门：余额/额度不足 ⇒ 402（§4.1 P0-5）
+
     engine = str(body.get("engine") or "aliyun").strip().lower()
     if engine == "aliyun":
         layout_status = reference_layout_status(
@@ -9653,6 +9688,7 @@ async def api_start_grade_by_answer_key(folder_name: str):
     safe = _safe_folder_name(folder_name)
     if not safe:
         raise HTTPException(status_code=400, detail="无效文件夹名")
+    _payment_gate_or_402(safe)  # 口径 B 前置闸门：余额/额度不足 ⇒ 402（§4.1 P0-5）
 
     with _grading_history_lock:
         data = _read_grading_history(safe, "manual")
