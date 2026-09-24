@@ -26,7 +26,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { QuotaProgressBar, usedPct } from "./QuotaProgressBar";
-import { fetchQuotaList, fetchQuotaTiers, rechargeQuota } from "@/services/quotaApi";
+import {
+  fetchQuotaList,
+  fetchQuotaTiers,
+  rechargeQuota,
+  fetchQuotaRechargeLogs,
+} from "@/services/quotaApi";
 import { toast } from "sonner";
 import { Coins, RefreshCw } from "lucide-react";
 
@@ -43,6 +48,10 @@ export function AdminQuotaPage() {
     queryKey: ["quota", "tiers"],
     queryFn: fetchQuotaTiers,
   });
+  const { data: rechargeLogs } = useQuery({
+    queryKey: ["quota", "recharge-logs"],
+    queryFn: () => fetchQuotaRechargeLogs(1, 50),
+  });
 
   const recharge = useMutation({
     mutationFn: ({ userId, amount }: { userId: string; amount: number }) =>
@@ -50,6 +59,7 @@ export function AdminQuotaPage() {
     onSuccess: (res) => {
       toast.success(`充值成功，到账 ${res.total_pages} 面（含赠送 ${res.bonus_pages} 面）`);
       queryClient.invalidateQueries({ queryKey: ["quota", "list"] });
+      queryClient.invalidateQueries({ queryKey: ["quota", "recharge-logs"] });
     },
     onError: (e) => {
       toast.error(e instanceof Error ? e.message : "充值失败");
@@ -207,6 +217,63 @@ export function AdminQuotaPage() {
                     </TableRow>
                   );
                 })
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      {/* 充值流水 */}
+      <Card>
+        <CardHeader>
+          <CardTitle>充值记录</CardTitle>
+          <CardDescription>
+            全平台充值流水，共 {rechargeLogs?.total ?? 0} 条（最近 50 条）
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>时间</TableHead>
+                <TableHead>目标账号</TableHead>
+                <TableHead className="text-right">金额</TableHead>
+                <TableHead className="text-right">到账面数</TableHead>
+                <TableHead>操作人</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(rechargeLogs?.items ?? []).length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                    暂无充值记录
+                  </TableCell>
+                </TableRow>
+              ) : (
+                (rechargeLogs?.items ?? []).map((log) => (
+                  <TableRow key={log.id}>
+                    <TableCell className="whitespace-nowrap text-muted-foreground">
+                      {log.created_at ? new Date(log.created_at).toLocaleString("zh-CN") : "—"}
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-medium">{log.user_name || log.user_id}</div>
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      ¥{log.amount_yuan}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      +{log.total_pages} 面
+                      {log.bonus_pages > 0 && (
+                        <span className="text-xs text-muted-foreground">
+                          （含送 {log.bonus_pages}）
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {log.operator_name || "—"}
+                    </TableCell>
+                  </TableRow>
+                ))
               )}
             </TableBody>
           </Table>
