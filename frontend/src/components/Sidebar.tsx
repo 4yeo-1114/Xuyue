@@ -45,6 +45,7 @@ import {
   Users,
   Receipt,
   BarChart4,
+  Wallet,
 } from "lucide-react";
 import { toast } from "sonner";
 import { exitPackagedApp } from "@/services/gradingApi";
@@ -245,6 +246,7 @@ export const NAV_ITEMS: NavGroup[] = [
     icon: Settings,
     children: [
       { id: "settings-personal", label: "个人设置", icon: User },
+      { id: "my-quota", label: "我的额度", icon: Wallet },
       { id: "settings-subject", label: "学科配置", icon: BookOpen },
       { id: "settings-hardware", label: "硬件配置", icon: UserCog },
       { id: "settings-multi-device", label: "多端管理", icon: Download },
@@ -310,6 +312,99 @@ const NAV_SECTIONS: NavSection[] = [
   },
 ];
 
+/* ── 单科老师端导航（精简 7 域，科目锁定） ── */
+export const TEACHER_NAV_ITEMS: NavGroup[] = [
+  { id: "home", label: "工作台", icon: Home },
+  {
+    id: "grading",
+    label: "作业批改",
+    icon: PenTool,
+    children: [
+      { id: "grading-start", label: "开始批改", icon: PenTool },
+      { id: "flow-tasks", label: "流水阅卷", icon: ClipboardList },
+      { id: "grading-history", label: "批改历史", icon: History },
+      { id: "grading-errors", label: "错题本", icon: FileText },
+    ],
+  },
+  {
+    id: "analytics",
+    label: "学情分析",
+    icon: BarChart3,
+    children: [
+      { id: "class-students", label: "学生分析", icon: UserSquare2 },
+      { id: "analytics-portrait", label: "班级分析", icon: PieChart },
+      { id: "analytics-questions", label: "题目分析", icon: ListChecks },
+      { id: "class-knowledge", label: "知识图谱", icon: Network },
+      { id: "analytics-compare", label: "班级对比", icon: GitCompare },
+    ],
+  },
+  {
+    id: "ai-teaching",
+    label: "AI精准教学",
+    icon: BrainCircuit,
+    children: [
+      { id: "ai-review", label: "课堂讲评", icon: Presentation },
+      { id: "ai-targeted", label: "靶向提升", icon: Target },
+      { id: "ai-layered", label: "分层推送", icon: Layers },
+    ],
+  },
+  {
+    id: "ai-prep",
+    label: "AI备课",
+    icon: BookOpen,
+    children: [
+      { id: "prep-catalog", label: "教材目录", icon: FolderTree },
+      { id: "prep-bank", label: "备课计划", icon: Library },
+      { id: "prep-lesson", label: "教案生成", icon: BookMarked },
+      { id: "prep-exam", label: "智能组卷", icon: FileText },
+      { id: "prep-video", label: "资源库", icon: Video },
+      { id: "prep-question-bank", label: "题库", icon: BookCopy },
+    ],
+  },
+  {
+    id: "my-classes",
+    label: "我的班级",
+    icon: Users2,
+    children: [
+      { id: "class-dashboard", label: "班级看板", icon: LayoutDashboard },
+      { id: "settings-class", label: "班级管理", icon: FolderCog },
+    ],
+  },
+  {
+    id: "settings",
+    label: "设置",
+    icon: Settings,
+    children: [
+      { id: "settings-personal", label: "个人设置", icon: User },
+      { id: "my-quota", label: "我的额度", icon: Wallet },
+    ],
+  },
+];
+
+export const TEACHER_NAV_SECTIONS: NavSection[] = [
+  { key: "home", label: { zh: "工作台", en: "Workspace" }, items: ["home"] },
+  {
+    key: "teaching",
+    label: { zh: "教学工具", en: "Teaching Tools" },
+    items: ["grading", "ai-teaching", "ai-prep"],
+  },
+  {
+    key: "analytics",
+    label: { zh: "学情分析", en: "Analytics" },
+    items: ["analytics"],
+  },
+  {
+    key: "classes",
+    label: { zh: "我的班级", en: "My Classes" },
+    items: ["my-classes"],
+  },
+  {
+    key: "settings",
+    label: { zh: "设置", en: "Settings" },
+    items: ["settings"],
+  },
+];
+
 /* ── Persistence keys ── */
 const STORAGE_KEY_EXPANDED = "sidebar-expanded-groups";
 
@@ -318,9 +413,17 @@ interface SidebarProps {
   className?: string;
   activeNavId: string;
   onNavChange: (id: string) => void;
+  navItems?: NavGroup[];
+  navSections?: NavSection[];
 }
 
-export function Sidebar({ className, activeNavId, onNavChange }: SidebarProps) {
+export function Sidebar({
+  className,
+  activeNavId,
+  onNavChange,
+  navItems = NAV_ITEMS,
+  navSections = NAV_SECTIONS,
+}: SidebarProps) {
   const { user } = useAuth();
   const { projectName } = useProjectBranding();
   const { t, locale } = useLocale();
@@ -375,7 +478,7 @@ export function Sidebar({ className, activeNavId, onNavChange }: SidebarProps) {
     group.children?.some((c) => c.id === activeNavId) ?? false;
 
   const filteredNavItems = useMemo(() => {
-    return NAV_ITEMS.map((group) => {
+    return navItems.map((group) => {
       if (!group.children) return group;
       return {
         ...group,
@@ -426,7 +529,7 @@ export function Sidebar({ className, activeNavId, onNavChange }: SidebarProps) {
       {/* 分组导航 */}
       <nav className="flex-1 px-3 pt-3 pb-4 overflow-y-auto sidebar-scrollbar">
         <ul>
-          {NAV_SECTIONS.map((section, si) => {
+          {navSections.map((section, si) => {
             const groups = section.items
               .map((id) => navById.get(id))
               .filter((g): g is NavGroup => !!g);

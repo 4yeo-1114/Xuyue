@@ -60,16 +60,20 @@ from app.grading.reference_vlm_grading import (
     save_reference_layout_prepare,
 )
 from app.grading.manual_grading import (
+    _baidu_ocr_text,
     aggregate_manual_layout_pages,
+    apply_paper_scores_to_page,
     baidu_paper_cut,
     build_manual_layout_page,
     build_manual_layout_page_from_boxes,
     confirm_manual_layout,
     delete_manual_layout,
     load_manual_layout_for_editing,
+    load_paper_scores,
     manual_layout_blocks_for_image,
     manual_layout_status,
     save_manual_layout_prepare,
+    save_paper_scores,
 )
 from app.grading.answer_card_boxes import detect_answer_card_boxes
 from app.grading.answer_key_grading import (
@@ -346,6 +350,48 @@ def _standard_answer_page_no(filename: str) -> Optional[int]:
 
 def _is_standard_answer_filename(filename: str) -> bool:
     return _standard_answer_page_no(filename) is not None
+
+
+_ORIGINAL_PAPER_STEM_RE = re.compile(r"^(?:原始试卷|原卷|试卷)(?:_(?P<page>\d+))?$")
+
+
+def _original_paper_page_no(filename: str) -> Optional[int]:
+    stem = Path(str(filename or "")).stem
+    match = _ORIGINAL_PAPER_STEM_RE.fullmatch(stem)
+    if not match:
+        return None
+    try:
+        return max(1, int(match.group("page") or "1"))
+    except Exception:
+        return None
+
+
+def _is_original_paper_filename(filename: str) -> bool:
+    return _original_paper_page_no(filename) is not None
+
+
+def _original_paper_sources(folder_safe: str) -> dict[int, tuple[Path, Path]]:
+    """收集已上传的原始试卷所有页（用于识别每题分值），按页号分组。PDF 全页转换。"""
+    result: dict[int, tuple[Path, Path]] = {}
+    directory = correct_docs_dir() / folder_safe
+    if not directory.is_dir():
+        return result
+    for path in sorted(directory.iterdir(), key=lambda p: p.name):
+        if not path.is_file() or path.suffix.lower() not in _ALL_UPLOAD_EXTS:
+            continue
+        base_page = _original_paper_page_no(path.name)
+        if base_page is None:
+            continue
+        ext = path.suffix.lower()
+        if ext == ".pdf":
+            for i, img_path in enumerate(_pdf_all_pages_to_images(path, folder_safe), start=1):
+                result.setdefault(base_page + i - 1, (path, Path(img_path)))
+        elif ext in _IMAGE_EXTS:
+            grading_path = _ensure_img_in_folder(path, folder_safe) or path
+            result.setdefault(base_page, (path, Path(grading_path)))
+        else:  # .doc / .docx：OCR 读分不支持，保留原文件（OCR 会失败并跳过）
+            result.setdefault(base_page, (path, path))
+    return result
 
 
 def _reference_standard_document(
@@ -743,8 +789,16 @@ async def api_scan_import_start(request: Request, body: dict = Body(...), db: Se
     safe = _safe_folder_name(folder_name)
     if not safe:
         raise HTTPException(status_code=400, detail="无效文件夹名")
-    
+
     uid = get_grading_user_id()
+    # 105% 硬停：额度用尽时拒绝启动扫描导入
+    try:
+        from app.services import quota_service
+        quota_service.ensure_user_available(uid)
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     state = _scan_state(uid)
     with _scan_watcher_lock:
         if state["running"]:
@@ -824,6 +878,11 @@ async def api_scan_import_start(request: Request, body: dict = Body(...), db: Se
                     try:
                         from app.grading.grading_stats import record_upload_for_file
                         record_upload_for_file(uid, safe, target_file.name)
+                    except Exception:
+                        pass
+                    try:
+                        from app.services import quota_service
+                        quota_service.record_page(uid, target_file.name, 1)
                     except Exception:
                         pass
 
@@ -2347,27 +2406,38 @@ async def api_recent_grading_history(limit: int = 100, db: Session = Depends(get
     return {"ok": True, "folders": rows}
 
 
-def _pdf_to_img_in_folder(pdf_path: Path, folder_name: str) -> Optional[Path]:
-    """将 PDF 第一页转为 JPG 保存到 test_paper_img/<folder>/<stem>_img.jpg，返回保存路径；失败返回 None。"""
+def _pdf_all_pages_to_images(pdf_path: Path, folder_name: str) -> list[Path]:
+    """将 PDF 每一页转 JPG 保存到 test_paper_img/<folder>/<stem>_img.jpg、<stem>_img_2.jpg…，返回全部页路径。"""
     try:
         from app.grading.doc_convert import pdf_to_images
-        from PIL import Image
     except ImportError:
-        return None
+        return []
     if not pdf_path.is_file() or pdf_path.suffix.lower() != ".pdf":
-        return None
+        return []
     try:
         images = pdf_to_images(str(pdf_path), dpi=150)
-        if not images:
-            return None
-        img_dir = correct_docs_img_dir() / folder_name
-        img_dir.mkdir(parents=True, exist_ok=True)
-        stem = pdf_path.stem
-        out_path = img_dir / f"{stem}_img.jpg"
-        images[0].convert("RGB").save(str(out_path), quality=90)
-        return out_path
     except Exception:
-        return None
+        return []
+    if not images:
+        return []
+    img_dir = correct_docs_img_dir() / folder_name
+    img_dir.mkdir(parents=True, exist_ok=True)
+    stem = pdf_path.stem
+    out: list[Path] = []
+    for i, img in enumerate(images, start=1):
+        out_path = img_dir / (f"{stem}_img.jpg" if i == 1 else f"{stem}_img_{i}.jpg")
+        try:
+            img.convert("RGB").save(str(out_path), quality=90)
+            out.append(out_path)
+        except Exception:
+            continue
+    return out
+
+
+def _pdf_to_img_in_folder(pdf_path: Path, folder_name: str) -> Optional[Path]:
+    """将 PDF 转 JPG（全页）保存到 test_paper_img/<folder>/，返回第一页路径；失败返回 None。"""
+    pages = _pdf_all_pages_to_images(pdf_path, folder_name)
+    return pages[0] if pages else None
 
 
 def _copy_image_to_img_folder(source_path: Path, folder_name: str) -> Optional[Path]:
@@ -3058,6 +3128,8 @@ def _manual_student_files(folder_safe: str) -> list[Path]:
         if path.is_file()
         and path.suffix.lower() in _ALL_UPLOAD_EXTS
         and not _is_standard_answer_filename(path.name)
+        and not _is_original_paper_filename(path.name)
+        and not path.stem.endswith("试卷")
     ]
     return sorted(files, key=lambda path: _natural_sort_key(path.name))
 
@@ -3114,9 +3186,16 @@ def _materialize_manual_layout_history(folder_safe: str, layout_data: dict) -> i
 
     # A confirmed manual layout starts a new authoritative grading run. Keep
     # the layout itself, but replace every result produced by an older mode.
+    # 重新切题会整体重建历史，这里先保住已保存的标准答案（answer_key），
+    # 否则“确认分值→重新切题”会把用户已录入的标准答案清掉。
+    with _grading_history_lock:
+        _pre = _read_grading_history(folder_safe, "manual")
+    _answer_key = _pre.get("answer_key") if isinstance(_pre, dict) else None
     _replace_folder_grading_run(folder_safe, "manual")
     with _grading_history_lock:
         old_data = _read_grading_history(folder_safe, "manual")
+        if isinstance(_answer_key, dict) and _answer_key:
+            old_data["answer_key"] = _answer_key
         old_data["completed"] = completed
         old_data["failed"] = {}
         old_data["scoring_config"] = scoring_config
@@ -3140,6 +3219,8 @@ def api_prepare_manual_layout(folder_name: str):
     if not sources:
         raise HTTPException(status_code=400, detail="请先上传至少一张学生试卷")
 
+    # 已确认的原始试卷分值（若有）注入每题 max_score，切题后即带真实分值。
+    paper_scores = load_paper_scores(safe)
     pending_pages: list[dict] = []
     response_pages: list[dict] = []
     for page_no, (source_path, grading_path) in sorted(sources.items()):
@@ -3154,6 +3235,7 @@ def api_prepare_manual_layout(folder_name: str):
             raise HTTPException(status_code=502, detail=f"P{page_no} 切题失败：{exc}") from exc
         if not page.get("questions"):
             raise HTTPException(status_code=502, detail=f"模板试卷 P{page_no} 未识别到题目")
+        apply_paper_scores_to_page(page, paper_scores)
         pending_pages.append(
             {
                 **copy.deepcopy(page),
@@ -3164,6 +3246,219 @@ def api_prepare_manual_layout(folder_name: str):
         response_pages.append(page)
     prepare_id = save_manual_layout_prepare(safe, pending_pages)
     return {"ok": True, "prepare_id": prepare_id, "pages": response_pages}
+
+
+_CN_NUM = "一二三四五六七八九十"
+
+# 只保留卷面「段标题/分值规则」词，丢弃题干/选项等噪声。
+# 二栏排版下整卷按 (y,x) 排序会把题干文本插进段标题里，把「第13、14小题…每小题3分」隔断，
+# 只留含分值标记的词再排序，即可还原出干净的段标题串。
+_HEADER_TOKEN_RE = re.compile(
+    r"[一二三四五六七八九十]+[、.．]"
+    r"|共\s*\d+(?:\.\d+)?\s*分"
+    r"|每[空小]题"
+    r"|小题"
+    r"|各\s*\d+(?:\.\d+)?\s*分"
+)
+
+
+def _explicit_in(sec: str) -> dict[int, float]:
+    """在单段文本里解析显式题号分值（第N~M / 第N,M / 第N小题…X分），返回 {题号: 分值}。"""
+    out: dict[int, float] = {}
+    for m in re.finditer(
+        r"第\s*(\d{1,3})\s*[~\-至]\s*(\d{1,3})\s*小题[^;；。]{0,40}?每小题\s*(\d+(?:\.\d+)?)\s*分",
+        sec,
+    ):
+        a, b, s = int(m.group(1)), int(m.group(2)), float(m.group(3))
+        if a <= b:
+            for q in range(a, b + 1):
+                out[q] = s
+    for m in re.finditer(
+        r"第\s*(\d{1,3}(?:\s*[,，、]\s*\d{1,3})+)\s*小题[^;；。]{0,40}?每小题\s*(\d+(?:\.\d+)?)\s*分",
+        sec,
+    ):
+        s = float(m.group(2))
+        for q in re.findall(r"\d+", m.group(1)):
+            out[int(q)] = s
+    for m in re.finditer(
+        r"第\s*(\d{1,3}(?:\s*[,，、]\s*\d{1,3})+)\s*小题各\s*(\d+(?:\.\d+)?)\s*分",
+        sec,
+    ):
+        s = float(m.group(2))
+        for q in re.findall(r"\d+", m.group(1)):
+            out[int(q)] = s
+    for m in re.finditer(r"第\s*(\d{1,3})\s*小题\s*(\d+(?:\.\d+)?)\s*分", sec):
+        q, s = int(m.group(1)), float(m.group(2))
+        if q not in out:
+            out[q] = s
+    return out
+
+
+def _snap_score(v: float) -> float:
+    """分值归到 0.5 粒度：卷面分值最小单位是 0.5 或 1，不允许两位小数（2.67→2.5、1.33→1.5）。"""
+    if v <= 0:
+        return 0.0
+    return round(v * 2) / 2
+
+
+def _parse_original_paper_scores(text: str) -> dict[int, float]:
+    """从原始试卷 OCR 文本确定性解析每题分值。题号严格照抄卷面印刷，绝不自行编号。
+
+    试卷各段标题印着分值规则，例如：
+      一、填空题[共16分,每空1分]
+      二、选择题(共14分,第9~12小题…每小题2分;第13,14小题…每小题3分)
+      三、计算题(共22分,第15,16小题各7分,第17小题8分)
+      四、实验与探究题(共28分,每小题7分)
+    返回 {题号: 分值}。显式题号（第N~M/第N,M/第N小题）直接按印刷题号落分；
+    无显式题号的段（每小题X分 / 每空X分）按段总分与显式题号边界推算。
+    """
+    scores: dict[int, float] = {}
+    if not text:
+        return scores
+    t = text
+    for a, b in (
+        ("－", "-"), ("—", "-"), ("～", "~"), ("〜", "~"),
+        ("﹒", "."), ("．", "."), ("·", "."),
+    ):
+        t = t.replace(a, b)
+
+    def _set(q: int, s: float) -> None:
+        if q >= 1 and s > 0:
+            scores[int(q)] = _snap_score(s)
+
+    # 1) 显式题号（第N~M / 第N,M / 第N小题…X分）：严格照抄卷面印刷题号。
+    for q, s in _explicit_in(t).items():
+        _set(q, s)
+    lo = min(scores) if scores else None
+    hi = max(scores) if scores else None
+
+    # 2) 无显式题号的段（每小题X分 / 每空X分）：按段总分与显式题号边界推算。
+    sections = [s for s in re.split(r"(?=[" + _CN_NUM + r"]+[、.．])", t) if s.strip()]
+    cursor = (hi + 1) if hi is not None else 1
+    for sec in sections:
+        if _explicit_in(sec):
+            continue  # 该段已有显式题号，跳过段级推断
+        em = re.search(r"每小题\s*(\d+(?:\.\d+)?)\s*分", sec)
+        if em:
+            s = float(em.group(1))
+            cm = re.search(r"共\s*(\d+(?:\.\d+)?)\s*分", sec)
+            total = float(cm.group(1)) if cm else 0.0
+            count = int(round(total / s)) if (cm and s > 0 and total > 0) else 0
+            if 0 < count <= 30:
+                for q in range(cursor, cursor + count):
+                    _set(q, s)
+                cursor += count
+            continue
+        pm = re.search(r"每空\s*(\d+(?:\.\d+)?)\s*分", sec)
+        if pm:
+            per_blank = float(pm.group(1))
+            cm = re.search(r"共\s*(\d+(?:\.\d+)?)\s*分", sec)
+            total = float(cm.group(1)) if cm else 0.0
+            fill_hi = (lo - 1) if lo is not None else None
+            if fill_hi and fill_hi >= 1 and per_blank > 0:
+                blanks_per = _count_blanks_per_question(sec, fill_hi)
+                if blanks_per is None and total > 0:
+                    total_blanks = int(round(total / per_blank))
+                    base, rem = divmod(total_blanks, fill_hi)
+                    blanks_per = [base + (1 if i < rem else 0) for i in range(fill_hi)]
+                if blanks_per:
+                    for q, b in enumerate(blanks_per, start=1):
+                        if b > 0:
+                            _set(q, b * per_blank)
+    return scores
+
+
+def _count_blanks_per_question(text: str, n: int) -> Optional[list[int]]:
+    """按题号 1..n 切分文本，数每题的作答空（括号/下划线/方格），返回每题空数列表。
+
+    数不出（分段不齐 / 每段空数全 0）返回 None，由调用方均摊兜底。
+    """
+    # 题号行锚点：行首「数字+点/顿号」或独立「数字.」词。
+    anchors: list[tuple[int, int]] = []
+    for m in re.finditer(r"(?:^|\s)(\d{1,2})\s*[.、]", text):
+        q = int(m.group(1))
+        if 1 <= q <= n:
+            anchors.append((q, m.start()))
+    if len(anchors) < 2:
+        return None
+    blanks: list[int] = []
+    for i, (q, pos) in enumerate(anchors):
+        end = anchors[i + 1][1] if i + 1 < len(anchors) else len(text)
+        seg = text[pos:end]
+        b = _count_blanks(seg)
+        blanks.append(b)
+    if sum(blanks) <= 0:
+        return None
+    return blanks
+
+
+def _count_blanks(seg: str) -> int:
+    """数一段题干里的作答空：下划线串、空括号、方格。"""
+    cnt = 0
+    cnt += len(re.findall(r"[＿_﹏﹍─—]{2,}", seg))  # 下划线（成串算 1 空）
+    cnt += len(re.findall(r"[（(]\s*[）)]", seg))  # 空括号
+    cnt += len(re.findall(r"□", seg))  # 方格
+    return cnt
+
+
+@router.post("/folders/{folder_name:path}/original-paper/scores")
+def api_recognize_original_paper_scores(folder_name: str, db: Session = Depends(get_db)):
+    """识别原始试卷上每题的分值，返回逐题清单供确认页核对。
+
+    定位已上传的「原始试卷」页 → 通用 OCR 读卷面印刷文字 → 正则确定性解析分值。
+    题号严格照抄卷面印刷（第9~12小题 / 第13,14小题 / 第15,16小题 / 第17小题 / 每小题…），
+    绝不自行编题号、绝不重排。识别结果仅作预填，最终以用户确认页逐题核对为准。
+    """
+    safe = _safe_folder_name(folder_name)
+    if not safe:
+        raise HTTPException(status_code=400, detail="无效文件夹名")
+    sources = _original_paper_sources(safe)
+    if not sources:
+        raise HTTPException(status_code=400, detail="请先上传原始试卷（含每题分值的那份卷子）")
+
+    texts: list[str] = []
+    for _page_no, (_source, grading_path) in sorted(sources.items()):
+        try:
+            words = _baidu_ocr_text(str(grading_path))
+        except Exception:
+            continue
+        if not words:
+            continue
+        header_words = [w for w in words if _HEADER_TOKEN_RE.search(w["words"])]
+        if not header_words:
+            header_words = words
+        header_words = sorted(header_words, key=lambda w: (w["bbox"][1], w["bbox"][0]))
+        texts.append(" ".join(w["words"] for w in header_words))
+
+    # 全部页拼成一段再解析一次：显式题号（第9~12/第13,14/第15,16/第17）与
+    # 无题号段（填空每空1分 / 实验每小题7分）要靠整卷的题号上下界推算，
+    # 分页解析会让第 2 页的「实验与探究题」算不出 18~21。
+    merged = _parse_original_paper_scores(" ".join(texts))
+    if not merged:
+        raise HTTPException(
+            status_code=502,
+            detail="未能识别出原始试卷上的题目分值，请确认上传的是含分值标注的原始试卷（段标题里要有「第X小题Y分 / 每小题Y分 / 每空Y分」）",
+        )
+
+    items = [
+        {"no": q, "title": "", "score": merged[q]}
+        for q in sorted(merged)
+    ]
+    total = round(sum(it["score"] for it in items), 2)
+    return {"ok": True, "items": items, "total": total}
+
+
+@router.post("/folders/{folder_name:path}/original-paper/scores/apply")
+def api_apply_original_paper_scores(folder_name: str, body: dict = Body(...)):
+    """确认页提交的逐题分值写回，后续切题时注入每题 max_score。"""
+    safe = _safe_folder_name(folder_name)
+    if not safe:
+        raise HTTPException(status_code=400, detail="无效文件夹名")
+    scores = body.get("scores") if isinstance(body, dict) else None
+    if not isinstance(scores, dict) or not scores:
+        raise HTTPException(status_code=400, detail="缺少逐题分值")
+    save_paper_scores(safe, scores)
+    return {"ok": True, "count": len(scores)}
 
 
 @router.get("/folders/{folder_name:path}/manual-layout")
@@ -3782,6 +4077,8 @@ async def api_upload_to_folder(
     file: UploadFile = File(...),
     is_standard_answer: str = Form(""),
     standard_page_no: str = Form(""),
+    is_original_paper: str = Form(""),
+    original_page_no: str = Form(""),
 ):
     safe = _safe_folder_name(folder_name)
     if not safe:
@@ -3795,10 +4092,51 @@ async def api_upload_to_folder(
         raise HTTPException(status_code=400, detail="仅支持图片、PDF、Word（.jpg/.png/.pdf/.doc/.docx）")
     ext = _ext_from_filename(file.filename)
     is_std = str(is_standard_answer).strip().lower() in ("true", "1", "yes")
+    is_orig = str(is_original_paper).strip().lower() in ("true", "1", "yes")
     try:
         content = await file.read()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    if is_orig:
+        try:
+            page_no = int(str(original_page_no or "1").strip() or "1")
+        except Exception:
+            raise HTTPException(status_code=400, detail="原始试卷页码必须是整数")
+        if page_no < 1 or page_no > 20:
+            raise HTTPException(status_code=400, detail="原始试卷页码必须在 1 到 20 之间")
+        for old in dir_path.iterdir():
+            if old.is_file() and _original_paper_page_no(old.name) == page_no:
+                try:
+                    old.unlink()
+                except Exception:
+                    pass
+        img_dir = correct_docs_img_dir() / safe
+        for old in img_dir.iterdir():
+            if not old.is_file():
+                continue
+            original_stem = old.stem[:-4] if old.stem.endswith("_img") else old.stem
+            if _original_paper_page_no(original_stem) == page_no:
+                try:
+                    old.unlink()
+                except Exception:
+                    pass
+        save_stem = "原始试卷" if page_no == 1 else f"原始试卷_{page_no}"
+        save_name = save_stem + ext
+        save_path = dir_path / save_name
+        save_path.write_bytes(content)
+        normalize_uploaded_image_orientation(save_path)
+        _trim_uploaded_scan_borders(save_path)
+        _ensure_img_in_folder(save_path, safe)
+        t = _file_type(save_name)
+        url = _preview_url_for_file(safe, save_name)
+        return {
+            "ok": True,
+            "name": f"原始试卷 P{page_no}",
+            "filename": save_name,
+            "url": url,
+            "type": t,
+            "page_no": page_no,
+        }
     if is_std:
         try:
             page_no = int(str(standard_page_no or "1").strip() or "1")
@@ -3842,6 +4180,14 @@ async def api_upload_to_folder(
             "type": t,
             "page_no": page_no,
         }
+    # 105% 硬停：额度用尽时拒绝新增学生试卷
+    try:
+        from app.services import quota_service
+        quota_service.ensure_user_available(get_grading_user_id())
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     save_name = file.filename
     if not _safe_file_filename(save_name):
         save_name = str(uuid.uuid4()) + ext
@@ -3855,6 +4201,11 @@ async def api_upload_to_folder(
     try:
         from app.grading.grading_stats import record_upload_for_file
         record_upload_for_file(get_grading_user_id(), safe, save_name)
+    except Exception:
+        pass
+    try:
+        from app.services import quota_service
+        quota_service.add_usage(get_grading_user_id(), 1)
     except Exception:
         pass
     return {

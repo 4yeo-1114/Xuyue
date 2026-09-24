@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
+import { isSingleSubjectTeacher } from "@/lib/teacherAccess";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -92,7 +93,7 @@ export default function Auth() {
 
     setSubmitting(true);
     try {
-      const { error } = await signIn(email, password);
+      const { error, user: loggedInUser } = await signIn(email, password);
       if (error) {
         const msg =
           error.message.includes("密码") ||
@@ -113,7 +114,7 @@ export default function Auth() {
         } else {
           localStorage.removeItem(REMEMBER_KEY);
         }
-        navigate("/");
+        navigate(isSingleSubjectTeacher(loggedInUser) ? "/teacher" : "/");
       }
     } finally {
       setSubmitting(false);
@@ -154,7 +155,7 @@ export default function Auth() {
 
     setSubmitting(true);
     try {
-      const { error } = await register({
+      const { error, user: registeredUser } = await register({
         email: regEmail,
         password: regPassword,
         display_name: regDisplayName || undefined,
@@ -177,7 +178,7 @@ export default function Auth() {
         });
       } else {
         toast({ title: t("auth.registerSuccess") });
-        navigate("/");
+        navigate(isSingleSubjectTeacher(registeredUser) ? "/teacher" : "/");
       }
     } finally {
       setSubmitting(false);

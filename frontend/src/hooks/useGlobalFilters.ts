@@ -40,7 +40,7 @@ function saveFilters(filters: GlobalFilters) {
   }
 }
 
-export function useGlobalFilters() {
+export function useGlobalFilters(lockedSubject?: string) {
   const [filters, setFiltersState] = useState<GlobalFilters>(loadFilters);
 
   // Persist on change
@@ -48,19 +48,29 @@ export function useGlobalFilters() {
     saveFilters(filters);
   }, [filters]);
 
-  const setSchoolLevel = useCallback((schoolLevel: string) => {
-    setFiltersState((prev) => {
-      // Reset class when school level changes
-      const newSubjects = getSubjectsBySchoolLevel(schoolLevel);
-      const subjectStillExists = newSubjects.some((s) => s.name === prev.selectedSubject);
-      return {
-        ...prev,
-        schoolLevel,
-        selectedClass: "",
-        selectedSubject: subjectStillExists ? prev.selectedSubject : newSubjects[0]?.name || "语文",
-      };
-    });
-  }, []);
+  const setSchoolLevel = useCallback(
+    (schoolLevel: string) => {
+      setFiltersState((prev) => {
+        // Reset class when school level changes
+        const newSubjects = getSubjectsBySchoolLevel(schoolLevel);
+        const subjectStillExists = newSubjects.some(
+          (s) => s.name === prev.selectedSubject,
+        );
+        return {
+          ...prev,
+          schoolLevel,
+          selectedClass: "",
+          // 科目锁定时（单科老师端）不随学段切换重置，保持恒定
+          selectedSubject:
+            lockedSubject ??
+            (subjectStillExists
+              ? prev.selectedSubject
+              : newSubjects[0]?.name || "语文"),
+        };
+      });
+    },
+    [lockedSubject],
+  );
 
   const setGrade = useCallback((grade: string) => {
     setFiltersState((prev) => ({
@@ -74,9 +84,13 @@ export function useGlobalFilters() {
     setFiltersState((prev) => ({ ...prev, selectedClass }));
   }, []);
 
-  const setSelectedSubject = useCallback((selectedSubject: string) => {
-    setFiltersState((prev) => ({ ...prev, selectedSubject }));
-  }, []);
+  const setSelectedSubject = useCallback(
+    (selectedSubject: string) => {
+      if (lockedSubject) return; // 科目锁定：no-op
+      setFiltersState((prev) => ({ ...prev, selectedSubject }));
+    },
+    [lockedSubject],
+  );
 
   /** Bulk update (e.g. syncing from class record) without triggering cascading resets */
   const syncFromClass = useCallback(
@@ -88,11 +102,12 @@ export function useGlobalFilters() {
         selectedClass: classRecord.id,
       }));
     },
-    []
+    [],
   );
 
   return {
     ...filters,
+    selectedSubject: lockedSubject ?? filters.selectedSubject,
     setSchoolLevel,
     setGrade,
     setSelectedClass,

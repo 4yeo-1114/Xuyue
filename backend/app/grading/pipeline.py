@@ -189,7 +189,7 @@ def _draw_result_mark(
     *,
     check_cross_scale: float = 1.0,
 ) -> None:
-    """在作答区旁绘制对错（√/×），若带分值则在旁额外标出得分（科大讯飞式卷面留痕）。"""
+    """在作答区旁绘制对错（√/×）。"""
     result = str(item.get("result") or "")
     glyph_size = max(36, int(font_size * max(0.75, min(1.0, check_cross_scale))))
     cx = check_x + int(glyph_size * 0.35)
@@ -216,30 +216,6 @@ def _draw_result_mark(
                 _draw_vector_check(draw, cx, cy, glyph_size, color, line_w)
             else:
                 _draw_vector_cross(draw, cx, cy, glyph_size, color, line_w)
-
-    # 2) 分数：block 带 score 且为正分时在对错符号右侧标得分（对/半对=+分数；错/未作答不再标 0）
-    score_val = item.get("score")
-    if score_val is None:
-        return
-    try:
-        sv = float(score_val)
-    except (TypeError, ValueError):
-        return
-    if sv <= 0:
-        return
-    s_str = str(score_val)
-    if s_str.endswith(".0"):
-        s_str = s_str[:-2]
-    mark = f"+{s_str}"
-    score_size = max(22, int(font_size * 0.72))
-    font = _load_ascii_font(score_size) or mark_font
-    if font is None:
-        return
-    score_x = check_x + int(glyph_size * 0.82)
-    score_y = check_y + int(glyph_size * 0.16)
-    for ox, oy in offsets:
-        draw.text((score_x + ox, score_y + oy), mark, fill=outline_color, font=font)
-    draw.text((score_x, score_y), mark, fill=fill_color, font=font)
 
 # 逐题视觉批改并发（DashScope 有账号级 QPS 限制，不宜盲目加大；可用环境变量覆盖）
 GRADE_MAX_WORKERS = int(os.environ.get("GRADING_MAX_WORKERS", "16"))

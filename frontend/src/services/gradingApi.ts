@@ -565,6 +565,54 @@ export async function uploadToFolder(
   );
 }
 
+/** 上传原始试卷（含每题分值的那份卷子），用于识别每题分值 */
+export async function uploadOriginalPaper(
+  folderName: string,
+  file: File,
+  originalPageNo?: number,
+): Promise<{
+  ok: boolean;
+  name: string;
+  filename: string;
+  url: string;
+  type?: string;
+  page_no?: number;
+}> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("is_original_paper", "true");
+  if (originalPageNo != null) {
+    form.append("original_page_no", String(originalPageNo));
+  }
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/upload`,
+    { method: "POST", body: form },
+  );
+}
+
+/** 识别原始试卷上每题的分值（返回逐题清单，供确认页核对） */
+export async function recognizePaperScores(folderName: string): Promise<{
+  ok: boolean;
+  items: { no: number; title: string; score: number }[];
+  total: number;
+}> {
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/original-paper/scores`,
+    { method: "POST", body: {} },
+  );
+}
+
+/** 确认页提交逐题分值（写回，切题时注入每题 max_score） */
+export async function applyPaperScores(
+  folderName: string,
+  scores: Record<number, number>,
+): Promise<{ ok: boolean; count: number }> {
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/original-paper/scores/apply`,
+    { method: "POST", body: { scores } },
+  );
+}
+
 /** 开始扫描导入：监测 scan 目录，新 PDF 复制到当前文件夹 */
 export async function startScanImport(
   folderName: string,

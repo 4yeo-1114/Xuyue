@@ -335,7 +335,7 @@ export function UsageSummaryPage() {
       <div>
         <h2 className="text-lg font-semibold text-foreground">用量汇总</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          按量计费预估与月度账单 · 计费模型对齐七牛云对象存储口径
+          按批改份数计费 · 每面 0.5 元 · 预估与月度账单
         </p>
       </div>
 
@@ -352,10 +352,10 @@ export function UsageSummaryPage() {
           />
           <StatCard
             icon={Coins}
-            label="AI 批改处理"
+            label="批改份数"
             value={estimate.usage.grade.toLocaleString()}
-            unit="次"
-            sub="本月累计"
+            unit="面"
+            sub="每面 0.5 元"
             color="#10b981"
           />
           <StatCard

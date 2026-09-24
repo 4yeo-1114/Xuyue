@@ -40,7 +40,7 @@ import {
   Upload,
   ScanLine,
   Activity,
-  TrendingUp,
+  Coins,
   Inbox,
   Download,
   FolderOpen,
@@ -50,6 +50,9 @@ import { toast } from "sonner";
 
 /* ── 色板 ── */
 const COLORS = { upload: "#3b82f6", grade: "#10b981", total: "#8b5cf6" };
+
+/* ── 计费口径：按批改份数，每面 0.5 元 ── */
+const PRICE_PER_SIDE = 0.5;
 
 /* ── Chart Tooltip ── */
 interface TooltipPayloadItem {
@@ -235,12 +238,12 @@ export function ScanConsumptionPage() {
       toast.error("当前无数据可导出");
       return;
     }
-    const header = ["时间", "上传量", "批改量", "合计"];
+    const header = ["时间", "上传份数", "批改份数", "费用(元)"];
     const rows = series.map((p) => [
       p.label,
       p.upload,
       p.grade,
-      p.upload + p.grade,
+      (p.grade * PRICE_PER_SIDE).toFixed(2),
     ]);
     const csv = [header, ...rows]
       .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
@@ -268,7 +271,7 @@ export function ScanConsumptionPage() {
         <div>
           <h2 className="text-lg font-semibold text-foreground">扫描消耗</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            扫描上传与批改的用量统计 · 支持时间粒度与维度筛选、CSV 导出
+            按批改份数计费 · 每面 {PRICE_PER_SIDE} 元 · 支持时间粒度与维度筛选、CSV 导出
           </p>
         </div>
 
@@ -379,36 +382,36 @@ export function ScanConsumptionPage() {
           {summary && (
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               <StatCard
-                icon={Activity}
-                label="总用量"
-                value={summary.total.toLocaleString()}
-                unit="次"
+                icon={ScanLine}
+                label="批改份数"
+                value={summary.total_grade.toLocaleString()}
+                unit="份"
                 sub={`${period.start} ~ ${period.end}`}
-                color={COLORS.total}
+                color={COLORS.grade}
               />
               <StatCard
-                icon={TrendingUp}
-                label="日均用量"
-                value={summary.avg_daily_total.toFixed(2)}
-                unit="次/天"
-                sub={`共 ${summary.days} 天`}
+                icon={Coins}
+                label="费用"
+                value={(summary.total_grade * PRICE_PER_SIDE).toFixed(2)}
+                unit="元"
+                sub={`每面 ${PRICE_PER_SIDE} 元`}
                 color="#f59e0b"
               />
               <StatCard
                 icon={Upload}
-                label="上传量"
+                label="上传份数"
                 value={summary.total_upload.toLocaleString()}
-                unit="次"
-                sub={`日均 ${summary.avg_daily_upload.toFixed(2)}`}
+                unit="份"
+                sub={`日均 ${summary.avg_daily_upload.toFixed(2)} 份`}
                 color={COLORS.upload}
               />
               <StatCard
-                icon={ScanLine}
-                label="峰值"
-                value={summary.peak_value.toLocaleString()}
-                unit="次"
-                sub={summary.peak_day ? `出现在 ${summary.peak_day}` : "—"}
-                color={COLORS.grade}
+                icon={Activity}
+                label="日均批改"
+                value={summary.avg_daily_grade.toFixed(2)}
+                unit="份/天"
+                sub={`共 ${summary.days} 天`}
+                color={COLORS.total}
               />
             </div>
           )}
@@ -427,7 +430,7 @@ export function ScanConsumptionPage() {
                       : granularity === "week"
                         ? "按周"
                         : "按月"}
-                    聚合，堆叠展示上传与批改
+                    聚合，堆叠展示上传与批改份数
                   </CardDescription>
                 </div>
                 {/* 指标切换 */}
@@ -481,7 +484,7 @@ export function ScanConsumptionPage() {
                       {(metric === "all" || metric === "upload") && (
                         <Bar
                           dataKey="upload"
-                          name="上传量"
+                          name="上传份数"
                           stackId="a"
                           fill={COLORS.upload}
                           radius={[0, 0, 0, 0]}
@@ -490,7 +493,7 @@ export function ScanConsumptionPage() {
                       {(metric === "all" || metric === "grade") && (
                         <Bar
                           dataKey="grade"
-                          name="批改量"
+                          name="批改份数"
                           stackId="a"
                           fill={COLORS.grade}
                           radius={[3, 3, 0, 0]}
@@ -548,13 +551,13 @@ export function ScanConsumptionPage() {
                             文件夹
                           </th>
                           <th className="text-right py-2 px-2 font-medium text-muted-foreground">
-                            上传
+                            上传(份)
                           </th>
                           <th className="text-right py-2 px-2 font-medium text-muted-foreground">
-                            批改
+                            批改(份)
                           </th>
                           <th className="text-right py-2 px-2 font-medium text-muted-foreground">
-                            合计
+                            费用(元)
                           </th>
                         </tr>
                       </thead>
@@ -579,7 +582,7 @@ export function ScanConsumptionPage() {
                               {f.grade.toLocaleString()}
                             </td>
                             <td className="text-right py-2.5 px-2 tabular-nums font-medium">
-                              {f.total.toLocaleString()}
+                              {(f.grade * PRICE_PER_SIDE).toFixed(2)}
                             </td>
                           </tr>
                         ))}
@@ -619,13 +622,13 @@ function DimensionTable({
               {dimension === "folder" ? "文件夹" : "教师"}
             </th>
             <th className="text-right py-2 px-2 font-medium text-muted-foreground">
-              上传
+              上传(份)
             </th>
             <th className="text-right py-2 px-2 font-medium text-muted-foreground">
-              批改
+              批改(份)
             </th>
             <th className="text-right py-2 px-2 font-medium text-muted-foreground">
-              合计
+              费用(元)
             </th>
           </tr>
         </thead>
@@ -649,7 +652,7 @@ function DimensionTable({
                 {r.grade.toLocaleString()}
               </td>
               <td className="text-right py-2.5 px-2 tabular-nums font-medium">
-                {r.total.toLocaleString()}
+                {(r.grade * PRICE_PER_SIDE).toFixed(2)}
               </td>
             </tr>
           ))}

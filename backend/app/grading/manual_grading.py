@@ -355,14 +355,15 @@ def _baidu_ocr_text(image_path: str) -> list[dict]:
 _NUMBER_TOKEN_RE = re.compile(r"^\s*(\d{1,2})\s*[.．、](?:\s*\(|$)")
 
 
-def _ocr_question_numbers(image_path: str) -> list[dict]:
+def _ocr_question_numbers(image_path: str, words: Optional[list[dict]] = None) -> list[dict]:
     """识别卷面印刷题号（"1." "2." … "21."），返回 [{num, bbox}] 按 y、x 排序。
 
     只认「数字+点号」（或「数字+点号+括号」）的小号字：题号字符小（高 <=45px），
     且必带点号，从而排除选择题气泡里的裸数字、准考证号、公式常数等噪声。
+    words 传入时复用已 OCR 的结果，避免重复调用百度。
     """
     numbers: list[dict] = []
-    for w in _baidu_ocr_text(image_path):
+    for w in (words if words is not None else _baidu_ocr_text(image_path)):
         text = w["words"]
         bbox = w["bbox"]
         if (bbox[3] - bbox[1]) > 45:  # 字号过滤：题号是小字
@@ -373,6 +374,118 @@ def _ocr_question_numbers(image_path: str) -> list[dict]:
         numbers.append({"num": int(m.group(1)), "bbox": bbox})
     numbers.sort(key=lambda n: (n["bbox"][1], n["bbox"][0]))
     return numbers
+
+
+# 选择题涂卡词：题号后紧跟括号选项，形如 "9[A][B][D]" / "13[B][C]"。
+# 括号里是「未涂」的选项字母；涂黑项被 2B 盖住、OCR 读不到 → 该字母从括号串里缺失。
+_CHOICE_TOKEN_RE = re.compile(r"^\s*(\d{1,2})\s*((?:\[[A-Z]\])+)\s*$")
+
+
+def _choice_answer_tokens(words: list[dict]) -> list[dict]:
+    """从通用 OCR 词解析选择题涂卡项，返回 [{num, filled, bbox}]。
+
+    只取「题号 + 括号选项」整串词（与填空/计算题的裸数字题号区分开）；
+    filled = 括号里缺失的字母（即学生所涂选项，按 ABCD 顺序，如 "C"/"AD"）。
+    """
+    tokens: list[dict] = []
+    for w in words or []:
+        text = str(w.get("words") or "").strip()
+        m = _CHOICE_TOKEN_RE.match(text)
+        if not m:
+            continue
+        num = int(m.group(1))
+        shown = set(re.findall(r"\[([A-Z])\]", m.group(2)))
+        filled = "".join(c for c in "ABCD" if c not in shown)
+        tokens.append({"num": num, "filled": filled, "bbox": list(w.get("bbox") or [])})
+    tokens.sort(key=lambda t: (t["bbox"][1], t["bbox"][0]))
+    return tokens
+
+
+def _match_choice_cell(cell: list[int], tokens: list[dict], used: set) -> Tuple[Optional[int], Optional[dict]]:
+    """给一个选择题框线格找对应的涂卡词（题号）：优先中心点落在格内，否则取中心距最近。"""
+    if not tokens:
+        return None, None
+    cx = (cell[0] + cell[2]) / 2.0
+    cy = (cell[1] + cell[3]) / 2.0
+    best_i, best_d = None, None
+    for i, t in enumerate(tokens):
+        if i in used:
+            continue
+        tx1, ty1, tx2, ty2 = t["bbox"]
+        tcx = (tx1 + tx2) / 2.0
+        tcy = (ty1 + ty2) / 2.0
+        if tx1 - 4 <= cx <= tx2 + 4 and ty1 - 4 <= cy <= ty2 + 4:
+            return i, t
+        d = (cx - tcx) ** 2 + (cy - tcy) ** 2
+        if best_d is None or d < best_d:
+            best_d, best_i = d, i
+    if best_i is None:
+        return None, None
+    return best_i, tokens[best_i]
+
+
+def _build_choice_questions(
+    choice_boxes: list[list[int]],
+    tokens: list[dict],
+    page_no: int,
+) -> list[dict[str, Any]]:
+    """把选择题框线格（每格一题）挂上 OCR 涂卡词题号，生成 kind=choice 的 question。
+
+    格按阅读顺序（y、x）排序，逐个找中心点落点匹配的涂卡词取题号；
+    匹配不到的格按「已知题号范围内的空号」顺序补。最终按题号排序输出。
+    """
+    cells = sorted(choice_boxes, key=lambda b: (b[1], b[0]))
+    used: set = set()
+    matched: list[tuple[int, list[int]]] = []
+    unmatched: list[list[int]] = []
+    for cell in cells:
+        i, t = _match_choice_cell(cell, tokens, used)
+        if i is not None and t is not None:
+            used.add(i)
+            matched.append((int(t["num"]), cell))
+        else:
+            unmatched.append(cell)
+    if unmatched:
+        known = sorted({n for n, _ in matched})
+        lo = known[0] if known else 9
+        free = [n for n in range(lo, lo + len(cells)) if n not in known]
+        for cell in unmatched:
+            n = free.pop(0) if free else ((known[-1] + 1) if known else 9)
+            matched.append((n, cell))
+    matched.sort(key=lambda p: p[0])
+    return [_choice_question_dict(num, cell, page_no) for num, cell in matched]
+
+
+def _choice_question_dict(num: int, bbox: list[int], page_no: int) -> dict[str, Any]:
+    """构造单道选择题的 question 结构（与填空/计算题结构一致，kind=choice）。"""
+    return {
+        "question_id": f"p{page_no}-q{num}",
+        "display_no": num,
+        "baidu_question_id": num,
+        "question_type": "",
+        "kind": "choice",
+        "question_text": "",
+        "regions": [
+            {
+                "region_id": f"p{page_no}-q{num}-r1",
+                "label": f"{num}-A",
+                "role": "question",
+                "order": 1,
+                "bbox": bbox,
+            }
+        ],
+        "answer_slots": [
+            {
+                "slot_id": f"p{page_no}-q{num}-s1",
+                "label": f"{num}_1",
+                "order": 1,
+                "bbox": bbox,
+                "regions": [{"bbox": bbox}],
+                "has_handwriting_location": True,
+                "max_score": 1.0,
+            }
+        ],
+    }
 
 
 def parse_paper_cut_result(raw_data: dict) -> list:
@@ -807,8 +920,10 @@ def build_manual_layout_page_from_boxes(
         raise RuntimeError(result.get("reason") or "框线检测未识别出有效答题卡")
     width, height = result["image_size"]
 
-    # 视觉题号（先识别，再据框切割）
-    numbers = _ocr_question_numbers(image_path)
+    # 视觉题号（先识别，再据框切割）：一次百度 OCR，同时喂给主观题号与选择题涂卡词。
+    words = _baidu_ocr_text(image_path)
+    numbers = _ocr_question_numbers(image_path, words=words)
+    choice_tokens = _choice_answer_tokens(words)
 
     subjective: list[list[int]] = []
     choice_boxes: list[list[int]] = []
@@ -817,7 +932,7 @@ def build_manual_layout_page_from_boxes(
         if not bbox:
             continue
         if item.get("kind") == "choice":
-            choice_boxes.append(bbox)  # 选择题整题跳过，但用其位置划分填空/计算段
+            choice_boxes.append(bbox)  # 选择题格：既用于划分填空/计算段，也生成选择题 question
         else:
             subjective.append(bbox)
 
@@ -877,6 +992,10 @@ def build_manual_layout_page_from_boxes(
                 ],
             }
         )
+    # 选择题：框线格挂 OCR 涂卡词题号，生成 kind=choice 的题（display_no 9..14）。
+    questions.extend(_build_choice_questions(choice_boxes, choice_tokens, page_no))
+    # 按卷面题号排序，保证 1..21 阅读顺序（填空 1-8、选择 9-14、计算 15-21）。
+    questions.sort(key=lambda q: int(q.get("display_no") or 0))
     return {
         "page_no": int(page_no),
         "filename": str(filename),
@@ -1268,6 +1387,61 @@ def delete_manual_layout(folder_safe: str) -> None:
             _manual_layout_path(folder_safe, pending=pending).unlink(missing_ok=True)
         except OSError:
             pass
+
+
+# ---- 原始试卷分值（paper_scores）----
+
+def _paper_scores_path(folder_safe: str) -> Path:
+    return correct_docs_dir() / str(folder_safe) / ".paper_scores.json"
+
+
+def load_paper_scores(folder_safe: str) -> dict[int, float]:
+    """读取已确认的原始试卷分值 {题号: 分值}。"""
+    data = _read_json(_paper_scores_path(folder_safe))
+    out: dict[int, float] = {}
+    for key, value in data.items():
+        try:
+            no = int(key)
+            score = float(value)
+        except (TypeError, ValueError):
+            continue
+        if no > 0 and score > 0:
+            out[no] = round(score, 2)
+    return out
+
+
+def save_paper_scores(folder_safe: str, scores: dict) -> None:
+    """持久化原始试卷分值 {题号: 分值}（键统一为字符串题号）。"""
+    data: dict[str, float] = {}
+    for key, value in (scores or {}).items():
+        try:
+            no = int(key)
+            score = float(value)
+        except (TypeError, ValueError):
+            continue
+        if no > 0 and score > 0:
+            data[str(no)] = round(score, 2)
+    _write_json(_paper_scores_path(folder_safe), data)
+
+
+def apply_paper_scores_to_page(page: dict[str, Any], scores: dict[int, float]) -> dict[str, Any]:
+    """把 {题号: 分值} 注入切题页各题 answer_slots[].max_score（按 display_no 匹配）。"""
+    if not scores:
+        return page
+    for question in page.get("questions") or []:
+        if not isinstance(question, dict):
+            continue
+        try:
+            no = int(question.get("display_no") or 0)
+        except (TypeError, ValueError):
+            no = 0
+        if no not in scores:
+            continue
+        value = round(float(scores[no]), 2)
+        for slot in question.get("answer_slots") or []:
+            if isinstance(slot, dict):
+                slot["max_score"] = value
+    return page
 
 
 def manual_layout_blocks_for_image(

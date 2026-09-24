@@ -73,6 +73,8 @@ def init_db():
     _backfill_class_teacher_heads()
     # 流水阅卷：AUTO_DDL=false 时靠此幂等建表（同 _ensure_response_logs_table 模式）
     _ensure_flow_tables()
+    # 批改额度：AUTO_DDL=false 时靠此幂等建表（同 _ensure_grading_daily_stats_table 模式）
+    _ensure_grading_quota_tables()
 
 
 def sync_database_schema():
@@ -155,6 +157,8 @@ def sync_database_schema():
         canteen_record,
         # 流水阅卷 / 集体阅卷（flow_* 六表）
         flow_grading,
+        # 批改额度账户 / 充值流水
+        grading_quota,
     )
     Base.metadata.create_all(bind=engine)
     _ensure_grading_daily_stats_table()
@@ -203,6 +207,47 @@ def _ensure_grading_daily_stats_table():
             conn.commit()
     except Exception:
         pass
+
+
+def _ensure_grading_quota_tables():
+    """批改额度账户 / 充值流水表（幂等兜底，CREATE TABLE IF NOT EXISTS）。"""
+    stmts = [
+        """
+        CREATE TABLE IF NOT EXISTS grading_quota (
+            id VARCHAR(36) NOT NULL PRIMARY KEY,
+            user_id VARCHAR(36) NOT NULL,
+            total_pages INT NOT NULL DEFAULT 0,
+            used_pages INT NOT NULL DEFAULT 0,
+            used_today_pages INT NOT NULL DEFAULT 0,
+            usage_date DATE NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_grading_quota_user_id (user_id),
+            CONSTRAINT fk_grading_quota_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS grading_quota_recharge_logs (
+            id VARCHAR(36) NOT NULL PRIMARY KEY,
+            user_id VARCHAR(36) NOT NULL,
+            amount_yuan INT NOT NULL DEFAULT 0,
+            base_pages INT NOT NULL DEFAULT 0,
+            bonus_pages INT NOT NULL DEFAULT 0,
+            total_pages INT NOT NULL DEFAULT 0,
+            operator_id VARCHAR(36) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            KEY ix_grading_quota_recharge_logs_user_id (user_id),
+            CONSTRAINT fk_grading_quota_recharge_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+    ]
+    for stmt in stmts:
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(stmt))
+                conn.commit()
+        except Exception:
+            pass
 
 
 def _ensure_response_logs_table():

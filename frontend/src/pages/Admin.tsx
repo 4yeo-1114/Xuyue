@@ -14,6 +14,7 @@ import { AccountManagePage } from "@/components/settings/account-manage/AccountM
 import { AdminTeacherGradingPage } from "@/components/admin/AdminTeacherGradingPage";
 import { AdminFlowGradingPage } from "@/components/admin/AdminFlowGradingPage";
 import { AdminMultiProjectPage } from "@/components/admin/AdminMultiProjectPage";
+import { AdminQuotaPage } from "@/components/quota/AdminQuotaPage";
 import { isMultiProjectAdmin } from "@/lib/multiProjectAccess";
 import { useLocale } from "@/contexts/LocaleContext";
 import { translateSystemRole } from "@/i18n/index";
@@ -24,6 +25,7 @@ import {
   ToggleLeft,
   ShieldCheck,
   UserCheck,
+  Coins,
   LucideIcon,
 } from "lucide-react";
 
@@ -74,6 +76,12 @@ const ADMIN_SUB_TABS: AdminSubTab[] = [
     labelKey: "admin.rights.title",
     icon: UserCheck,
     Page: AdminRightsPage,
+  },
+  {
+    id: "quota",
+    labelKey: "admin.quota.title",
+    icon: Coins,
+    Page: AdminQuotaPage,
   },
 ];
 

@@ -2,7 +2,13 @@ import { useState, useRef, useEffect, useMemo, Suspense, lazy } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { isPlatformAdmin, isParent } from "@/lib/adminAccess";
-import { NAV_ITEMS, Sidebar } from "@/components/Sidebar";
+import { isSingleSubjectTeacher } from "@/lib/teacherAccess";
+import {
+  NAV_ITEMS,
+  TEACHER_NAV_ITEMS,
+  TEACHER_NAV_SECTIONS,
+  Sidebar,
+} from "@/components/Sidebar";
 import { TopHeader } from "@/components/TopHeader";
 import { ClassManageDialog } from "@/components/ClassManageDialog";
 import { StudentManageDialog } from "@/components/StudentManageDialog";
@@ -15,6 +21,7 @@ import { PhotoGradingDialog } from "@/components/home/PhotoGradingDialog";
 import { StatsOverview } from "@/components/home/StatsOverview";
 import { StudentMatrixPreview } from "@/components/home/StudentMatrixPreview";
 import { TodoAndQuickActions } from "@/components/home/TodoAndQuickActions";
+import { TeacherHome } from "@/components/home/TeacherHome";
 import { OnboardingTour } from "@/components/home/OnboardingTour";
 import { GlobalSearchBar } from "@/components/home/GlobalSearchBar";
 import { NewFeaturesPage } from "@/components/new-features/NewFeaturesPage";
@@ -149,6 +156,11 @@ const ScanConsumptionPage = lazy(() =>
 const UsageSummaryPage = lazy(() =>
   import("@/components/scan-billing/UsageSummaryPage").then((m) => ({
     default: m.UsageSummaryPage,
+  })),
+);
+const MyQuotaPage = lazy(() =>
+  import("@/components/quota/MyQuotaPage").then((m) => ({
+    default: m.MyQuotaPage,
   })),
 );
 
@@ -287,9 +299,14 @@ NAV_ITEMS.forEach((group) => {
   });
 });
 
-export default function Index() {
+export default function Index({
+  teacherMode = false,
+}: {
+  teacherMode?: boolean;
+}) {
   const { user } = useAuth();
   const { t } = useLocale();
+  const navPrefix = teacherMode ? "/teacher" : "/nav";
 
   // E08 学校级 AI 管控：走后端 feature-flags，关闭后隐藏对应入口
   const { data: featureFlags } = useFeatureFlags();
@@ -302,6 +319,7 @@ export default function Index() {
     return set;
   }, [featureFlags]);
 
+  const lockedSubject = teacherMode ? user?.teaching_subject || "语文" : undefined;
   const {
     schoolLevel: selectedSchoolLevel,
     grade: selectedGrade,
@@ -311,7 +329,7 @@ export default function Index() {
     setGrade,
     setSelectedClass,
     setSelectedSubject,
-  } = useGlobalFilters();
+  } = useGlobalFilters(lockedSubject);
 
   // Active nav – URL 驱动（/nav/:navId），刷新后仍停留在原功能域
   const { navId } = useParams<{ navId?: string }>();
@@ -332,12 +350,19 @@ export default function Index() {
           ? "settings-personal"
           : saved;
       if (target && target !== "home") {
-        navigate(`/nav/${target}`, { replace: true });
+        navigate(`${navPrefix}/${target}`, { replace: true });
       }
     } catch {
       // 隐私模式/存储不可用时静默跳过，默认落在首页
     }
   }, [navId, navigate]);
+
+  // 单科老师误入通用首页/导航时，重定向到老师端
+  useEffect(() => {
+    if (!teacherMode && user && isSingleSubjectTeacher(user)) {
+      navigate("/teacher", { replace: true });
+    }
+  }, [teacherMode, user, navigate]);
 
   // For cross-page student selection (e.g. portrait → student list)
   const [pendingStudent, setPendingStudent] = useState<string | undefined>();
@@ -351,27 +376,27 @@ export default function Index() {
     // 走 onNavChange 的裸导航一律清空，避免残留上一次被点学生的旧值
     if (id !== "class-students") setPendingStudent(undefined);
     const query = tab ? `?tab=${encodeURIComponent(tab)}` : "";
-    navigate(`/nav/${id}${query}`);
+    navigate(`${navPrefix}/${id}${query}`);
   };
 
   const navigateToStudent = (studentName: string) => {
     setPendingStudent(studentName);
-    navigate("/nav/class-students");
+    navigate(`${navPrefix}/class-students`);
   };
 
   const navigateToTargeted = (studentName: string) => {
     setPendingStudent(studentName);
-    navigate("/nav/ai-targeted");
+    navigate(`${navPrefix}/ai-targeted`);
   };
 
   const navigateToExam = (resourceId?: string) => {
     // Always generate a unique key so ExamGenPage always re-triggers loading
     setPendingResourceId(`${resourceId || "nav"}__${Date.now()}`);
-    navigate("/nav/prep-exam");
+    navigate(`${navPrefix}/prep-exam`);
   };
 
   const navigateToGradingFolder = (folderName: string) => {
-    navigate(`/nav/grading-start?folder=${encodeURIComponent(folderName)}`);
+    navigate(`${navPrefix}/grading-start?folder=${encodeURIComponent(folderName)}`);
   };
 
   // Class & student management dialogs
@@ -430,6 +455,20 @@ export default function Index() {
     switch (activeNavId) {
       /* ── 首页 ── */
       case "home":
+        if (teacherMode) {
+          return (
+            <TeacherHome
+              subject={selectedSubject}
+              classes={classes}
+              onNavChange={handleNavChange}
+              onOpenClass={(classId) => {
+                setSelectedClass(classId);
+                handleNavChange("class-dashboard");
+              }}
+              onPhotoClick={() => setPhotoDialogOpen(true)}
+            />
+          );
+        }
         return (
           <div className="space-y-6" ref={gradingRef}>
             <GlobalSearchBar
@@ -633,7 +672,7 @@ export default function Index() {
         return (
           <GradingHistoryPage
             onOpenFolder={navigateToGradingFolder}
-            onStartGrading={() => navigate("/nav/grading-start")}
+            onStartGrading={() => navigate(`${navPrefix}/grading-start`)}
           />
         );
       case "grading-errors":
@@ -679,6 +718,8 @@ export default function Index() {
       /* ── 设置 ── */
       case "settings-personal":
         return <PersonalSettingsPage />;
+      case "my-quota":
+        return <MyQuotaPage />;
       case "settings-subject":
         return (
           <SubjectConfigPage
@@ -724,7 +765,12 @@ export default function Index() {
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       {/* 侧边栏：固定高度，内部自己可以滚动 */}
-      <Sidebar activeNavId={activeNavId} onNavChange={handleNavChange} />
+      <Sidebar
+        activeNavId={activeNavId}
+        onNavChange={handleNavChange}
+        navItems={teacherMode ? TEACHER_NAV_ITEMS : undefined}
+        navSections={teacherMode ? TEACHER_NAV_SECTIONS : undefined}
+      />
 
       <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
         {/* 顶部导航：固定在顶部 */}
@@ -742,6 +788,7 @@ export default function Index() {
           showTeachingFilters={
             !(NO_TEACHING_FILTER_IDS as readonly string[]).includes(activeNavId)
           }
+          subjectLocked={lockedSubject}
         />
 
         {/* 中间内容区域：唯一可以滑动的地方 */}

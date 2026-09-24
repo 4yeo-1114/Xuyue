@@ -109,7 +109,7 @@ export function useAuth() {
     const token = data.access_token as string;
     const u = data.user as AuthUser;
     storeSession(token, u);
-    return { error: null };
+    return { error: null, user: u };
   };
 
   const register = async (payload: RegisterPayload) => {
@@ -128,7 +128,7 @@ export function useAuth() {
     const token = data.access_token as string;
     const u = data.user as AuthUser;
     storeSession(token, u);
-    return { error: null };
+    return { error: null, user: u };
   };
 
   const signOut = async () => {

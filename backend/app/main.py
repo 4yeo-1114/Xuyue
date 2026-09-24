@@ -289,6 +289,10 @@ app.include_router(paper_composer.router, prefix="/api/v1")
 from app.routers import scan_billing
 app.include_router(scan_billing.router, prefix="/api/v1")
 
+# ── 批改额度 / 充值（0924 需求一）────────────────────────────────────
+from app.routers import grading_quota
+app.include_router(grading_quota.router, prefix="/api/v1")
+
 # ── 小程序打印队列（布置作业 → 生成作业纸 → 本机打印代理拉取打印）────────
 from app.routers import print_jobs
 app.include_router(print_jobs.router, prefix="/api/v1")

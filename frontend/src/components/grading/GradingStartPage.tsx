@@ -94,6 +94,9 @@ import {
   cancelReferenceGrade,
   saveAnswerKey,
   getAnswerKey,
+  uploadOriginalPaper,
+  recognizePaperScores,
+  applyPaperScores,
   gradeByAnswerKey,
   answerKeyGradeStatus,
   cancelAnswerKeyGrade,
@@ -185,6 +188,7 @@ import {
   type AiResultBlock,
 } from "@/utils/aiResultBlocks";
 import { ReferenceLayoutCorrectionDialog } from "./ReferenceLayoutCorrectionDialog";
+import { PaperScoreConfirmDialog, type PaperScoreItem } from "./PaperScoreConfirmDialog";
 import { ManualPaperGradingDialog, type ManualAnnotations, type ManualPaperDirection } from "./ManualPaperGradingDialog";
 import {
   EssayDimensionConfigEditor,
@@ -901,6 +905,18 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
   const [answerKeyDialogOpen, setAnswerKeyDialogOpen] = useState(false);
   const [answerKeySaving, setAnswerKeySaving] = useState(false);
   const answerKeyImageInputRef = useRef<HTMLInputElement>(null);
+  // 原始试卷（含每题分值）：上传 → AI 识别分值 → 确认页逐题核对 → 回填切题计分规则
+  const [originalPaperOpen, setOriginalPaperOpen] = useState(false);
+  const [originalPaperUploading, setOriginalPaperUploading] = useState(false);
+  const [originalPaperRecognizing, setOriginalPaperRecognizing] = useState(false);
+  const [originalPaperName, setOriginalPaperName] = useState("");
+  const [originalPaperScoreCount, setOriginalPaperScoreCount] = useState(0);
+  const [originalPaperScoreItems, setOriginalPaperScoreItems] = useState<
+    PaperScoreItem[]
+  >([]);
+  const [originalPaperScoreOpen, setOriginalPaperScoreOpen] = useState(false);
+  const [originalPaperApplying, setOriginalPaperApplying] = useState(false);
+  const originalPaperInputRef = useRef<HTMLInputElement>(null);
   const [gradingEngine, setGradingEngine] = useState<GradingEngine>("aliyun");
   // 进入答题卡（自主阅卷/参照批改）时自动回显已保存的标准答案，供判分时作参考答案
   useEffect(() => {
@@ -4162,6 +4178,64 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     }
   };
 
+  const handleUploadOriginalPaper = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !selectedFolder) return;
+    setOriginalPaperUploading(true);
+    try {
+      await uploadOriginalPaper(selectedFolder, file);
+      setOriginalPaperName(file.name);
+      setOriginalPaperScoreCount(0);
+      await loadFolderFiles(selectedFolder, gradingEngine);
+      toast.success(t("grading.originalPaper.uploaded"));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(msg || t("grading.uploadFailed"));
+    } finally {
+      setOriginalPaperUploading(false);
+    }
+  };
+
+  const handleRecognizePaperScores = async () => {
+    if (!selectedFolder) return;
+    setOriginalPaperRecognizing(true);
+    try {
+      const res = await recognizePaperScores(selectedFolder);
+      if (!res?.ok || !res.items?.length) {
+        toast.error(t("grading.originalPaper.noItems"));
+        return;
+      }
+      setOriginalPaperScoreItems(res.items);
+      setOriginalPaperScoreOpen(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(msg || t("grading.originalPaper.recognizeFailed"));
+    } finally {
+      setOriginalPaperRecognizing(false);
+    }
+  };
+
+  const handleApplyPaperScores = async (scores: Record<number, number>) => {
+    if (!selectedFolder) return;
+    setOriginalPaperApplying(true);
+    try {
+      const res = await applyPaperScores(selectedFolder, scores);
+      const count = res?.count ?? Object.keys(scores).length;
+      setOriginalPaperScoreCount(count);
+      setOriginalPaperScoreOpen(false);
+      setOriginalPaperOpen(false);
+      toast.success(t("grading.originalPaper.applied", { count }));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(msg || t("grading.originalPaper.applyFailed"));
+    } finally {
+      setOriginalPaperApplying(false);
+    }
+  };
+
   const startAnswerKeyGradePolling = (folderName: string, jobId: string) => {
     refGradeCancelledRef.current = false;
     clearRefGradePollTimer();
@@ -6766,6 +6840,27 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                       count: Object.keys(answerKeyLoaded).length,
                     })
                   : t("grading.answerKey.fill")}
+              </Button>
+            )}
+            {isManualEngine(gradingEngine) && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setOriginalPaperOpen(true)}
+                className={cn(
+                  "gap-2",
+                  opGlassBtnClass,
+                  originalPaperScoreCount > 0 &&
+                    "border-emerald-400/80 text-emerald-700",
+                )}
+                disabled={refLoading}
+              >
+                <ImagePlus className="w-4 h-4" />
+                {originalPaperScoreCount > 0
+                  ? t("grading.originalPaper.filled", {
+                      count: originalPaperScoreCount,
+                    })
+                  : t("grading.originalPaper.button")}
               </Button>
             )}
             <Button
@@ -10935,6 +11030,78 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+
+          <Dialog open={originalPaperOpen} onOpenChange={setOriginalPaperOpen}>
+            <DialogContent className="sm:max-w-lg">
+              <DialogHeader>
+                <DialogTitle>{t("grading.originalPaper.title")}</DialogTitle>
+                <DialogDescription>
+                  {t("grading.originalPaper.hint")}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex flex-col gap-3 py-2">
+                <div className="flex items-center gap-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="gap-2"
+                    onClick={() => originalPaperInputRef.current?.click()}
+                    disabled={originalPaperUploading}
+                  >
+                    {originalPaperUploading ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <ImagePlus className="h-4 w-4" />
+                    )}
+                    {t("grading.originalPaper.upload")}
+                  </Button>
+                  <input
+                    ref={originalPaperInputRef}
+                    type="file"
+                    accept="image/*,.pdf,.doc,.docx"
+                    className="hidden"
+                    disabled={originalPaperUploading}
+                    onChange={(e) => void handleUploadOriginalPaper(e)}
+                  />
+                  <span className="truncate text-sm text-muted-foreground">
+                    {originalPaperName || t("grading.answerKey.orUseImage")}
+                  </span>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setOriginalPaperOpen(false)}
+                  disabled={originalPaperUploading || originalPaperRecognizing}
+                >
+                  {t("common.cancel")}
+                </Button>
+                <Button
+                  onClick={() => void handleRecognizePaperScores()}
+                  disabled={originalPaperUploading || originalPaperRecognizing}
+                  className="gap-1.5"
+                >
+                  {originalPaperRecognizing ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-4 w-4" />
+                  )}
+                  {originalPaperRecognizing
+                    ? t("grading.originalPaper.recognizing")
+                    : t("grading.originalPaper.recognize")}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <PaperScoreConfirmDialog
+            open={originalPaperScoreOpen}
+            onOpenChange={setOriginalPaperScoreOpen}
+            items={originalPaperScoreItems}
+            loading={originalPaperApplying}
+            onConfirm={(scores) => void handleApplyPaperScores(scores)}
+          />
 
           <PrivacyNoticeDialog
             open={noticePending !== null}

@@ -35,8 +35,8 @@ from typing import Any, Optional
 _DEFAULT_CONFIG: dict[str, Any] = {
     "currency": "CNY",
     "note": (
-        "单价默认值参照七牛云对象存储公开口径，仅作参考；"
-        "实际计费请以商务合同为准，可通过 billing_config.json 覆盖。"
+        "试卷批改按批改份数计费（每面 0.5 元）；"
+        "存储/请求/流量单价为参考值，可通过 billing_config.json 覆盖。"
     ),
     # 抵扣顺序：免费额度 → 资源包 → 阶梯价
     "deduction_order": ["free_quota", "resource_pack", "tiered_price"],
@@ -69,16 +69,15 @@ _DEFAULT_CONFIG: dict[str, Any] = {
             "tiers": [{"up_to": None, "price": 0.0}],  # 上传请求免费
         },
         "grading": {
-            "label": "AI 批改处理",
+            "label": "试卷批改",
             "category": "数据处理费用",
-            "unit": "千次",
+            "unit": "面",
             "basis": "cumulative",
-            "round_up": True,
+            "round_up": False,
             "free_quota": 0.0,
             "resource_pack": 0.0,
             "tiers": [
-                {"up_to": 100, "price": 0.60},
-                {"up_to": None, "price": 0.45},
+                {"up_to": None, "price": 0.50},
             ],
         },
         "download": {
@@ -99,7 +98,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "meter_divisor": {
         "storage": 1.0,  # GB
         "upload": 10000.0,  # 次 → 万次
-        "grading": 1000.0,  # 次 → 千次
+        "grading": 1.0,  # 面 → 面（按批改份数计，每面 0.5 元）
         "download": 1.0,  # GB
     },
 }

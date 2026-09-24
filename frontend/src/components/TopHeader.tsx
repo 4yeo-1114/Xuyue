@@ -84,6 +84,8 @@ interface TopHeaderProps {
   onManageClasses?: () => void;
   onNavChange?: (id: string) => void;
   showTeachingFilters?: boolean;
+  /** 单科老师端：科目锁定，顶部显示只读「我的学科」徽章、隐藏科目下拉 */
+  subjectLocked?: string;
 }
 
 export function TopHeader({
@@ -99,6 +101,7 @@ export function TopHeader({
   onManageClasses,
   onNavChange,
   showTeachingFilters = true,
+  subjectLocked,
 }: TopHeaderProps) {
   const { signOut, user } = useAuth();
   const { t, locale } = useLocale();
@@ -538,24 +541,33 @@ export function TopHeader({
                 </SelectContent>
               </Select>
 
-              <Select value={selectedSubject} onValueChange={onSubjectChange}>
-                <SelectTrigger className="w-[110px] h-9 text-sm bg-card border-border/80 hover:border-primary/60 focus-within:border-primary transition-colors shadow-sm">
-                  <div className="flex items-center gap-1.5">
-                    <BookOpen
-                      className="w-4 h-4 text-muted-foreground"
-                      strokeWidth={1.75}
-                    />
-                    <SelectValue placeholder={t("header.selectSubject")} />
-                  </div>
-                </SelectTrigger>
-                <SelectContent>
-                  {subjects.map((subject) => (
-                    <SelectItem key={subject.id} value={subject.name}>
-                      {translateSubjectName(locale, subject.name)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {subjectLocked ? (
+                <div className="flex items-center gap-1.5 h-9 px-3 rounded-lg bg-primary/10 border border-primary/20 text-primary text-sm font-medium shrink-0">
+                  <BookOpen className="w-4 h-4" strokeWidth={1.75} />
+                  <span>
+                    我的学科：{translateSubjectName(locale, subjectLocked)}
+                  </span>
+                </div>
+              ) : (
+                <Select value={selectedSubject} onValueChange={onSubjectChange}>
+                  <SelectTrigger className="w-[110px] h-9 text-sm bg-card border-border/80 hover:border-primary/60 focus-within:border-primary transition-colors shadow-sm">
+                    <div className="flex items-center gap-1.5">
+                      <BookOpen
+                        className="w-4 h-4 text-muted-foreground"
+                        strokeWidth={1.75}
+                      />
+                      <SelectValue placeholder={t("header.selectSubject")} />
+                    </div>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {subjects.map((subject) => (
+                      <SelectItem key={subject.id} value={subject.name}>
+                        {translateSubjectName(locale, subject.name)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           </>
         )}
