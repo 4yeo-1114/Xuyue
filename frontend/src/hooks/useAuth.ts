@@ -7,6 +7,7 @@ export interface AuthUser {
   display_name?: string | null;
   phone?: string | null;
   teaching_subject?: string | null;
+  teaching_grade?: string | null;
   roles?: string[];
   job_title?: string | null;
   personal_email?: string | null;
@@ -20,6 +21,7 @@ export interface RegisterPayload {
   display_name?: string;
   role: string;
   teaching_subject?: string;
+  teaching_grade?: string;
 }
 
 /** /auth/me 的结果：区分「令牌失效」与「后端/网络异常」，后者不该清登录态 */

@@ -22,6 +22,7 @@ class RegisterRequest(BaseModel):
     display_name: Optional[str] = None
     role: RegisterRole
     teaching_subject: Optional[str] = None  # 可选、自由填写；长度上限见 routers/auth.py
+    teaching_grade: Optional[str] = None  # 可选、自由填写；长度上限见 routers/auth.py
 
 
 class UserResponse(BaseModel):
@@ -30,6 +31,7 @@ class UserResponse(BaseModel):
     display_name: Optional[str] = None
     phone: Optional[str] = None
     teaching_subject: Optional[str] = None
+    teaching_grade: Optional[str] = None
     roles: Optional[list[str]] = []
     job_title: Optional[str] = None
     personal_email: Optional[str] = None
@@ -43,6 +45,7 @@ class UpdateProfileRequest(BaseModel):
     display_name: Optional[str] = None
     phone: Optional[str] = None
     teaching_subject: Optional[str] = None
+    teaching_grade: Optional[str] = None
     job_title: Optional[str] = None
     personal_email: Optional[str] = None
 

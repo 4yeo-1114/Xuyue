@@ -18,6 +18,7 @@ class User(Base):
     phone = Column(String(32), nullable=True)
     dingtalk_userid = Column(String(64), nullable=True, index=True)  # 钉钉免登 userid 绑定
     teaching_subject = Column(String(32), nullable=True)
+    teaching_grade = Column(String(32), nullable=True)  # 任教年级（如 三年级/七年级/高一）
     roles = Column(String(255), nullable=True)  # 逗号分隔的多个角色，例如 "任课教师,班主任"
     job_title = Column(String(255), nullable=True)  # 岗位职责/岗位信息
     # C4：已删除 plain_password 明文密码列；历史库中存量明文密码需要人工迁移清理

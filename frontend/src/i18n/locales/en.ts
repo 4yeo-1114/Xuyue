@@ -226,6 +226,8 @@ export const en: TranslationDict = {
   "auth.role": "Role",
   "auth.subject": "Teaching subject (optional)",
   "auth.subjectPlaceholder": "e.g. Chinese — free text",
+  "auth.grade": "Teaching grade (optional)",
+  "auth.gradePlaceholder": "Select grade",
   "auth.registerSuccess": "Registered & signed in",
   "auth.registerFailed": "Registration failed",
   "auth.emailExists": "Email already registered",

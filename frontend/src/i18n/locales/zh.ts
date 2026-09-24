@@ -222,6 +222,8 @@ export const zh: TranslationDict = {
   "auth.role": "角色",
   "auth.subject": "教学科目（可选）",
   "auth.subjectPlaceholder": "如：语文，可自由填写",
+  "auth.grade": "任教年级（可选）",
+  "auth.gradePlaceholder": "选择年级",
   "auth.registerSuccess": "注册成功，已自动登录",
   "auth.registerFailed": "注册失败",
   "auth.emailExists": "该邮箱已被注册",

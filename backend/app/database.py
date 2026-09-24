@@ -752,6 +752,16 @@ def _ensure_user_extra_columns():
         with engine.connect() as conn:
             conn.execute(
                 text(
+                    "ALTER TABLE users ADD COLUMN teaching_grade VARCHAR(32) NULL"
+                )
+            )
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
                     "ALTER TABLE users ADD COLUMN roles VARCHAR(255) NULL"
                 )
             )

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,14 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { useLocale } from "@/contexts/LocaleContext";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { buildGradeLevels } from "@/i18n";
 
 // 免审核自助注册只开放「任课教师」（= 不挂靠学校的独立老师）。
 // 其余角色都能经 is_school_admin() 拿到后台权限，可选即等于公网自封管理员（提权）。
@@ -44,11 +52,13 @@ export default function Auth() {
   const [regPassword, setRegPassword] = useState("");
   const [regDisplayName, setRegDisplayName] = useState("");
   const [regSubject, setRegSubject] = useState("");
+  const [regGrade, setRegGrade] = useState("");
   const { signIn, register } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const { projectName } = useProjectBranding();
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
+  const gradeLevels = useMemo(() => buildGradeLevels(locale), [locale]);
 
   const emailSchema = z.string().email(t("auth.invalidEmail"));
   const passwordSchema = z.string().min(6, t("auth.passwordMin"));
@@ -137,6 +147,7 @@ export default function Auth() {
         display_name: regDisplayName || undefined,
         role: REGISTER_ROLE,
         teaching_subject: regSubject.trim() || undefined,
+        teaching_grade: regGrade.trim() || undefined,
       });
       if (error) {
         const msg =
@@ -305,6 +316,24 @@ export default function Auth() {
                     value={regSubject}
                     onChange={(e) => setRegSubject(e.target.value)}
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>{t("auth.grade")}</Label>
+                  <Select value={regGrade} onValueChange={setRegGrade}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={t("auth.gradePlaceholder")} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {gradeLevels.flatMap((level) =>
+                        level.grades.map((grade) => (
+                          <SelectItem key={grade.value} value={grade.value}>
+                            {grade.label}
+                          </SelectItem>
+                        )),
+                      )}
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 <p className="text-xs text-muted-foreground">

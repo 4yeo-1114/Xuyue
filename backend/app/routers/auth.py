@@ -92,6 +92,7 @@ def _validate_loose_email(raw: str) -> str:
 # 科目自由填写：长度上限取两条相关列定义中**较小**者 ——
 # users.teaching_subject = String(32)、class_teachers.subject = String(32) ⇒ 32。
 MAX_TEACHING_SUBJECT_LEN = 32
+MAX_TEACHING_GRADE_LEN = 32
 
 # 注册限流（内存实现，独立于登录锁定）
 _REGISTER_LOCK = threading.Lock()
@@ -147,6 +148,7 @@ def user_to_response(user: User) -> UserResponse:
         display_name=user.display_name,
         phone=getattr(user, "phone", None),
         teaching_subject=subject,
+        teaching_grade=getattr(user, "teaching_grade", None),
         roles=roles_list,
         job_title=getattr(user, "job_title", None),
         personal_email=getattr(user, "personal_email", None),
@@ -207,6 +209,14 @@ def register(data: RegisterRequest, request: Request, db: Session = Depends(get_
             detail=f"科目名称过长（最多 {MAX_TEACHING_SUBJECT_LEN} 个字符）",
         )
 
+    # 年级：可选、自由填写（与科目同口径）；只保留 strip 与长度上限
+    grade = (data.teaching_grade or "").strip() or None
+    if grade and len(grade) > MAX_TEACHING_GRADE_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"年级名称过长（最多 {MAX_TEACHING_GRADE_LEN} 个字符）",
+        )
+
     display_name = (data.display_name or "").strip() or None
     new_user = User(
         email=email,
@@ -214,6 +224,7 @@ def register(data: RegisterRequest, request: Request, db: Session = Depends(get_
         display_name=display_name,
         roles=data.role,
         teaching_subject=subject,
+        teaching_grade=grade,
     )
     db.add(new_user)
     try:
@@ -258,6 +269,7 @@ def _minimal_user_to_response(user: User) -> UserResponse:
         email=user.email,
         display_name=user.display_name,
         teaching_subject=getattr(user, "teaching_subject", None),
+        teaching_grade=getattr(user, "teaching_grade", None),
         roles=roles_list,
         multi_project_admin=is_multi_project_admin_email(user.email or ""),
         ui_locale=_normalize_ui_locale(getattr(user, "ui_locale", None)),
@@ -304,6 +316,8 @@ def update_me(
             user.teaching_subject = None
         else:
             user.teaching_subject = body.teaching_subject.strip() or None
+    if body.teaching_grade is not None:
+        user.teaching_grade = body.teaching_grade.strip() or None
     if body.job_title is not None:
         user.job_title = body.job_title.strip() or None
     if body.personal_email is not None:
