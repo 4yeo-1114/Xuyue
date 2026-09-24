@@ -107,3 +107,29 @@ export async function fetchPaymentUsage(params?: {
   const q = search.toString();
   return request<PaymentUsage>(`/payment/usage${q ? `?${q}` : ""}`);
 }
+
+/** 支付下单结果（POST /payment/orders） */
+export interface PaymentOrderCreateResult {
+  order_id: string;
+  channel: string;
+  amount_fen: number;
+  status: string;
+  payee_entity_id: string | null;
+  pay_params: Record<string, unknown>;
+}
+
+/**
+ * 下单充值（金额单位：分）。返回通道支付参数，供客户端拉起收银台。
+ *
+ * ⚠️ 通道凭据未配置时后端返回 501（ChannelNotConfiguredError），
+ * 前端据此提示「支付通道尚未配置，请联系管理员手动充值」。
+ */
+export async function createPaymentOrder(
+  amount_fen: number,
+  channel: string,
+): Promise<PaymentOrderCreateResult> {
+  return request<PaymentOrderCreateResult>("/payment/orders", {
+    method: "POST",
+    body: JSON.stringify({ amount_fen, channel }),
+  });
+}

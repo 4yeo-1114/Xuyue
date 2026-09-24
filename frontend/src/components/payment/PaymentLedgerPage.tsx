@@ -7,7 +7,6 @@ import {
   CardTitle,
   CardDescription,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -18,43 +17,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ChevronLeft, ChevronRight, Receipt, Inbox, Info } from "lucide-react";
-import {
-  fetchPaymentLedger,
-  fetchPaymentUsage,
-  type LedgerEntry,
-} from "@/services/paymentApi";
-import { fenToYuan } from "./PaymentWalletPage";
+import { ChevronLeft, ChevronRight, Receipt, Inbox, ScanLine, Info } from "lucide-react";
+import { fetchMyQuota, fetchMyQuotaRechargeLogs, type MyQuotaRechargeLog } from "@/services/quotaApi";
 
 const PAGE_SIZE = 20;
-
-/** 分录类型中文标签（后端取值沿用本仓习惯；未知类型原样透出，⛔ 不猜） */
-const ENTRY_TYPE_LABEL: Record<string, string> = {
-  grant: "入账",
-  consume: "消耗",
-  refund: "退款",
-  adjust: "调整",
-};
-
-/** 用量事件类型中文标签 */
-const KIND_LABEL: Record<string, string> = {
-  grade: "批改",
-  upload: "上传",
-};
-
-function entryTypeLabel(t: string): string {
-  return ENTRY_TYPE_LABEL[t] ?? t;
-}
-
-function kindLabel(k: string): string {
-  return KIND_LABEL[k] ?? k;
-}
-
-/** 金额展示：正数前置 +，负数带 -（单位：元） */
-function signedYuan(fen: number): string {
-  const v = Number(fen || 0);
-  return `${v > 0 ? "+" : ""}${fenToYuan(v)}`;
-}
 
 /** 时间展示：仅取到分钟，避免秒级噪声（后端 ISO 串） */
 function shortTime(iso: string | null | undefined): string {
@@ -87,74 +53,111 @@ function EmptyState({
 }
 
 /**
- * 我的资金流水（口径 B · 个人账本，只读）。
+ * 我的流水（面数口径 · 0924 需求）。
  *
- * ⚠️ 数据源 = `ledger_entries`，与口径 A（扫描消耗 / 用量汇总）**不是同一本账**（设计稿 §1）。
- * ⛔ 只读：无充值、无购买、无退款申请入口（Phase 1/2 待通道拍定）。
+ * 数据源 = `grading_quota_recharge_logs`（充值记录）+ `grading_quota`（消费概览）。
+ * ⛔ 与同事的「分余额资金流水」无关 —— 本页展示「面」从哪来（充值）、花到哪（消耗）。
  */
 export function PaymentLedgerPage() {
   const [page, setPage] = useState(1);
 
+  const { data: quota, isLoading: loadingQuota } = useQuery({
+    queryKey: ["quota", "me"],
+    queryFn: fetchMyQuota,
+  });
+
   const {
-    data: ledger,
-    isLoading: loadingLedger,
-    isError: ledgerError,
+    data: logs,
+    isLoading: loadingLogs,
+    isError: logsError,
   } = useQuery({
-    queryKey: ["payment", "ledger", page],
-    queryFn: () => fetchPaymentLedger({ page, page_size: PAGE_SIZE }),
+    queryKey: ["quota", "me", "recharge-logs", page],
+    queryFn: () => fetchMyQuotaRechargeLogs(page, PAGE_SIZE),
   });
 
-  const { data: usage, isLoading: loadingUsage } = useQuery({
-    queryKey: ["payment", "usage", "ledger-detail"],
-    queryFn: () => fetchPaymentUsage({ limit: 50 }),
-  });
-
-  const total = ledger?.total ?? 0;
+  const total = logs?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const items: LedgerEntry[] = ledger?.items ?? [];
+  const items: MyQuotaRechargeLog[] = logs?.items ?? [];
 
   return (
     <div className="space-y-4">
       <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-sm">
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
         <div className="text-muted-foreground">
-          这里是你的资金流水与用量明细（口径 B · 个人账本）。 侧边栏「扫描消耗 /
-          用量汇总」是平台成本口径的统计，不是你的账单。
+          这里是你的批改额度流水（面数口径）。下方「充值记录」展示额度从哪来，
+          「消费概览」展示额度花到哪。侧边栏「扫描消耗 / 用量汇总」是平台成本口径的统计，
+          与你的个人额度账单不同。
         </div>
       </div>
 
-      {/* ── 资金流水 ── */}
+      {/* ── 消费概览 ── */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <ScanLine className="h-4 w-4 text-primary" />
+            消费概览
+          </CardTitle>
+          <CardDescription>批改按「面」计费：1 张上传图 / 1 页 = 1 面</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {loadingQuota ? (
+            <Skeleton className="h-16 w-full" />
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div className="rounded-lg border p-4">
+                <p className="text-sm text-muted-foreground">累计已用</p>
+                <p className="mt-1 text-2xl font-semibold tabular-nums">
+                  {quota?.used_pages ?? 0}
+                  <span className="ml-1 text-sm font-normal text-muted-foreground">面</span>
+                </p>
+              </div>
+              <div className="rounded-lg border p-4">
+                <p className="text-sm text-muted-foreground">今日批改</p>
+                <p className="mt-1 text-2xl font-semibold tabular-nums">
+                  {quota?.today_pages ?? 0}
+                  <span className="ml-1 text-sm font-normal text-muted-foreground">面</span>
+                </p>
+              </div>
+              <div className="rounded-lg border p-4">
+                <p className="text-sm text-muted-foreground">剩余可用</p>
+                <p className="mt-1 text-2xl font-semibold tabular-nums">
+                  {Math.max(0, quota?.available ?? 0)}
+                  <span className="ml-1 text-sm font-normal text-muted-foreground">面</span>
+                </p>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── 充值记录 ── */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
             <Receipt className="h-4 w-4 text-primary" />
-            资金流水
+            充值记录
           </CardTitle>
           <CardDescription>
             共 {total} 笔 · 第 {page} / {pageCount} 页
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {loadingLedger ? (
+          {loadingLogs ? (
             <Skeleton className="h-40 w-full" />
-          ) : ledgerError ? (
-            <EmptyState icon={Inbox} text="流水加载失败，请稍后重试" />
+          ) : logsError ? (
+            <EmptyState icon={Inbox} text="充值记录加载失败，请稍后重试" />
           ) : items.length === 0 ? (
-            <EmptyState icon={Inbox} text="暂无流水记录" />
+            <EmptyState icon={Inbox} text="暂无充值记录" />
           ) : (
             <>
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[160px]">时间</TableHead>
-                    <TableHead className="w-[100px]">类型</TableHead>
-                    <TableHead className="w-[120px] text-right">
-                      金额（元）
-                    </TableHead>
-                    <TableHead className="w-[120px] text-right">
-                      记账后余额（元）
-                    </TableHead>
-                    <TableHead>说明</TableHead>
+                    <TableHead className="w-[180px]">时间</TableHead>
+                    <TableHead className="w-[110px] text-right">金额（元）</TableHead>
+                    <TableHead className="w-[110px] text-right">基准面</TableHead>
+                    <TableHead className="w-[110px] text-right">赠送面</TableHead>
+                    <TableHead className="w-[110px] text-right">总面数</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -163,25 +166,21 @@ export function PaymentLedgerPage() {
                       <TableCell className="text-muted-foreground">
                         {shortTime(row.created_at)}
                       </TableCell>
-                      <TableCell>
-                        <Badge variant="secondary">
-                          {entryTypeLabel(row.entry_type)}
-                        </Badge>
+                      <TableCell className="text-right tabular-nums font-medium">
+                        ¥{row.amount_yuan}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {row.base_pages}
                       </TableCell>
                       <TableCell
                         className={`text-right tabular-nums ${
-                          row.amount_fen >= 0
-                            ? "text-emerald-600"
-                            : "text-amber-600"
+                          row.bonus_pages > 0 ? "text-emerald-600" : "text-muted-foreground"
                         }`}
                       >
-                        {signedYuan(row.amount_fen)}
+                        {row.bonus_pages > 0 ? `+${row.bonus_pages}` : "0"}
                       </TableCell>
-                      <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {fenToYuan(row.balance_after_fen)}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {row.description || "—"}
+                      <TableCell className="text-right tabular-nums font-semibold">
+                        +{row.total_pages}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -214,48 +213,6 @@ export function PaymentLedgerPage() {
                 </div>
               ) : null}
             </>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* ── 用量明细（口径 B 净额） ── */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">用量明细</CardTitle>
-          <CardDescription>
-            按文件夹汇总的净用量（批改 / 上传计数，含删除冲正）
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {loadingUsage ? (
-            <Skeleton className="h-40 w-full" />
-          ) : (usage?.folders?.length ?? 0) === 0 ? (
-            <EmptyState icon={Inbox} text="暂无用量记录" />
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[120px]">类型</TableHead>
-                  <TableHead>文件夹</TableHead>
-                  <TableHead className="w-[120px] text-right">净用量</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {usage?.folders?.map((row) => (
-                  <TableRow key={`${row.kind}-${row.folder_safe}`}>
-                    <TableCell>
-                      <Badge variant="secondary">{kindLabel(row.kind)}</Badge>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {row.folder_safe || "—"}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {row.net}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
           )}
         </CardContent>
       </Card>

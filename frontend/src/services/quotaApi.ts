@@ -67,6 +67,25 @@ export interface QuotaRechargeLogPage {
   items: QuotaRechargeLog[];
 }
 
+/** 我的充值记录（GET /quota/me/recharge-logs，面数口径） */
+export interface MyQuotaRechargeLog {
+  id: string;
+  amount_yuan: number;
+  base_pages: number;
+  bonus_pages: number;
+  total_pages: number;
+  operator_id: string | null;
+  created_at: string | null;
+}
+
+/** 我的充值记录分页结果 */
+export interface MyQuotaRechargeLogPage {
+  total: number;
+  page: number;
+  page_size: number;
+  items: MyQuotaRechargeLog[];
+}
+
 /* ── mock 数据（前端联调用，后端就绪后随 USE_MOCK 一并删除） ── */
 
 const MOCK_TIERS: QuotaTier[] = [
@@ -164,5 +183,22 @@ export async function fetchQuotaRechargeLogs(
   if (filterUserId) params.set("filter_user_id", filterUserId);
   return request<QuotaRechargeLogPage>(
     `/admin/quota/recharge-logs?${params.toString()}`,
+  );
+}
+
+export async function fetchMyQuotaRechargeLogs(
+  page = 1,
+  pageSize = 50,
+): Promise<MyQuotaRechargeLogPage> {
+  if (USE_MOCK) {
+    await _delay();
+    return { total: 0, page, page_size: pageSize, items: [] };
+  }
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: String(pageSize),
+  });
+  return request<MyQuotaRechargeLogPage>(
+    `/quota/me/recharge-logs?${params.toString()}`,
   );
 }

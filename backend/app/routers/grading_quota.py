@@ -45,6 +45,37 @@ def quota_tiers(_uid: str = Depends(get_current_user_id)):
     return ApiResponse(data=qs.QUOTA_TIERS)
 
 
+@router.get("/quota/me/recharge-logs", response_model=ApiResponse[dict])
+def my_quota_recharge_logs(
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+):
+    """我的充值记录（面数，倒序分页）。老师查自己的钱花到哪、面数从哪来。"""
+    q = db.query(GradingQuotaRechargeLog).filter(GradingQuotaRechargeLog.user_id == user_id)
+    total = int(q.count())
+    rows = (
+        q.order_by(GradingQuotaRechargeLog.created_at.desc(), GradingQuotaRechargeLog.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    items = [
+        {
+            "id": str(r.id),
+            "amount_yuan": int(r.amount_yuan or 0),
+            "base_pages": int(r.base_pages or 0),
+            "bonus_pages": int(r.bonus_pages or 0),
+            "total_pages": int(r.total_pages or 0),
+            "operator_id": str(r.operator_id) if r.operator_id else None,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+    return ApiResponse(data={"total": total, "page": page, "page_size": page_size, "items": items})
+
+
 @router.get("/admin/quota/list", response_model=ApiResponse[list])
 def admin_quota_list(
     user_id: str = Depends(get_current_user_id),

@@ -38,5 +38,6 @@ class GradingQuotaRechargeLog(Base):
     base_pages = Column(Integer, nullable=False, default=0)
     bonus_pages = Column(Integer, nullable=False, default=0)
     total_pages = Column(Integer, nullable=False, default=0)
-    operator_id = Column(String(36), nullable=True)
+    operator_id = Column(String(36), nullable=True)  # 管理员手动加额时的操作员；支付入账时为 None
+    source_order_id = Column(String(36), nullable=True, unique=True)  # 支付订单号（幂等：一笔订单只加一次面）
     created_at = Column(DateTime(timezone=True), server_default=func.now())

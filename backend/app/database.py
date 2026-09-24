@@ -263,8 +263,10 @@ def _ensure_grading_quota_tables():
             bonus_pages INT NOT NULL DEFAULT 0,
             total_pages INT NOT NULL DEFAULT 0,
             operator_id VARCHAR(36) NULL,
+            source_order_id VARCHAR(36) NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             KEY ix_grading_quota_recharge_logs_user_id (user_id),
+            UNIQUE KEY uq_grading_quota_recharge_source_order (source_order_id),
             CONSTRAINT fk_grading_quota_recharge_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
@@ -276,6 +278,19 @@ def _ensure_grading_quota_tables():
                 conn.commit()
         except Exception:
             pass
+    # 已有库补列（支付桥：支付订单 → 额度面数入账的幂等键）
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE grading_quota_recharge_logs ADD COLUMN source_order_id VARCHAR(36) NULL"))
+            conn.commit()
+    except Exception:
+        pass
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE grading_quota_recharge_logs ADD UNIQUE KEY uq_grading_quota_recharge_source_order (source_order_id)"))
+            conn.commit()
+    except Exception:
+        pass
 
 
 def _ensure_response_logs_table():

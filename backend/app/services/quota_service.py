@@ -6,15 +6,19 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import date
 from pathlib import Path
 from typing import Optional
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models.grading_quota import GradingQuota, GradingQuotaRechargeLog
+
+logger = logging.getLogger(__name__)
 
 # 充值档位：100→300、500→1600、1000→3300、2000→7500、5000→20000
 QUOTA_TIERS: list[dict] = [
@@ -165,6 +169,64 @@ def recharge(
         "ok": True,
         "base_pages": tier["base_pages"],
         "bonus_pages": tier["bonus_pages"],
+        "total_pages": tier["total_pages"],
+        "new_total": int(q.total_pages or 0),
+    }
+
+
+def credit_from_payment(
+    db: Session,
+    *,
+    user_id: str,
+    order_id: str,
+    amount_yuan: int,
+) -> Optional[dict]:
+    """支付桥：通道确认收款后按档位加面（同事支付系统 → 我的额度体系）。
+
+    幂等：`GradingQuotaRechargeLog.source_order_id` 唯一约束兜底 —— 同一订单重复回调
+    只加一次面（与账本侧 `pay-confirm|{order_id}` 的幂等语义对齐，两层各自独立兜底）。
+    非档位金额：记 error 不加面（需人工核查），分账本那边仍按实收入账、不受影响。
+    """
+    oid = str(order_id or "").strip()
+    if not oid:
+        return None
+    tier = tier_by_amount(int(amount_yuan or 0))
+    if tier is None:
+        logger.error(
+            "支付确认金额非充值档位，不加面（需人工核查）：order_id=%s amount_yuan=%s",
+            oid,
+            amount_yuan,
+        )
+        return None
+    # 幂等快路径：同订单已加过面 ⇒ 直接返回
+    already = (
+        db.query(GradingQuotaRechargeLog)
+        .filter(GradingQuotaRechargeLog.source_order_id == oid)
+        .first()
+    )
+    if already is not None:
+        return None
+    q = get_or_create_quota(db, user_id)
+    q.total_pages = int(q.total_pages or 0) + tier["total_pages"]
+    db.add(
+        GradingQuotaRechargeLog(
+            user_id=str(user_id).strip(),
+            amount_yuan=tier["amount_yuan"],
+            base_pages=tier["base_pages"],
+            bonus_pages=tier["bonus_pages"],
+            total_pages=tier["total_pages"],
+            operator_id=None,
+            source_order_id=oid,
+        )
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        # 并发/重复投递：唯一约束冲突 ⇒ 已加过面，回滚（不重复加）
+        db.rollback()
+        return None
+    return {
+        "ok": True,
         "total_pages": tier["total_pages"],
         "new_total": int(q.total_pages or 0),
     }

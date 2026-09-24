@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.payment_order import PaymentOrder
 from app.models.user import gen_uuid
+from app.services import quota_service
 from app.services.payment import ledger as ledger_svc
 from app.services.payment.channels import (
     CallbackVerificationError,
@@ -110,4 +111,22 @@ def handle_callback(
         paid_amount_fen=fact.paid_amount_fen,
         paid_at=fact.paid_at,
     )
+
+    # 支付桥：通道确认收款 → 我的额度按档位加面（幂等，source_order_id 唯一兜底）。
+    # 档位按「订单金额」（买了哪一档）反查，⛔ 不按「通道实收」（实收可能与订单有出入，
+    # 那是需要人工核查的差异，不应改变该加的档位面数）。
+    order = db.query(PaymentOrder).filter(PaymentOrder.id == fact.order_id).first()
+    if order is not None:
+        try:
+            quota_service.credit_from_payment(
+                db,
+                user_id=order.user_id,
+                order_id=order.id,
+                amount_yuan=int(order.amount_fen or 0) // 100,
+            )
+        except Exception:
+            logger.error(
+                "支付确认后按档位加面失败（需人工核查）：order_id=%s", fact.order_id, exc_info=True
+            )
+
     return fact, entry, created

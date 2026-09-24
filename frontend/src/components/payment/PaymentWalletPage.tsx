@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Card,
   CardContent,
@@ -6,60 +6,56 @@ import {
   CardTitle,
   CardDescription,
 } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Wallet, TrendingDown, TrendingUp, Info, ScanLine } from "lucide-react";
-import { fetchPaymentAccount, fetchPaymentUsage } from "@/services/paymentApi";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
+import { QuotaProgressBar, usedPct } from "@/components/quota/QuotaProgressBar";
+import { fetchMyQuota, fetchQuotaTiers } from "@/services/quotaApi";
+import { createPaymentOrder } from "@/services/paymentApi";
+import { ApiError } from "@/services/api";
+import { toast } from "sonner";
+import {
+  Wallet,
+  Zap,
+  Gauge,
+  CalendarDays,
+  AlertTriangle,
+  ShieldCheck,
+  CreditCard,
+  Info,
+} from "lucide-react";
 
-/* ── 金额格式化：后端一律「分」，展示统一到元（两位小数） ── */
-export function fenToYuan(fen: number): string {
-  return (Number(fen || 0) / 100).toFixed(2);
-}
+/** 支付通道标识（与后端 payment channels 对齐） */
+const CHANNEL_WECHAT = "wechat_pay";
+const CHANNEL_ALIPAY = "alipay";
 
-/** 账户状态中文标签（后端 status 取值沿用本仓习惯；未知值原样透出，不猜） */
-const ACCOUNT_STATUS_LABEL: Record<string, string> = {
-  active: "正常",
-  frozen: "已冻结",
-  closed: "已注销",
-};
-
-/* ── 指标卡 ── */
 function StatCard({
   icon: Icon,
   label,
   value,
   unit,
   sub,
-  color,
 }: {
   icon: React.ElementType;
   label: string;
   value: string;
   unit?: string;
   sub?: string;
-  color: string;
 }) {
   return (
-    <Card>
-      <CardContent className="pt-6">
+    <Card className="card-elevated">
+      <CardContent className="p-5">
         <div className="flex items-start justify-between">
-          <div>
+          <div className="space-y-1 min-w-0">
             <p className="text-sm text-muted-foreground">{label}</p>
-            <p className="mt-1 flex items-baseline gap-1">
-              <span className="text-2xl font-semibold tabular-nums">
-                {value}
-              </span>
-              {unit ? (
-                <span className="text-sm text-muted-foreground">{unit}</span>
-              ) : null}
-            </p>
-            {sub ? (
-              <p className="mt-1 text-xs text-muted-foreground">{sub}</p>
-            ) : null}
+            <div className="flex items-baseline gap-1">
+              <span className="text-2xl font-semibold tabular-nums">{value}</span>
+              {unit && <span className="text-sm text-muted-foreground">{unit}</span>}
+            </div>
+            {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
           </div>
-          <div className={`rounded-xl p-2 ${color}`}>
-            <Icon className="h-5 w-5" />
-          </div>
+          <Icon className="w-5 h-5 text-muted-foreground/50" strokeWidth={1.75} />
         </div>
       </CardContent>
     </Card>
@@ -67,142 +63,196 @@ function StatCard({
 }
 
 /**
- * 我的余额（口径 B · 个人账本）。
+ * 我的钱包（面数口径 · 0924 需求）。
  *
- * ⚠️ 本页数据源 = `payment_accounts` + `usage_events`，与「扫描消耗 / 用量汇总」
- * （口径 A · 平台成本核算）**不是同一本账**，数值不可比、不可相加（设计稿 §1、§9 P0-9）。
- * ⛔ 本页**只读**：Phase 1/2 的充值、购买、套餐入口一律不在此出现。
+ * 数据源 = `grading_quota`（1 上传图/页 = 1 面），与同事的「分余额」账本无关。
+ * 充值 = 微信/支付宝下单（同事支付通道），通道确认收款后由支付桥按档位自动加面。
+ * ⛔ 通道凭据未配置时后端返回 501，前端据此提示「联系管理员手动充值」。
  */
 export function PaymentWalletPage() {
-  const { data: account, isLoading: loadingAccount } = useQuery({
-    queryKey: ["payment", "account"],
-    queryFn: fetchPaymentAccount,
+  const queryClient = useQueryClient();
+
+  const { data: quota, isLoading: loadingQuota } = useQuery({
+    queryKey: ["quota", "me"],
+    queryFn: fetchMyQuota,
+  });
+  const { data: tiers } = useQuery({
+    queryKey: ["quota", "tiers"],
+    queryFn: fetchQuotaTiers,
   });
 
-  const { data: usage, isLoading: loadingUsage } = useQuery({
-    queryKey: ["payment", "usage", "wallet-overview"],
-    queryFn: () => fetchPaymentUsage({ limit: 1 }),
+  const recharge = useMutation({
+    mutationFn: ({ amountYuan, channel }: { amountYuan: number; channel: string }) =>
+      createPaymentOrder(amountYuan * 100, channel),
+    onSuccess: (res, vars) => {
+      toast.success(
+        `已生成 ¥${vars.amountYuan} 充值订单（${res.order_id}），支付完成后额度自动到账`,
+      );
+      queryClient.invalidateQueries({ queryKey: ["quota", "me"] });
+      queryClient.invalidateQueries({ queryKey: ["quota", "me", "recharge-logs"] });
+    },
+    onError: (e) => {
+      if (e instanceof ApiError && e.status === 501) {
+        toast.error("支付通道尚未配置，请联系管理员手动充值");
+      } else {
+        toast.error(e instanceof Error ? e.message : "下单失败");
+      }
+    },
   });
 
-  if (loadingAccount) {
+  if (loadingQuota) {
     return (
       <div className="space-y-4">
-        <Skeleton className="h-[110px] w-full" />
-        <Skeleton className="h-[110px] w-full" />
+        <Skeleton className="h-8 w-40" />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-24" />
+          ))}
+        </div>
+        <Skeleton className="h-40" />
       </div>
     );
   }
 
+  if (!quota) {
+    return (
+      <Alert variant="destructive">
+        <AlertTriangle className="w-4 h-4" />
+        <AlertTitle>加载失败</AlertTitle>
+        <AlertDescription>无法获取额度信息</AlertDescription>
+      </Alert>
+    );
+  }
+
+  const pct = quota.used_pct ?? usedPct(quota.used_pages, quota.total_pages);
+
   return (
-    <div className="space-y-4">
-      {/* ── 口径标注（P0-9）：老师不得误认为下方「扫描消耗/用量汇总」是自己账单 ── */}
-      <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-sm">
-        <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-        <div className="text-muted-foreground">
-          <span className="font-medium text-foreground">
-            本页是你的个人账本
-          </span>
-          （余额与资金流水）。
-          <span className="mx-1">
-            侧边栏「扫描消耗 / 用量汇总」是
-            <span className="font-medium text-foreground">平台成本口径</span>
-            的用量统计，
-          </span>
-          <span className="font-medium text-foreground">
-            不是你的账单，两者数值不可比、不可相加。
-          </span>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-semibold">我的钱包</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            批改按「面」计费：1 张上传图 / 1 页 = 1 面
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="w-4 h-4 text-muted-foreground" />
+          {quota.locked || pct >= 105 ? (
+            <Badge variant="destructive">已停用</Badge>
+          ) : pct >= 90 ? (
+            <Badge className="bg-amber-500 text-white">接近上限</Badge>
+          ) : (
+            <Badge variant="secondary">额度充足</Badge>
+          )}
         </div>
       </div>
 
-      {/* ── 余额三卡 ── */}
-      <div className="grid gap-4 md:grid-cols-3">
+      {(quota.locked || pct >= 105) && (
+        <Alert variant="destructive">
+          <AlertTriangle className="w-4 h-4" />
+          <AlertTitle>批改额度已用尽</AlertTitle>
+          <AlertDescription>
+            已用面数超过总量的 105%，系统已自动停止批改功能，请及时充值。
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* ── 面数余额 ── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard icon={Wallet} label="总量" value={String(quota.total_pages)} unit="面" />
+        <StatCard icon={Zap} label="已用" value={String(quota.used_pages)} unit="面" />
         <StatCard
-          icon={Wallet}
-          label="可用余额"
-          value={`¥${fenToYuan(account?.balance_fen ?? 0)}`}
-          sub="账户余额（元）"
-          color="bg-primary/10 text-primary"
+          icon={Gauge}
+          label="剩余"
+          value={String(Math.max(0, quota.available))}
+          unit="面"
+          sub={quota.available < 0 ? "已超量" : undefined}
         />
-        <StatCard
-          icon={TrendingUp}
-          label="累计入账"
-          value={`¥${fenToYuan(account?.total_recharged_fen ?? 0)}`}
-          sub="含后台人工入账 / 赠送"
-          color="bg-emerald-500/10 text-emerald-600"
-        />
-        <StatCard
-          icon={TrendingDown}
-          label="累计消耗"
-          value={`¥${fenToYuan(account?.total_consumed_fen ?? 0)}`}
-          sub="已扣费合计（元）"
-          color="bg-amber-500/10 text-amber-600"
-        />
+        <StatCard icon={CalendarDays} label="今日批改" value={String(quota.today_pages)} unit="面" />
       </div>
 
-      {/* ── 账户状态 ── */}
       <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">账户状态</CardTitle>
+        <CardHeader>
+          <CardTitle>已用 / 总量</CardTitle>
+          <CardDescription>已用占总量的 {pct.toFixed(1)}%</CardDescription>
         </CardHeader>
-        <CardContent className="text-sm">
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">当前状态：</span>
-            <Badge variant="secondary">
-              {ACCOUNT_STATUS_LABEL[account?.status ?? ""] ?? account?.status}
-            </Badge>
-          </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            账户由系统在你首次使用后自动开通；余额变更的每一笔都会记入资金流水。
-          </p>
-
-          {/* ── 退款规则（设计稿 §10 Q5 / §9 P2-4 的「前端明示」要求）──
-             ⚠️ 文案**逐字**采用主导者 2026-09-24 拍定口径，⛔ 不自创法律措辞、⛔ 不承诺未拍项。 */}
-          <div className="mt-3 flex items-start gap-2 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <CardContent className="space-y-3">
+          <QuotaProgressBar
+            used={quota.used_pages}
+            total={quota.total_pages}
+            locked={quota.locked}
+          />
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>0</span>
             <span>
-              <span className="font-medium text-foreground">退款规则：</span>
-              余额不可退，只退套餐未使用部分。
+              总量 {quota.total_pages} 面（105% = {Math.ceil(quota.total_pages * 1.05)} 面停）
             </span>
           </div>
         </CardContent>
       </Card>
 
-      {/* ── 用量概览（口径 B 净额） ── */}
+      {/* ── 充值档位 ── */}
       <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ScanLine className="h-4 w-4 text-primary" />
-            我的用量
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <CreditCard className="h-4 w-4 text-primary" />
+            充值
           </CardTitle>
           <CardDescription>
-            口径 B：按事件净额统计（含删除冲正），与平台成本口径无关
+            选择档位后通过微信或支付宝支付；支付通道确认收款后额度自动到账
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          {loadingUsage ? (
-            <Skeleton className="h-16 w-full" />
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="rounded-lg border p-4">
-                <p className="text-sm text-muted-foreground">累计批改</p>
-                <p className="mt-1 text-2xl font-semibold tabular-nums">
-                  {usage?.total_grade ?? 0}
-                  <span className="ml-1 text-sm font-normal text-muted-foreground">
-                    份
-                  </span>
-                </p>
-              </div>
-              <div className="rounded-lg border p-4">
-                <p className="text-sm text-muted-foreground">累计上传</p>
-                <p className="mt-1 text-2xl font-semibold tabular-nums">
-                  {usage?.total_upload ?? 0}
-                  <span className="ml-1 text-sm font-normal text-muted-foreground">
-                    份
-                  </span>
-                </p>
-              </div>
-            </div>
-          )}
+        <CardContent className="space-y-3">
+          <div className="flex items-start gap-2 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              微信/支付宝通道尚未接入时，可联系管理员手动充值（到账面数 = 基准 + 赠送）。
+            </span>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {(tiers ?? []).map((t) => {
+              const pendingChannel = recharge.isPending ? recharge.variables?.channel : null;
+              return (
+                <div key={t.amount_yuan} className="rounded-lg border p-4 space-y-3">
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-2xl font-semibold tabular-nums">¥{t.amount_yuan}</span>
+                    <span className="text-sm text-muted-foreground">
+                      {t.bonus_pages > 0 ? `送 ${t.bonus_pages} 面` : "无赠送"}
+                    </span>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    到账{" "}
+                    <span className="font-semibold text-foreground">{t.total_pages} 面</span>
+                    （基准 {t.base_pages} + 赠送 {t.bonus_pages}）
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700"
+                      disabled={recharge.isPending}
+                      onClick={() =>
+                        recharge.mutate({ amountYuan: t.amount_yuan, channel: CHANNEL_WECHAT })
+                      }
+                    >
+                      {pendingChannel === CHANNEL_WECHAT ? "下单中…" : "微信充值"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="flex-1"
+                      disabled={recharge.isPending}
+                      onClick={() =>
+                        recharge.mutate({ amountYuan: t.amount_yuan, channel: CHANNEL_ALIPAY })
+                      }
+                    >
+                      {pendingChannel === CHANNEL_ALIPAY ? "下单中…" : "支付宝充值"}
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </CardContent>
       </Card>
     </div>
