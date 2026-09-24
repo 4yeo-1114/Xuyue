@@ -45,6 +45,7 @@ import {
   Users,
   Receipt,
   BarChart4,
+  Wallet,
 } from "lucide-react";
 import { toast } from "sonner";
 import { exitPackagedApp } from "@/services/gradingApi";
@@ -267,6 +268,25 @@ export const NAV_ITEMS: NavGroup[] = [
       { id: "usage-summary", label: "用量汇总", icon: BarChart4 },
     ],
   },
+  {
+    id: "payment",
+    label: "我的账户",
+    icon: Wallet,
+    children: [
+      {
+        id: "payment-wallet",
+        label: "我的余额",
+        icon: Wallet,
+        adminOnly: true,
+      },
+      {
+        id: "payment-ledger",
+        label: "资金流水",
+        icon: Receipt,
+        adminOnly: true,
+      },
+    ],
+  },
 ];
 
 /* ── 视觉分组：将顶级组归入小节（仅视觉呈现，不改 NAV_ITEMS 的 id 契约） ── */
@@ -306,6 +326,11 @@ const NAV_SECTIONS: NavSection[] = [
     key: "bureau",
     label: { zh: "教育局", en: "Education Bureau" },
     items: ["bureau"],
+  },
+  {
+    key: "wallet",
+    label: { zh: "我的账户", en: "My Account" },
+    items: ["payment"],
   },
   { key: "system", label: { zh: "系统", en: "System" }, items: ["settings"] },
   {

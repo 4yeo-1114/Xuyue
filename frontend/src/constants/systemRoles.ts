@@ -64,6 +64,8 @@ export const TEACHER_NAV_WHITELIST = [
   "settings-multi-device",
   "scan-consumption",
   "usage-summary",
+  "payment-wallet",
+  "payment-ledger",
 ] as const;
 
 /** 白名单的 O(1) 判据（与 TEACHER_NAV_WHITELIST 同源，勿另建第二份） */
