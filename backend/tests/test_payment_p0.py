@@ -262,6 +262,11 @@ def _grade_events(db):
                                        UsageEvent.kind == "grade").all()
 
 
+def _events(db, user_id, kind):
+    return db.query(UsageEvent).filter(UsageEvent.user_id == user_id,
+                                       UsageEvent.kind == kind).all()
+
+
 def test_p0_3_batch_three_images_yields_one_event(sqlite_env, grade_ctx):
     """批量批改 1 个学生 3 张图 ⇒ **恰 1 条** usage_events(delta=+1)。"""
     import app.grading.grading_stats as GS
@@ -297,6 +302,37 @@ def test_p0_3_l1_same_event_uid_swallowed_by_unique_index(sqlite_env):
     rows = db.query(UsageEvent).filter(UsageEvent.user_id == TEACHER0,
                                        UsageEvent.kind == "upload").all()
     assert len(rows) == 1, f"期望只落 1 行，实得 {len(rows)}"
+
+
+def test_p0_3_empty_subject_key_logged_not_silently_dropped(sqlite_env, caplog):
+    """§7.1：`subject_key` 为空/纯空白 ⇒ 不投口径 B 事件，⛔ **但必须留痕，不许静默**。
+
+    实测（`_reach_probe.py`）：空串经现有调用点不可达；但纯空白 stem **可达**
+    （`get_stat_student_key("   .jpg") == "   "`）。真发生时口径 A 已把这 1 份计入
+    （`upload_count=1`）而口径 B 无事件 ⇒ 两边口径不一致 = 静默少收钱。
+    """
+    import logging
+
+    import app.grading.grading_stats as GS
+    from app.models.grading_daily_stat import GradingDailyStat
+
+    TestSession, db = sqlite_env
+    caplog.set_level(logging.ERROR, logger="app.grading.grading_stats")
+
+    # 前置事实：这一空 key 的来源是可复算的（不是臆造的输入）
+    assert GS.get_stat_student_key("   .jpg") == "   "
+    GS.record_upload(TEACHER, FOLDER, 1, subject_key="")
+    GS.record_upload(TEACHER, FOLDER, 1, subject_key="   ")   # 纯空白同分支
+
+    # 口径 A 照计 ⇒ 这不是「无事发生」
+    st = db.query(GradingDailyStat).filter(GradingDailyStat.user_id == TEACHER).one()
+    assert int(st.upload_count) == 2, f"口径 A 应计入，实得 upload_count={st.upload_count}"
+    # 口径 B 不落事件（空 subject 无法归属到「哪个学生」）
+    assert len(_events(db, TEACHER, "upload")) == 0
+    # ⛔ 但必须留痕（红：删掉 logger.error ⇒ 本断言变红）
+    errs = [r for r in caplog.records if r.levelno == logging.ERROR
+            and "计量丢弃" in r.getMessage()]
+    assert len(errs) == 2, f"空 subject_key 必须逐次留痕，实得 {len(errs)} 条 ERROR"
 
 
 def test_p0_3_repeat_delivery_no_new_row(sqlite_env, grade_ctx):

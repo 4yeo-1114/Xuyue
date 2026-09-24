@@ -29,6 +29,24 @@ def _emit_usage(kind: str, user_id: str, folder_safe: str, subject_key: str,
                 delta: int, count: int = 1, occurrence: str = "") -> None:
     """旁路投递口径 B 用量事件。失败只留痕，⛔ 绝不向批改主流程抛异常。"""
     if not str(subject_key or "").strip():
+        # ⚠️ 实测（脚本与原始输出见交付报告，2026-09-24）：
+        #   · 空串路径**当前不可达**：两个调用点传的都是真实文件名
+        #     （`grading/router.py:859` `target_file.name` / `:3890` `save_name`），
+        #     `Path.name` 不可能为空。
+        #   · 但**纯空白 stem 可达**：`get_stat_student_key("   .jpg") == "   "`
+        #     （前后空格在 Windows/Linux 都是合法文件名），它同样落到本分支。
+        #   真发生时的后果：口径 A 的 `grading_daily_stats` **已经把这 1 份计进去了**
+        #   （实测 `upload_count=1`），口径 B 却不落 `usage_events` ⇒
+        #   **两边口径不一致 = 静默少收钱** —— 正是 §7.1 全篇要防的那个形态。
+        #   ⛔ 所以绝不静默 return：必须留痕（与同函数 except 分支同款）。
+        #   根治不在此处：placeholder 归并键属 ① 类业务口径，未擅自发明；
+        #   应在上游拒绝空/纯空白文件名，或 Phase 1 定 placeholder 规则。
+        logger.error(
+            "口径 B 计量丢弃：subject_key 为空/纯空白，本次不投用量事件"
+            "（口径 A 的 grading_daily_stats 可能已把这份计入）："
+            "kind=%s user_id=%s folder=%s subject=%r delta=%s",
+            kind, user_id, folder_safe, subject_key, delta,
+        )
         return
     try:
         from app.services.payment.metering import emit_usage_events
