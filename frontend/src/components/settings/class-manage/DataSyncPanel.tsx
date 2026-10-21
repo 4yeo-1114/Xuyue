@@ -18,8 +18,10 @@ import { useLocale } from "@/contexts/LocaleContext";
 import {
   getDingtalkSyncStatus,
   listDingtalkDepartments,
+  listDingtalkDeptUsers,
   syncDingtalkClasses,
   type DingtalkDepartment,
+  type DingtalkDeptUser,
   type DingtalkSyncStatus,
 } from "@/services/api";
 
@@ -57,6 +59,11 @@ export function DataSyncPanel({
   const [syncing, setSyncing] = useState(false);
   const [loadingDepts, setLoadingDepts] = useState(false);
   const [syncResult, setSyncResult] = useState("");
+  // 同步范围：class=整班名单 / student=只同步单个学生
+  const [syncScope, setSyncScope] = useState<"class" | "student">("class");
+  const [deptUsers, setDeptUsers] = useState<DingtalkDeptUser[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [selectedUserId, setSelectedUserId] = useState("");
 
   const timeNow = () => {
     const d = new Date();
@@ -111,6 +118,30 @@ export function DataSyncPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 「只同步单个学生」模式下拉取所选部门的成员列表
+  useEffect(() => {
+    if (syncScope !== "student" || !selectedDeptId) {
+      setDeptUsers([]);
+      setSelectedUserId("");
+      return;
+    }
+    let cancelled = false;
+    setLoadingUsers(true);
+    listDingtalkDeptUsers(Number(selectedDeptId))
+      .then((users) => {
+        if (!cancelled) setDeptUsers(users);
+      })
+      .catch(() => {
+        if (!cancelled) setDeptUsers([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingUsers(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [syncScope, selectedDeptId]);
+
   const handleSync = async () => {
     const deptId = Number(selectedDeptId);
     if (!deptId) {
@@ -127,6 +158,13 @@ export function DataSyncPanel({
       });
       return;
     }
+    if (syncScope === "student" && !selectedUserId) {
+      toast({
+        variant: "destructive",
+        title: t("settingsClass.sync.selectStudentFirst"),
+      });
+      return;
+    }
     setSyncing(true);
     setSyncResult("");
     try {
@@ -134,6 +172,8 @@ export function DataSyncPanel({
         dept_id: deptId,
         school_level: schoolLevel,
         grade: grade.trim(),
+        scope: syncScope,
+        student_userid: syncScope === "student" ? selectedUserId : undefined,
       });
       const msg = t("settingsClass.sync.syncDone", {
         cc: res.classes_created,
@@ -291,7 +331,10 @@ export function DataSyncPanel({
             </span>
             <select
               value={selectedDeptId}
-              onChange={(e) => setSelectedDeptId(e.target.value)}
+              onChange={(e) => {
+                setSelectedDeptId(e.target.value);
+                setSelectedUserId(""); // 换部门后重新选学生
+              }}
               className="h-7 flex-1 min-w-0 rounded-md border border-input bg-background px-2 text-xs"
             >
               <option value="">
@@ -348,18 +391,87 @@ export function DataSyncPanel({
             />
           </div>
 
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground w-[88px] shrink-0">
+              {t("settingsClass.sync.scopeLabel")}
+            </span>
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={() => setSyncScope("class")}
+                className={`h-7 w-[88px] rounded-md border text-xs transition-colors ${
+                  syncScope === "class"
+                    ? "border-emerald-400 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+                    : "border-input bg-background text-muted-foreground hover:bg-accent"
+                }`}
+              >
+                {t("settingsClass.sync.scopeClass")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSyncScope("student")}
+                className={`h-7 w-[88px] rounded-md border text-xs transition-colors ${
+                  syncScope === "student"
+                    ? "border-emerald-400 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+                    : "border-input bg-background text-muted-foreground hover:bg-accent"
+                }`}
+              >
+                {t("settingsClass.sync.scopeStudent")}
+              </button>
+            </div>
+          </div>
+
+          {syncScope === "student" && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground w-[88px] shrink-0">
+                {t("settingsClass.sync.selectStudent")}
+              </span>
+              <select
+                value={selectedUserId}
+                onChange={(e) => setSelectedUserId(e.target.value)}
+                disabled={!selectedDeptId || loadingUsers}
+                className="h-7 flex-1 min-w-0 rounded-md border border-input bg-background px-2 text-xs"
+              >
+                <option value="">
+                  {loadingUsers
+                    ? t("settingsClass.sync.syncing")
+                    : t("settingsClass.sync.selectStudent")}
+                </option>
+                {deptUsers.map((u) => (
+                  <option key={u.userid} value={u.userid}>
+                    {u.name || u.userid}
+                    {u.mobile ? `（${u.mobile}）` : ""}
+                  </option>
+                ))}
+              </select>
+              {!loadingUsers && selectedDeptId && deptUsers.length === 0 && (
+                <span className="text-[10px] text-amber-600 shrink-0">
+                  {t("settingsClass.sync.noDeptUsers")}
+                </span>
+              )}
+            </div>
+          )}
+
           <Button
             size="sm"
             className="h-7 text-xs gap-1"
             onClick={handleSync}
-            disabled={syncing || !selectedDeptId}
+            disabled={
+              syncing ||
+              !selectedDeptId ||
+              (syncScope === "student" && !selectedUserId)
+            }
           >
             {syncing ? (
               <Loader2 className="w-3 h-3 animate-spin" />
             ) : (
               <RefreshCw className="w-3 h-3" />
             )}
-            {syncing ? t("settingsClass.sync.syncing") : t("settingsClass.sync.syncNow")}
+            {syncing
+              ? t("settingsClass.sync.syncing")
+              : syncScope === "student"
+                ? t("settingsClass.sync.syncStudentNow")
+                : t("settingsClass.sync.syncNow")}
           </Button>
 
           {syncResult && (

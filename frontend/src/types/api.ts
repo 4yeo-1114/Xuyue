@@ -99,6 +99,8 @@ export interface StudentInfo {
   seat_col?: number | null;
   cadre_role?: string | null;
   notes?: string | null;
+  /** 钉钉成员 userid（已同步钉钉的学生有值） */
+  dingtalk_userid?: string | null;
   created_at?: string;
   updated_at?: string;
 }

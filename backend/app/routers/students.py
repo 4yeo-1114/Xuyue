@@ -1,5 +1,5 @@
 """学生 CRUD：按班级列出、添加学生；协作教师按角色授权"""
-from typing import List
+from typing import List, Optional
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
@@ -57,6 +57,7 @@ def _orm_to_record(s: Student, include_pii: bool = True) -> StudentRecord:
         student_number=student_number,
         gender=getattr(s, "gender", None),
         tier=getattr(s, "tier", None),
+        dingtalk_userid=getattr(s, "dingtalk_userid", None),
         status=getattr(s, "status", None),
         birthday=birthday,
         phone=phone,
@@ -321,6 +322,9 @@ def import_students(
 @router.post("/import/global", response_model=ApiResponse[int])
 def import_students_global(
     file: UploadFile = File(...),
+    # 选填：表格缺「年级」「班级」列（或单元格为空）时的兜底目标班级。
+    # 姓名仍是唯一必填列——用户只要一列姓名就能导入。
+    fallback_class_id: Optional[str] = Form(None),
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
@@ -352,44 +356,61 @@ def import_students_global(
                 found_cols[attr] = col
                 break
     
-    if 'name' not in found_cols or 'grade' not in found_cols or 'class_name' not in found_cols:
-        raise HTTPException(status_code=400, detail="未找到'年级'、'班级'或'姓名'列，请检查文件格式")
+    if 'name' not in found_cols:
+        raise HTTPException(status_code=400, detail="未找到'姓名'列，请检查文件格式")
+
+    # 年级/班级为选填：有表头就按班级分组；没有（或没给兜底班级）就只认姓名列。
+    has_class_cols = 'grade' in found_cols and 'class_name' in found_cols
+    fallback_class = None
+    if fallback_class_id:
+        fallback_class = db.query(Class).filter(Class.id == fallback_class_id).first()
+        if fallback_class and not can_manage_students(db, user_id, fallback_class.id):
+            raise HTTPException(status_code=403, detail="无权限管理该班级学生")
+    if not has_class_cols and not fallback_class:
+        raise HTTPException(
+            status_code=400,
+            detail="表格没有'年级'、'班级'列，请在表格中补充这两列，或选择一个目标班级后再导入",
+        )
 
     # Group by grade and class name to batch insert
     created = 0
-    
+
     # We will bulk query existing classes and students to avoid N+1 queries
     # First, collect all unique grade/class_name pairs
     class_keys = set()
-    for _, row in df.iterrows():
-        raw_grade = str(row.get(found_cols.get('grade', ''), "")).strip()
-        class_name = str(row.get(found_cols.get('class_name', ''), "")).strip()
-        if class_name.endswith('.0'):
-            class_name = class_name[:-2]
-        if raw_grade and raw_grade != "nan" and class_name and class_name != "nan":
-            # Clean up grade
-            grade = raw_grade
-            if grade.startswith("小学"):
-                pass
-            elif grade in ["一年级", "二年级", "三年级", "四年级", "五年级", "六年级"]:
-                grade = "小学" + grade
-            elif grade.startswith("初中"):
-                grade = grade.replace("初中", "初")
-                grade = grade.replace("一年级", "一").replace("二年级", "二").replace("三年级", "三")
-            elif grade.startswith("高中"):
-                grade = grade.replace("高中", "高")
-                grade = grade.replace("一年级", "一").replace("二年级", "二").replace("三年级", "三")
-            elif grade in ["初一", "初二", "初三", "高一", "高二", "高三"]:
-                pass
-            class_keys.add((grade, class_name))
+    if has_class_cols:
+        for _, row in df.iterrows():
+            raw_grade = str(row.get(found_cols.get('grade', ''), "")).strip()
+            class_name = str(row.get(found_cols.get('class_name', ''), "")).strip()
+            if class_name.endswith('.0'):
+                class_name = class_name[:-2]
+            if raw_grade and raw_grade != "nan" and class_name and class_name != "nan":
+                # Clean up grade
+                grade = raw_grade
+                if grade.startswith("小学"):
+                    pass
+                elif grade in ["一年级", "二年级", "三年级", "四年级", "五年级", "六年级"]:
+                    grade = "小学" + grade
+                elif grade.startswith("初中"):
+                    grade = grade.replace("初中", "初")
+                    grade = grade.replace("一年级", "一").replace("二年级", "二").replace("三年级", "三")
+                elif grade.startswith("高中"):
+                    grade = grade.replace("高中", "高")
+                    grade = grade.replace("一年级", "一").replace("二年级", "二").replace("三年级", "三")
+                elif grade in ["初一", "初二", "初三", "高一", "高二", "高三"]:
+                    pass
+                class_keys.add((grade, class_name))
 
     # Fetch all relevant classes in one go
     from sqlalchemy import or_, and_
-    if not class_keys:
+    existing_classes = []
+    if class_keys:
+        class_conditions = [and_(Class.grade == g, Class.name == n) for g, n in class_keys]
+        existing_classes = db.query(Class).filter(or_(*class_conditions)).all()
+    if fallback_class and all(c.id != fallback_class.id for c in existing_classes):
+        existing_classes.append(fallback_class)
+    if not existing_classes:
         return ApiResponse(data=0)
-
-    class_conditions = [and_(Class.grade == g, Class.name == n) for g, n in class_keys]
-    existing_classes = db.query(Class).filter(or_(*class_conditions)).all()
     class_map = {(c.grade, c.name): c for c in existing_classes}
 
     existing_students = db.query(Student).filter(
@@ -412,26 +433,35 @@ def import_students_global(
         if class_name.endswith('.0'):
             class_name = class_name[:-2]
         name = str(row.get(found_cols.get('name', ''), "")).strip()
-        
-        if not name or name == "nan" or not raw_grade or raw_grade == "nan" or not class_name or class_name == "nan":
+
+        # 姓名是唯一必填列；年级/班级缺行时落到兜底班级
+        if not name or name == "nan":
             continue
-            
-        grade = raw_grade
-        if grade.startswith("小学"):
-            pass
-        elif grade in ["一年级", "二年级", "三年级", "四年级", "五年级", "六年级"]:
-            grade = "小学" + grade
-        elif grade.startswith("初中"):
-            grade = grade.replace("初中", "初")
-            grade = grade.replace("一年级", "一").replace("二年级", "二").replace("三年级", "三")
-        elif grade.startswith("高中"):
-            grade = grade.replace("高中", "高")
-            grade = grade.replace("一年级", "一").replace("二年级", "二").replace("三年级", "三")
-        elif grade in ["初一", "初二", "初三", "高一", "高二", "高三"]:
-            pass
-            
-        # Find the class from map
-        c = class_map.get((grade, class_name))
+
+        c = None
+        has_row_class = (
+            raw_grade and raw_grade != "nan" and class_name and class_name != "nan"
+        )
+        if has_row_class:
+            grade = raw_grade
+            if grade.startswith("小学"):
+                pass
+            elif grade in ["一年级", "二年级", "三年级", "四年级", "五年级", "六年级"]:
+                grade = "小学" + grade
+            elif grade.startswith("初中"):
+                grade = grade.replace("初中", "初")
+                grade = grade.replace("一年级", "一").replace("二年级", "二").replace("三年级", "三")
+            elif grade.startswith("高中"):
+                grade = grade.replace("高中", "高")
+                grade = grade.replace("一年级", "一").replace("二年级", "二").replace("三年级", "三")
+            elif grade in ["初一", "初二", "初三", "高一", "高二", "高三"]:
+                pass
+
+            # Find the class from map
+            c = class_map.get((grade, class_name))
+        if not c:
+            # 本行没写班级、或班级在系统中不存在 → 兜底班级（若给了）
+            c = fallback_class
         if not c:
             continue
             

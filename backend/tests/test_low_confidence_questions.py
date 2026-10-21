@@ -164,3 +164,82 @@ def test_low_confidence_limit_clamped():
     db = _FakeDb(rows=[], total=0, agg=[])
     _call(db, limit=200)
     assert db.items_chain.limit_n == 200
+
+
+# ---- C1 端到端：块级 confidence → write_response_logs → 低置信队列（真 sqlite）----
+def test_confidence_flows_into_low_confidence_queue(monkeypatch, tmp_path):
+    """confidence 非空行进队列端到端：write_response_logs 落库后接口能查出来。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.grading import response_log_db as rldb
+    from app.grading.response_log_db import write_response_logs
+    from app.models.response_log import ResponseLog
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'rl.db'}")
+    ResponseLog.__table__.create(bind=engine)
+    session_factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(rldb, "SessionLocal", session_factory)
+
+    write_response_logs(
+        "u1",
+        "exam",
+        "p1.jpg",
+        "aliyun",
+        [
+            {
+                # 低置信：应进队列
+                "index": 1,
+                "sub_index": 1,
+                "result": "对",
+                "comment": "有点悬",
+                "confidence": 0.4,
+                "question_content": "计算 3+5",
+                "correct_answer": "8",
+                "student_answer": "8",
+                "bbox": [0, 0, 10, 10],
+            },
+            {
+                # 高置信：不进队列
+                "index": 2,
+                "sub_index": 1,
+                "result": "错",
+                "comment": "",
+                "confidence": 0.95,
+                "question_content": "计算 1+1",
+                "correct_answer": "2",
+                "student_answer": "3",
+                "bbox": [0, 0, 10, 10],
+            },
+            {
+                # confidence 为 None（老块）：不进队列
+                "index": 3,
+                "sub_index": 1,
+                "result": "错",
+                "comment": "",
+                "question_content": "计算 2+2",
+                "correct_answer": "4",
+                "student_answer": "5",
+                "bbox": [0, 0, 10, 10],
+            },
+        ],
+    )
+
+    db = session_factory()
+    try:
+        data = api_low_confidence_questions(
+            db=db, user_id="u1", confidence_max=0.6, days=7, engine=None, limit=200
+        ).data
+    finally:
+        db.close()
+
+    assert data["count"] == 1
+    assert data["total_low_conf"] == 1
+    item = data["items"][0]
+    assert item["confidence"] == 0.4
+    assert item["question_content"] == "计算 3+5"
+    assert item["question_id"] == "1_1"
+    assert item["status"] == "correct"
+    assert item["engine"] == "aliyun"
+    assert data["distribution"]["0.3-0.6"] == 1
+    assert data["engines"] == {"aliyun": 1}

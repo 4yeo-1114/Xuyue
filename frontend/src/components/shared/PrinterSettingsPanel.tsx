@@ -14,6 +14,7 @@ import {
 import type { PrintPaperSize, PrinterItem } from "@/services/gradingApi";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -77,6 +78,10 @@ export function PrinterSettingsPanel({
     const p = readGlobalPrintPrefs();
     return typeof p.copies === "number" ? p.copies : 1;
   });
+  const [printWrongNotes, setPrintWrongNotes] = useState<boolean>(() => {
+    const p = readGlobalPrintPrefs();
+    return p.printWrongNotes ?? true;
+  });
 
   const persistPrefs = (patch: Partial<GlobalPrintPrefs>) => {
     const merged: GlobalPrintPrefs = {
@@ -118,6 +123,11 @@ export function PrinterSettingsPanel({
     const clamped = Math.min(10, Math.max(1, Math.trunc(n)));
     setCopies(clamped);
     persistPrefs({ copies: clamped });
+  };
+
+  const handlePrintWrongNotesChange = (checked: boolean) => {
+    setPrintWrongNotes(checked);
+    persistPrefs({ printWrongNotes: checked });
   };
 
   const activePrinter =
@@ -307,6 +317,19 @@ export function PrinterSettingsPanel({
             className={cn("h-9 text-sm", selectTriggerClassName)}
           />
         </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-3">
+        <div className="space-y-0.5">
+          <Label className="text-sm">{t("printer.printWrongNotes")}</Label>
+          <p className="text-xs text-muted-foreground">
+            {t("printer.printWrongNotesHint")}
+          </p>
+        </div>
+        <Switch
+          checked={printWrongNotes}
+          onCheckedChange={handlePrintWrongNotesChange}
+        />
       </div>
     </div>
   );

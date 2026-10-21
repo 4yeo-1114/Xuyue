@@ -94,7 +94,7 @@ function renderedNavIds(u: AuthUser | null): string[] {
   return Array.from(new Set(clicked)).sort();
 }
 
-describe("P0-7 验收：独立老师可见余额/流水，校内老师看不到", () => {
+describe("验收：余额/流水入口对所有登录角色可见（2026-09-30「所有账号都要可以支付」）", () => {
   it("三类账号 × 两条路径的实测输出（原文打印，供人工核对）", () => {
     const samples: Array<[string, AuthUser]> = [
       ["任课教师(独立老师)", TEACHER_ONLY],
@@ -121,7 +121,7 @@ describe("P0-7 验收：独立老师可见余额/流水，校内老师看不到"
     for (const id of PAYMENT_IDS) expect(rendered).toContain(id);
   });
 
-  it("新增判据：非任课教师看不到 payment-wallet / payment-ledger", () => {
+  it("2026-09-30 放开：非任课教师角色同样可见 payment-wallet / payment-ledger", () => {
     const nonTeachers: Array<[string, AuthUser]> = [
       ["班主任", CLASS_TEACHER],
       ["校级管理者", SCHOOL_ADMIN],
@@ -129,13 +129,13 @@ describe("P0-7 验收：独立老师可见余额/流水，校内老师看不到"
     ];
     for (const [label, u] of nonTeachers) {
       const pred = predicateHasPayment(u);
-      expect(pred, `${label} 谓词不应放行`).toEqual({
-        "payment-wallet": false,
-        "payment-ledger": false,
+      expect(pred, `${label} 谓词应放行`).toEqual({
+        "payment-wallet": true,
+        "payment-ledger": true,
       });
       const rendered = renderedNavIds(u);
       for (const id of PAYMENT_IDS) {
-        expect(rendered, `${label} 侧栏不应渲染 ${id}`).not.toContain(id);
+        expect(rendered, `${label} 侧栏应渲染 ${id}`).toContain(id);
       }
     }
   });

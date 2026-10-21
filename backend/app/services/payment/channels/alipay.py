@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""口径 B · 支付宝 adapter（开放平台 · RSA2 · 当面付/扫码 `alipay.trade.precreate`）。
+"""口径 B · 支付宝 adapter（开放平台 · RSA2 · **电脑网站支付** `alipay.trade.page.pay`）。
+
+> 2026-09-30 由当面付 `precreate` 切换为 page.pay：开放平台只开通了「电脑网站支付」
+> 产品，调 precreate 报 `40004 ACQ.ACCESS_FORBIDDEN`；page.pay 实测直接 302 进收银台。
+> page.pay 成功响应 = **302 + Location**（无 JSON 信封），下单取 Location 作 `pay_url`。
 
 设计依据：设计稿 §2.2（接口）、§2.3（窄依赖）、§10 Q1/Q2（通道与主体 = ① 类，本题**已拍**：
 通道 = 微信支付 ＋ 支付宝；收款主体 = 公司主体 ⇒ `requires_payee_entity=True`）。
@@ -8,7 +12,7 @@
 ⛔ 凭据全部从配置读，**允许缺失**；缺失 ⇒ `ChannelNotConfiguredError`（HTTP 501）。
 
 协议要点（可复算）：
-  · 签名串 = **去掉 `sign` / `sign_type` 后**按 key 升序的 `k=v` 用 `&` 连接（值为**解码后**的原文）
+  · 签名串 = **去掉 `sign`（`sign_type` 保留！见 `_sign_message`）后**按 key 升序的 `k=v` 用 `&` 连接（值为**解码后**的原文）
   · 签名算法 = RSA2（RSASSA-PKCS1-v1_5 + SHA-256），base64
   · 回调 = `application/x-www-form-urlencoded`；只有 `TRADE_SUCCESS` / `TRADE_FINISHED` 视作收款
   · 应答必须是纯文本 `success`（否则支付宝**重推**）
@@ -38,7 +42,8 @@ from app.services.payment.channels.base import (
 logger = logging.getLogger(__name__)
 
 CHANNEL = "alipay"
-METHOD_PRECREATE = "alipay.trade.precreate"
+METHOD_PAGE_PAY = "alipay.trade.page.pay"
+PRODUCT_CODE_PAGE_PAY = "FAST_INSTANT_TRADE_PAY"   # 电脑网站支付产品码
 SIGN_TYPE = "RSA2"
 SUCCESS_TRADE_STATES = ("TRADE_SUCCESS", "TRADE_FINISHED")
 DEFAULT_SUBJECT = "叙阅批改充值"
@@ -69,22 +74,57 @@ def _yuan_to_fen(text: str) -> int:
 
 
 def _sign_message(params: Mapping[str, str]) -> str:
-    """支付宝签名串：剔除 `sign`/`sign_type` 与空值，按 key 升序 `k=v` 以 `&` 连接。"""
+    """**请求**签名串（我方出站签名）：剔除 `sign` 与空值，按 key 升序 `k=v` 以 `&` 连接。
+
+    ⚠️ `sign_type` **参与**请求签名（与微信 v3 不同，微信剔 sign_type）。
+       实测网关报 isv.invalid-signature 并回显其验签串含 `sign_type=RSA2`
+       —— 剔掉它必然验签失败。⛔ 别照微信的习惯再改回去。
+    """
     items = [(str(k), str(v)) for k, v in params.items()
-             if k not in ("sign", "sign_type") and str(v) != ""]
+             if k != "sign" and str(v) != ""]
     items.sort(key=lambda kv: kv[0])
     return "&".join(f"{k}={v}" for k, v in items)
 
 
+def _verify_candidates(params: Mapping[str, str]) -> list[str]:
+    """**回调验签**候选签名串。
+
+    出站请求与入站 notify 的签名串规则不完全一致（官方文档/各 SDK 口径有出入：
+    有的剔 `sign_type`、有的留；空值参数有的剔、有的留），2026-09-30 生产真实
+    notify 按「留 sign_type」单一规则验签失败 ⇒ 改为按 4 种合法拼法依次尝试。
+
+    ⚠️ 安全性不变：每个候选都要求**支付宝私钥签出的真实 RSA2 签名**才可能通过，
+       这里只是放宽「规范串拼法」的容错，⛔ 不是放宽信任（伪造者没有私钥，一种都过不了）。
+    """
+    variants: list[list[tuple[str, str]]] = [
+        [(k, v) for k, v in params.items() if k != "sign" and str(v) != ""],
+        [(k, v) for k, v in params.items()
+         if k not in ("sign", "sign_type") and str(v) != ""],
+        [(k, v) for k, v in params.items() if k != "sign"],
+        [(k, v) for k, v in params.items() if k not in ("sign", "sign_type")],
+    ]
+    out: list[str] = []
+    for items in variants:
+        items = sorted(((str(k), str(v)) for k, v in items), key=lambda kv: kv[0])
+        msg = "&".join(f"{k}={v}" for k, v in items)
+        if msg not in out:
+            out.append(msg)
+    return out
+
+
 def _http_post_form(url: str, *, params: Mapping[str, str],
-                    timeout: float = 15.0) -> tuple[int, str, Mapping[str, str]]:
+                    timeout: float = 15.0,
+                    allow_redirects: bool = True) -> tuple[int, str, Mapping[str, str]]:
     """HTTP 传输层（**唯一**的 I/O 接缝；测试可替换它，从而在无凭据环境下也能验签参数）。
 
     返回 `(status_code, body_text, headers)`。
+    page.pay 必须传 `allow_redirects=False`——成功是 302 + Location，跟随跳转会
+    把收银台 HTML 当「下单响应」，丢掉 Location 就拿不到 `pay_url`。
     """
     import requests  # 局部 import：让本模块在无网络依赖的场景（如纯单测）也能被导入
 
-    resp = requests.post(url, data=dict(params), timeout=timeout)
+    resp = requests.post(url, data=dict(params), timeout=timeout,
+                         allow_redirects=allow_redirects)
     return resp.status_code, str(resp.text or ""), dict(resp.headers or {})
 
 
@@ -145,10 +185,11 @@ class AlipayChannelAdapter(PaymentChannelAdapter):
             "out_trade_no": str(order.id),          # 我方订单号 = 通道的 out_trade_no
             "total_amount": _fen_to_yuan(int(order.amount_fen)),
             "subject": DEFAULT_SUBJECT,
+            "product_code": PRODUCT_CODE_PAGE_PAY,  # 电脑网站支付必填
         }
         params: dict[str, str] = {
             "app_id": cfg["app_id"],
-            "method": METHOD_PRECREATE,
+            "method": METHOD_PAGE_PAY,
             "format": "JSON",
             "charset": "utf-8",
             "sign_type": SIGN_TYPE,
@@ -163,24 +204,46 @@ class AlipayChannelAdapter(PaymentChannelAdapter):
             cfg["private_pem"], _sign_message(params).encode("utf-8")
         )
 
+        # charset 必须放 URL 查询串：biz_content 里有中文（subject=「叙阅批改充值」）时，
+        # 网关若不知 charset 会按错误编码重建验签串 ⇒ isv.invalid-signature。
+        # 实测（2026-09-30 生产）：ascii 参数两种都过，中文参数只有 charset 在查询串才过。
         url = _cfg("PAYMENT_ALIPAY_GATEWAY")
-        status, body_text, _headers = _http_post_form(url, params=params)
+        sep = "&" if "?" in url else "?"
+        status, body_text, headers = _http_post_form(
+            f"{url}{sep}charset=utf-8", params=params, allow_redirects=False
+        )
+
+        # ── 成功形态：302 + Location（收银台跳转链首跳），无 JSON 信封、无 sign ──
+        location = str(headers.get("Location") or headers.get("location") or "").strip()
+        if status in (301, 302) and location:
+            return ChannelIntent(
+                channel=self.channel,
+                out_trade_no=str(order.id),
+                pay_params={"pay_url": location, "out_trade_no": str(order.id)},
+            )
+
+        # ── 其余都是失败：page.pay 成功必 302，200 = 错误 JSON（尽力解析可读报错）──
         if status != 200:
             raise ChannelError(f"支付宝下单失败：HTTP {status} body={body_text[:300]}")
-        node = self._extract_node(body_text, f"{METHOD_PRECREATE.replace('.', '_')}_response")
-        self._verify_response(node["raw"], body_text, cfg)
-        if str(node["obj"].get("code") or "") != "10000":
+        ok_key = f"{METHOD_PAGE_PAY.replace('.', '_')}_response"
+        last: ChannelError | None = None
+        for key in (ok_key, "error_response"):
+            try:
+                node = self._extract_node(body_text, key)
+            except ChannelError as exc:
+                last = exc
+                continue
+            self._verify_response(node["raw"], body_text, cfg)
+            obj = node["obj"]
+            if str(obj.get("code") or "") == "10000":
+                # 200 + 10000 却没给出 302：响应形态与预期不符，不静默吞单
+                raise ChannelError(f"支付宝下单响应异常（200 成功但无跳转）：{body_text[:300]}")
             raise ChannelError(
                 "支付宝下单失败：code=%s msg=%s sub_msg=%s"
-                % (node["obj"].get("code"), node["obj"].get("msg"), node["obj"].get("sub_msg"))
+                % (obj.get("code"), obj.get("msg"), obj.get("sub_msg"))
             )
-        qr_code = str(node["obj"].get("qr_code") or "").strip()
-        if not qr_code:
-            raise ChannelError("支付宝下单响应缺少 qr_code，无法继续")
-        return ChannelIntent(
-            channel=self.channel,
-            out_trade_no=str(order.id),
-            pay_params={"qr_code": qr_code, "out_trade_no": str(order.id)},
+        raise ChannelError(
+            f"支付宝下单失败：HTTP 200 无法解析响应（{last}）：{body_text[:300]}"
         )
 
     @staticmethod
@@ -247,9 +310,19 @@ class AlipayChannelAdapter(PaymentChannelAdapter):
         if str(params.get("sign_type") or SIGN_TYPE).upper() != SIGN_TYPE:
             logger.warning("支付宝回调 sign_type 非 RSA2：%s", params.get("sign_type"))
             return None
-        if not crypto.rsa_verify_sha256(
-            cfg["public_pem"], _sign_message(params).encode("utf-8"), sign
-        ):
+        # 4 种规范拼法 × 2 种签名形态（表单解码可能把 base64 的 `+` 还原成空格）
+        sign_forms = [sign]
+        if " " in sign:
+            sign_forms.append(sign.replace(" ", "+"))
+        verified = False
+        for msg in _verify_candidates(params):
+            for sg in sign_forms:
+                if crypto.rsa_verify_sha256(cfg["public_pem"], msg.encode("utf-8"), sg):
+                    verified = True
+                    break
+            if verified:
+                break
+        if not verified:
             logger.warning("支付宝回调验签失败（已拒绝，未入账）")
             return None
 

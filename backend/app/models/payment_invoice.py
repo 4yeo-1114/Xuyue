@@ -36,7 +36,10 @@ class PaymentInvoice(Base):
     id = Column(String(36), primary_key=True, default=gen_uuid)
     order_id = Column(
         String(36),
-        ForeignKey("payment_orders.id", ondelete="RESTRICT"),
+        # ⚠️ 指向 payment_orders_v2（口径 B 订单表；生产同名旧表是同事的家长订单表，
+        #    详见 payment_order.py 表名注释）。生产存量表的旧 FK 由
+        #    `app/database.py::_ensure_payment_invoices_order_fk()` 幂等迁移。
+        ForeignKey("payment_orders_v2.id", ondelete="RESTRICT"),
         nullable=False,
     )
     user_id = Column(

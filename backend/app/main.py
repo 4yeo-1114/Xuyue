@@ -104,6 +104,23 @@ async def lifespan(app: FastAPI):
                     pass
 
         task = asyncio.create_task(_loop())
+    # 分层推送定时任务：定时推送触发 + T-24h 提醒 + 逾期催办（60s 心跳，任务体自丢线程不阻塞事件循环）
+    async def _layered_push_loop():
+        from app.services.layered_push_service import run_due_layered_pushes
+        while True:
+            await asyncio.sleep(60)
+            try:
+                run_due_layered_pushes()
+            except Exception:
+                pass
+
+    layered_task = asyncio.create_task(_layered_push_loop())
+    # 1016 不花钱项②：每日清理过期留痕图（只清 marks_only_*/annotated_* 展示图，原卷与批改记录不碰）
+    try:
+        from app.services.marks_cleanup import start_cleanup_loop
+        start_cleanup_loop()
+    except Exception:
+        pass
     # 打包成 exe 时：启动后自动打开默认浏览器，无需用户手动输入地址
     if getattr(sys, "frozen", False) and os.environ.get("GRADE_BUDDY_NO_BROWSER") != "1":
         import threading
@@ -118,6 +135,9 @@ async def lifespan(app: FastAPI):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+    layered_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await layered_task
 
 
 app = FastAPI(title="Grade Buddy Scan API", lifespan=lifespan)
@@ -293,6 +313,10 @@ app.include_router(scan_billing.router, prefix="/api/v1")
 from app.routers import grading_quota
 app.include_router(grading_quota.router, prefix="/api/v1")
 
+# ── 账号总览（0924 需求三 · 平台管理员看全账号用量/花销/充值）──────────
+from app.routers import admin_accounts_overview
+app.include_router(admin_accounts_overview.router, prefix="/api/v1")
+
 # ── 口径 B 独立老师支付（余额/流水/用量只读投影；⛔ 与上面的 scan_billing 口径 A 物理分离，
 #    两套端点、两套数据源，见 docs/payment/payment-design.md §1.2 §7.3）────────────────
 from app.routers import payment
@@ -309,6 +333,18 @@ app.include_router(dingtalk_router, prefix="/api/v1")
 # ── 钉钉通讯录同步（部门→班级、成员→学生）────────────────────────────
 from app.routers import dingtalk_sync
 app.include_router(dingtalk_sync.router, prefix="/api/v1")
+
+# 分层推送（nav/ai-layered）：真实名单/分层/设置/推送/统计
+from app.routers import layered_push
+app.include_router(layered_push.router, prefix="/api/v1")
+
+# 试卷布局模板（跨考试复用框选）
+from app.routers import layout_templates
+app.include_router(layout_templates.router, prefix="/api/v1")
+
+# 题库批量打标（单元/知识点/难度/题型 标签覆盖层）
+from app.routers import question_tags
+app.include_router(question_tags.router, prefix="/api/v1")
 
 
 def _safe_user_file(base: Path, filename: str) -> Path:

@@ -870,19 +870,6 @@ def baidu_grade_single(image_path: str, stop_event: Optional[threading.Event] = 
 # 智能模型批改（baidu）勾叉使用更轻的留痕尺寸，避免打印时过粗、遮挡作答区。
 BAIDU_CHECK_CROSS_SCALE = 0.2
 
-# 未作答画圈的最小边长（相对图片短边）：低于此视为题干里的空括号/单字符等误检作答区，不画圈。
-# 例如排序题题干里的 "( )" 被百度误判成作答区时，这些框往往只有一两个字符大小，
-# 真正的填空/横线/大题空白作答区一般明显更大。可用环境变量 BAIDU_BLANK_CIRCLE_MIN_RATIO 调整，设 0 关闭过滤。
-BAIDU_BLANK_CIRCLE_MIN_RATIO = float(os.environ.get("BAIDU_BLANK_CIRCLE_MIN_RATIO", "0.025"))
-
-
-def _is_spurious_blank_area(w: int, h: int, x1: int, y1: int, x2: int, y2: int) -> bool:
-    """判定"未作答"作答区是否过小（题干空括号/单字符等误检），不应画圈。"""
-    if BAIDU_BLANK_CIRCLE_MIN_RATIO <= 0:
-        return False
-    min_side = min(w, h) * BAIDU_BLANK_CIRCLE_MIN_RATIO
-    return (x2 - x1) < min_side and (y2 - y1) < min_side
-
 
 def _draw_manual_notes_on_image(draw, img_w: int, img_h: int, blocks_with_result: list) -> None:
     """在每道题作答区下方用红色写老师手动批注（卷面留痕）。
@@ -945,10 +932,10 @@ def draw_baidu_marks_and_save(
 ) -> Tuple[str, str, str]:
     """
     复用项目原留痕风格:
-    - 题目坐标处打 √/×
-    - correctResult=3(未作答) 时，在作答区额外画圈
+    - 题目坐标处打 √/×（未作答画空心圆 ○——2026-10-16 起没填答案也不能什么都不标）
+    - 老师手动批注写到卷面留痕
     """
-    from app.grading.pipeline import draw_real_marks_and_save, draw_marks_only_and_save, draw_manual_annotations, draw_blank_area_cross
+    from app.grading.pipeline import draw_real_marks_and_save, draw_marks_only_and_save, draw_manual_annotations
 
     orig_name, ann_name = draw_real_marks_and_save(
         image_path, blocks_with_result, result_dir, file_stem, check_cross_scale=check_cross_scale
@@ -960,61 +947,12 @@ def draw_baidu_marks_and_save(
     annotated_path = Path(result_dir) / ann_name
     marks_only_path = Path(result_dir) / marks_only
 
-    # 如果是智能参照批改等经过大模型复核的模式，blocks_with_result 里的结果才是最准的
-    # 我们建立一个映射：原始题号 -> 最终状态，因为 baidu_raw 里的数据依然是原始题号
-    final_status_map = {}
-    for blk in blocks_with_result:
-        # 使用 baidu_original_index 进行映射，因为 baidu_raw 中的 seqence 对应的是这个
-        orig_idx = blk.get("baidu_original_index", blk.get("index"))
-        final_status_map[orig_idx] = blk.get("result")
-
     for target in (annotated_path, marks_only_path):
         if not target.is_file():
             continue
         img = Image.open(str(target)).convert("RGB")
         draw = ImageDraw.Draw(img)
         img_w, img_h = img.size
-        # 亮红色叉
-        raw_container = baidu_raw if isinstance(baidu_raw, dict) and "imageResults" in baidu_raw else (baidu_raw or {}).get("result", {})
-        for image_item in (raw_container.get("imageResults") or []):
-            for q in (image_item.get("result") or []):
-                q_index = int(q.get("seqence", 0)) + 1
-                
-                # 如果复核后认为这道题是“对”或“错”（即不是空白），则坚决不画红叉！
-                final_res = final_status_map.get(q_index)
-                if final_res in ("对", "错"):
-                    continue
-
-                slots = q.get("slot") or []
-                if not slots:
-                    # 兼容部分没有 slot 只有 questionArea 的情况
-                    q_cr = q.get("correctResult")
-                    if q_cr == 3:
-                        q_areas = q.get("questionArea") or []
-                        if q_areas:
-                            area = q_areas[0]
-                            x1, y1 = int(area.get("left_x", 0)), int(area.get("left_y", 0))
-                            x2, y2 = int(area.get("right_x", 0)), int(area.get("right_y", 0))
-                            if x2 > x1 and y2 > y1:
-                                draw_blank_area_cross(draw, x1, y1, x2, y2)
-                    continue
-
-                for slot in slots:
-                    slot_cr = int((slot or {}).get("correctResult", q.get("correctResult", 0)) or 0)
-                    if slot_cr != 3:
-                        continue
-                    area = slot.get("handwritingArea") or {}
-                    x1 = int(area.get("left_x", 0))
-                    y1 = int(area.get("left_y", 0))
-                    x2 = int(area.get("right_x", 0))
-                    y2 = int(area.get("right_y", 0))
-                    if x2 <= x1 or y2 <= y1:
-                        continue
-                    # 排序题等题干里的空括号会被百度误判成"未作答"作答区，这些框很小，
-                    # 没必要在上面画无意义的叉，直接跳过。
-                    if _is_spurious_blank_area(img_w, img_h, x1, y1, x2, y2):
-                        continue
-                    draw_blank_area_cross(draw, x1, y1, x2, y2)
         # 老师手动批注（每道题一句 + 整卷总评）写到卷面留痕上
         draw_manual_annotations(draw, img_w, img_h, blocks_with_result, question_notes, paper_note)
         img.save(str(target), quality=95)

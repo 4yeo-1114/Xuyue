@@ -53,6 +53,22 @@ def get_asset_db():
         db.close()
 
 
+def get_asset_db_optional():
+    """FastAPI 依赖注入（可选）：配置了才 yield session，否则 yield None。
+
+    供「AI 题源可绕过题库」的端点用（如分层组卷/错题推荐带 source 参数）：
+    路由自己决定未配置时走 AI 还是报 503，而不是依赖阶段就 503。
+    """
+    if not settings.ASSETS_DB_ENABLED or assets_engine is None:
+        yield None
+        return
+    db = assets_session()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 def probe_assets_db() -> bool:
     """启动探活：SELECT 1 验证 PG 资产库连通性。
 

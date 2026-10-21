@@ -238,7 +238,7 @@ def detect_image_orientation(pil_img) -> int:
 
         import requests
 
-        from app.grading.baidu_grading import _build_url
+        from app.grading.baidu_grading import _build_url, _create_rate_limiter
     except Exception:
         return 0
     try:
@@ -254,6 +254,8 @@ def detect_image_orientation(pil_img) -> int:
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
         url = _build_url("https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic")
+        # 批量上传摆正会突发打百度，先过全局滑动窗口限流（对齐批改君）
+        _create_rate_limiter.acquire()
         resp = requests.post(
             url,
             data={"image": b64, "detect_direction": "true"},
@@ -270,6 +272,34 @@ def detect_image_orientation(pil_img) -> int:
         return 0
 
 
+# 进门压图（1016 不花钱项①）：小于该体积的上传图不做重编码（本来就不占磁盘）。
+_UPLOAD_COMPRESS_MIN_BYTES = 300 * 1024
+
+
+def _upload_jpeg_quality() -> int:
+    try:
+        q = int(os.environ.get("GRADING_UPLOAD_JPEG_QUALITY", "85") or "85")
+    except ValueError:
+        q = 85
+    return max(60, min(95, q))
+
+
+def _compress_normalized_image(rgb, ext: str) -> bytes:
+    """同尺寸重编码压体积（绝不改像素尺寸——bbox 按磁盘图 size 归一化）。PNG 走无损 optimize。"""
+    import io
+
+    buf = io.BytesIO()
+    if ext in (".jpg", ".jpeg"):
+        rgb.save(buf, format="JPEG", quality=_upload_jpeg_quality(), optimize=True)
+    elif ext == ".png":
+        rgb.save(buf, format="PNG", optimize=True)
+    elif ext == ".webp":
+        rgb.save(buf, format="WEBP", quality=_upload_jpeg_quality())
+    else:
+        rgb.save(buf)
+    return buf.getvalue()
+
+
 def normalize_uploaded_image_orientation(path) -> bool:
     """
     手机/相机拍摄的 JPEG/PNG 常带 EXIF Orientation，未转正时像素仍是“横放”，浏览器与 Pillow 表现不一致，预览和批改留痕会横竖错乱。
@@ -278,6 +308,10 @@ def normalize_uploaded_image_orientation(path) -> bool:
 
     可选：设置环境变量 GRADING_UPLOAD_FORCE_PORTRAIT=1 时，在 EXIF 转正后若仍满足 宽>高，再逆时针旋转 90°，
     使整张图以竖向为主（适合竖版试卷被横拍、且 EXIF 仍显示为横向的情况；若确有横版文档请勿开启）。
+
+    1016 进门压图：摆正后同尺寸重编码压缩（JPEG/WebP 质量由 GRADING_UPLOAD_JPEG_QUALITY 定，默认 85）。
+    只在压缩真的变小时写回（压不小保留原文件字节，避免 JPEG 二次有损反而变大）；
+    方向被修正过则无论大小必须写回。小于 300KB 的图不动（不值得重编码伤画质）。
     """
     from pathlib import Path
 
@@ -292,27 +326,34 @@ def normalize_uploaded_image_orientation(path) -> bool:
     except ImportError:
         return False
     try:
+        original_size = p.stat().st_size
         with Image.open(p) as im0:
+            orientation_tag = 1
+            try:
+                orientation_tag = int(im0.getexif().get(0x0112, 1) or 1)
+            except Exception:
+                orientation_tag = 1
             im = ImageOps.exif_transpose(im0)
+            # EXIF 方向被落实到像素 = 画面动过，必须写回（顺带清掉方向标签）
+            rotated = orientation_tag != 1
             force = os.environ.get("GRADING_UPLOAD_FORCE_PORTRAIT", "").lower() in ("1", "true", "yes")
             if force:
                 w, h = im.size
                 if w > h:
                     im = im.rotate(-90, expand=True)
+                    rotated = True
             # 倒置/侧放的扫描件（无 EXIF）自动摆正：按千问判定的方向旋转到正向
             deg = detect_image_orientation(im)
             if deg:
                 im = im.rotate(-deg, expand=True)
+                rotated = True
                 print(f"[auto-rotate] 检测到图片方向偏差，已顺时针旋转 {deg}° 摆正: {p.name}")
             rgb = im.convert("RGB")
-        if ext in (".jpg", ".jpeg"):
-            rgb.save(str(p), quality=95, optimize=True)
-        elif ext == ".png":
-            rgb.save(str(p), optimize=True)
-        elif ext == ".webp":
-            rgb.save(str(p), quality=90)
-        else:
-            rgb.save(str(p))
+        if not rotated and original_size < _UPLOAD_COMPRESS_MIN_BYTES:
+            return True
+        data = _compress_normalized_image(rgb, ext)
+        if rotated or len(data) < original_size:
+            p.write_bytes(data)
         return True
     except Exception:
         return False

@@ -19,7 +19,12 @@ from typing import Any, Dict, Optional, Tuple
 import requests
 
 
-from app.grading.baidu_grading import _get_access_token
+from app.grading.baidu_grading import (
+    _create_rate_limiter,
+    _get_access_token,
+    _get_rate_limiter,
+)
+from app.grading.baidu_grading import _post_json as _baidu_post_json
 from app.grading.doc_convert import enhance_for_ocr
 
 BAIDU_CREATE_TASK_URL = "https://aip.baidubce.com/rest/2.0/ocr/v1/handwriting_composition/create_task"
@@ -40,13 +45,13 @@ def _baidu_access_token() -> str:
     raise RuntimeError("获取百度OCR Token失败：请检查数据库中的 baidu_access_token 配置")
 
 def _post_json(url: str, body: dict) -> dict:
-    headers = {"content-type": "application/json"}
-    resp = requests.post(url, data=json.dumps(body, ensure_ascii=False), headers=headers, timeout=30)
-    resp.raise_for_status()
-    try:
-        return resp.json()
-    except Exception:
-        return {"error_code": -1, "error_msg": f"百度接口返回非JSON: {resp.text[:200]}"}
+    """走 baidu_grading 统一 _post_json：滑动窗口限流 + QPS(18) 指数退避 + token 失效刷新。
+
+    handwriting_composition 此前是全链路唯一裸调百度的口子，批量作文会突发打爆 QPS。
+    create_task/get_result 各用自己的限流器（对齐批改君作文链路）。
+    """
+    limiter = _create_rate_limiter if "create_task" in url else _get_rate_limiter
+    return _baidu_post_json(url, body, timeout=30, limiter=limiter)
 
 
 def _prepare_submit_image_bytes(image_path: str) -> bytes:

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
-import { Lock, Loader2, Mail } from "lucide-react";
+import { Lock, Loader2, Mail, Smartphone } from "lucide-react";
 import { z } from "zod";
 import { useProjectBranding } from "@/contexts/ProjectBrandingContext";
 import { BrandLogo } from "@/components/BrandLogo";
@@ -26,6 +26,18 @@ import { buildGradeLevels } from "@/i18n";
 // 其余角色都能经 is_school_admin() 拿到后台权限，可选即等于公网自封管理员（提权）。
 // 后端闸门在 app/schemas/auth.py 的 RegisterRole（Literal）；此处不再保留第二份角色清单。
 const REGISTER_ROLE = "任课教师";
+
+/** 轻量验证码倒计时（不引新依赖）。seconds 归零即恢复可点。 */
+function useCountdown() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    if (seconds <= 0) return;
+    const id = setTimeout(() => setSeconds((s) => s - 1), 1000);
+    return () => clearTimeout(id);
+  }, [seconds]);
+  const start = (n = 60) => setSeconds(n);
+  return { seconds, start };
+}
 
 export default function Auth() {
   const REMEMBER_KEY = "grade_buddy_remembered_credentials";
@@ -47,13 +59,20 @@ export default function Auth() {
   });
   const [remember, setRemember] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const [mode, setMode] = useState<"login" | "register" | "phone">("login");
   const [regEmail, setRegEmail] = useState("");
   const [regPassword, setRegPassword] = useState("");
+  const [regEmailCode, setRegEmailCode] = useState("");
   const [regDisplayName, setRegDisplayName] = useState("");
   const [regSubject, setRegSubject] = useState("");
   const [regGrade, setRegGrade] = useState("");
-  const { signIn, register } = useAuth();
+  const [phone, setPhone] = useState("");
+  const [phoneCode, setPhoneCode] = useState("");
+  const [sendingRegCode, setSendingRegCode] = useState(false);
+  const [sendingPhoneCode, setSendingPhoneCode] = useState(false);
+  const regCode = useCountdown();
+  const phoneCd = useCountdown();
+  const { signIn, register, sendCode, phoneLogin } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const { projectName } = useProjectBranding();
@@ -62,6 +81,7 @@ export default function Auth() {
 
   const emailSchema = z.string().email(t("auth.invalidEmail"));
   const passwordSchema = z.string().min(6, t("auth.passwordMin"));
+  const phoneSchema = z.string().regex(/^1\d{10}$/, t("auth.invalidPhone"));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -139,11 +159,21 @@ export default function Auth() {
       return;
     }
 
+    if (!regEmailCode.trim()) {
+      toast({
+        title: t("auth.inputError"),
+        description: t("auth.emailCodeRequired"),
+        variant: "destructive",
+      });
+      return;
+    }
+
     setSubmitting(true);
     try {
       const { error } = await register({
         email: regEmail,
         password: regPassword,
+        email_code: regEmailCode.trim(),
         display_name: regDisplayName || undefined,
         role: REGISTER_ROLE,
         teaching_subject: regSubject.trim() || undefined,
@@ -161,7 +191,9 @@ export default function Auth() {
                 // 否则用户只看到笼统的「注册失败」，不知道该改哪里
                 error.message.includes("科目")
                 ? error.message
-                : t("auth.registerFailed");
+                : error.message.includes("验证码")
+                  ? error.message
+                  : t("auth.registerFailed");
         toast({
           title: t("auth.registerFailed"),
           description: msg,
@@ -169,6 +201,94 @@ export default function Auth() {
         });
       } else {
         toast({ title: t("auth.registerSuccess") });
+        navigate("/");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSendRegCode = async () => {
+    const emailResult = emailSchema.safeParse(regEmail);
+    if (!emailResult.success) {
+      toast({
+        title: t("auth.inputError"),
+        description: emailResult.error.errors[0].message,
+        variant: "destructive",
+      });
+      return;
+    }
+    setSendingRegCode(true);
+    const { error } = await sendCode(regEmail, "email", "register");
+    setSendingRegCode(false);
+    if (error) {
+      toast({
+        title: t("auth.sendCodeFailed"),
+        description: error.message,
+        variant: "destructive",
+      });
+    } else {
+      regCode.start(60);
+      toast({ title: t("auth.sendCodeSent") });
+    }
+  };
+
+  const handleSendPhoneCode = async () => {
+    const phoneResult = phoneSchema.safeParse(phone);
+    if (!phoneResult.success) {
+      toast({
+        title: t("auth.inputError"),
+        description: phoneResult.error.errors[0].message,
+        variant: "destructive",
+      });
+      return;
+    }
+    setSendingPhoneCode(true);
+    const { error } = await sendCode(phone, "sms", "login");
+    setSendingPhoneCode(false);
+    if (error) {
+      toast({
+        title: t("auth.sendCodeFailed"),
+        description: error.message,
+        variant: "destructive",
+      });
+    } else {
+      phoneCd.start(60);
+      toast({ title: t("auth.sendCodeSent") });
+    }
+  };
+
+  const handlePhoneLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const phoneResult = phoneSchema.safeParse(phone);
+    if (!phoneResult.success) {
+      toast({
+        title: t("auth.inputError"),
+        description: phoneResult.error.errors[0].message,
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!phoneCode.trim()) {
+      toast({
+        title: t("auth.inputError"),
+        description: t("auth.smsCodeRequired"),
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const { error } = await phoneLogin(phone, phoneCode.trim());
+      if (error) {
+        toast({
+          title: t("auth.loginFailed"),
+          description: error.message,
+          variant: "destructive",
+        });
+      } else {
         navigate("/");
       }
     } finally {
@@ -196,11 +316,12 @@ export default function Auth() {
             value={mode}
             onValueChange={(v) => setMode(v as "login" | "register")}
           >
-            <TabsList className="grid w-full grid-cols-2 mb-6">
+            <TabsList className="grid w-full grid-cols-3 mb-6">
               <TabsTrigger value="login">{t("auth.login")}</TabsTrigger>
               <TabsTrigger value="register">
                 {t("auth.registerTab")}
               </TabsTrigger>
+              <TabsTrigger value="phone">{t("auth.phoneLogin")}</TabsTrigger>
             </TabsList>
 
             <TabsContent value="login">
@@ -269,6 +390,37 @@ export default function Auth() {
                       className="pl-10"
                       required
                     />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="regEmailCode">{t("auth.emailCode")}</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="regEmailCode"
+                      placeholder={t("auth.emailCodePlaceholder")}
+                      value={regEmailCode}
+                      onChange={(e) => setRegEmailCode(e.target.value)}
+                      className="flex-1"
+                      maxLength={6}
+                      inputMode="numeric"
+                      required
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="shrink-0"
+                      onClick={handleSendRegCode}
+                      disabled={regCode.seconds > 0 || sendingRegCode}
+                    >
+                      {sendingRegCode ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : regCode.seconds > 0 ? (
+                        `${regCode.seconds}s`
+                      ) : (
+                        t("auth.sendCode")
+                      )}
+                    </Button>
                   </div>
                 </div>
 
@@ -345,6 +497,70 @@ export default function Auth() {
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                   )}
                   {submitting ? t("auth.registering") : t("auth.register")}
+                </Button>
+              </form>
+            </TabsContent>
+
+            <TabsContent value="phone">
+              <form onSubmit={handlePhoneLogin} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="phone">{t("auth.phone")}</Label>
+                  <div className="relative">
+                    <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      id="phone"
+                      type="tel"
+                      placeholder={t("auth.phonePlaceholder")}
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      className="pl-10"
+                      maxLength={11}
+                      inputMode="numeric"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="phoneCode">{t("auth.smsCode")}</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="phoneCode"
+                      placeholder={t("auth.smsCodePlaceholder")}
+                      value={phoneCode}
+                      onChange={(e) => setPhoneCode(e.target.value)}
+                      className="flex-1"
+                      maxLength={6}
+                      inputMode="numeric"
+                      required
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="shrink-0"
+                      onClick={handleSendPhoneCode}
+                      disabled={phoneCd.seconds > 0 || sendingPhoneCode}
+                    >
+                      {sendingPhoneCode ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : phoneCd.seconds > 0 ? (
+                        `${phoneCd.seconds}s`
+                      ) : (
+                        t("auth.sendCode")
+                      )}
+                    </Button>
+                  </div>
+                </div>
+
+                <p className="text-xs text-muted-foreground">
+                  {t("auth.phoneLoginHint")}
+                </p>
+
+                <Button type="submit" className="w-full" disabled={submitting}>
+                  {submitting && (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  )}
+                  {submitting ? t("auth.signingIn") : t("auth.phoneLogin")}
                 </Button>
               </form>
             </TabsContent>

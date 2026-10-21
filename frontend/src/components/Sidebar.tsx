@@ -146,6 +146,7 @@ export const NAV_ITEMS: NavGroup[] = [
         featureKey: "smart_exam",
       },
       { id: "prep-video", label: "资源库", icon: Video },
+      // 题库暂未接入（PG 资产库未配置）：入口保留展示，页面内空态提示「数据未接入」
       { id: "prep-question-bank", label: "题库", icon: BookCopy },
     ],
   },
@@ -170,6 +171,12 @@ export const NAV_ITEMS: NavGroup[] = [
         id: "grading-errors",
         label: "批改详细",
         icon: FileText,
+        featureKey: "ai_grading",
+      },
+      {
+        id: "grading-ledger",
+        label: "改分台账",
+        icon: ClipboardList,
         featureKey: "ai_grading",
       },
       {
@@ -251,7 +258,6 @@ export const NAV_ITEMS: NavGroup[] = [
     icon: Settings,
     children: [
       { id: "settings-personal", label: "个人设置", icon: User },
-      { id: "my-quota", label: "我的额度", icon: Wallet },
       { id: "settings-subject", label: "学科配置", icon: BookOpen },
       { id: "settings-hardware", label: "硬件配置", icon: UserCog },
       { id: "settings-multi-device", label: "多端管理", icon: Download },
@@ -274,17 +280,19 @@ export const NAV_ITEMS: NavGroup[] = [
     label: "我的账户",
     icon: Wallet,
     children: [
+      // 支付入口对**所有登录账号**开放（2026-09-30 需求「所有账号都要可以支付」）：
+      // 原 adminOnly: true 只放行平台管理员，班主任/校级/年级组长/教务/测试账号全看不到。
+      // 后端 POST /payment/orders 本就只要登录、无角色闸；此处去掉可见性门槛即可。
+      // 「仅任课教师」账号走 TEACHER_NAV_WHITELIST（两项均在册），行为不变。
       {
         id: "payment-wallet",
         label: "我的余额",
         icon: Wallet,
-        adminOnly: true,
       },
       {
         id: "payment-ledger",
         label: "资金流水",
         icon: Receipt,
-        adminOnly: true,
       },
     ],
   },
@@ -353,6 +361,7 @@ export const TEACHER_NAV_ITEMS: NavGroup[] = [
       { id: "flow-tasks", label: "流水阅卷", icon: ClipboardList },
       { id: "grading-history", label: "批改历史", icon: History },
       { id: "grading-errors", label: "错题本", icon: FileText },
+      { id: "grading-ledger", label: "改分台账", icon: ClipboardList },
     ],
   },
   {
@@ -387,6 +396,7 @@ export const TEACHER_NAV_ITEMS: NavGroup[] = [
       { id: "prep-lesson", label: "教案生成", icon: BookMarked },
       { id: "prep-exam", label: "智能组卷", icon: FileText },
       { id: "prep-video", label: "资源库", icon: Video },
+      // 题库暂未接入（PG 资产库未配置）：入口保留展示，页面内空态提示「数据未接入」
       { id: "prep-question-bank", label: "题库", icon: BookCopy },
     ],
   },
@@ -405,7 +415,6 @@ export const TEACHER_NAV_ITEMS: NavGroup[] = [
     icon: Settings,
     children: [
       { id: "settings-personal", label: "个人设置", icon: User },
-      { id: "my-quota", label: "我的额度", icon: Wallet },
     ],
   },
 ];

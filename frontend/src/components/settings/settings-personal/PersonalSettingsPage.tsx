@@ -41,11 +41,14 @@ const TEACHING_SUBJECTS = [
 ] as const;
 
 export function PersonalSettingsPage() {
-  const { user, refreshUser } = useAuth();
+  const { user, refreshUser, sendCode, bindPhone } = useAuth();
   const { t, locale } = useLocale();
   const queryClient = useQueryClient();
   const [displayName, setDisplayName] = useState("");
   const [phone, setPhone] = useState("");
+  const [phoneCode, setPhoneCode] = useState("");
+  const [sendingPhoneCode, setSendingPhoneCode] = useState(false);
+  const [phoneCd, setPhoneCd] = useState(0);
   const [subject, setSubject] = useState("");
   const [jobTitle, setJobTitle] = useState("");
   const [personalEmail, setPersonalEmail] = useState("");
@@ -66,18 +69,55 @@ export function PersonalSettingsPage() {
     setPersonalEmail(user.personal_email || "");
   }, [user]);
 
+  // 绑定手机号验证码倒计时
+  useEffect(() => {
+    if (phoneCd <= 0) return;
+    const id = setTimeout(() => setPhoneCd((s) => s - 1), 1000);
+    return () => clearTimeout(id);
+  }, [phoneCd]);
+
   const resetPwdFields = () => {
     setOldPwd("");
     setNewPwd("");
     setConfirmPwd("");
   };
 
+  const handleSendPhoneCode = async () => {
+    if (!/^1\d{10}$/.test(phone.trim())) {
+      toast.error(t("settings.personal.toast.invalidPhone"));
+      return;
+    }
+    setSendingPhoneCode(true);
+    const { error } = await sendCode(phone.trim(), "sms", "bind");
+    setSendingPhoneCode(false);
+    if (error) {
+      toast.error(error.message);
+    } else {
+      setPhoneCd(60);
+      toast.success(t("settings.personal.toast.codeSent"));
+    }
+  };
+
   const handleSaveProfile = async () => {
+    const newPhone = phone.trim();
+    const currentPhone = (user?.phone || "").trim();
+    // 手机号变更需短信验证码（合规：手机号作为可验证唯一身份）
+    if (newPhone && newPhone !== currentPhone) {
+      if (!phoneCode.trim()) {
+        toast.error(t("settings.personal.toast.codeRequired"));
+        return;
+      }
+      const { error } = await bindPhone(newPhone, phoneCode.trim());
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+      setPhoneCode("");
+    }
     setSaving(true);
     try {
       await updateProfile({
         display_name: displayName.trim() || null,
-        phone: phone.trim() || null,
         teaching_subject: subject === "__none__" || !subject ? "__CLEAR__" : subject,
         job_title: jobTitle.trim() || null,
         personal_email: personalEmail.trim() || null,
@@ -181,6 +221,33 @@ export function PersonalSettingsPage() {
                 onChange={(e) => setPhone(e.target.value)}
                 placeholder={t("settings.personal.phoneOptional")}
               />
+              {phone.trim() && phone.trim() !== (user?.phone || "").trim() ? (
+                <div className="flex gap-2">
+                  <Input
+                    placeholder={t("settings.personal.codePlaceholder")}
+                    value={phoneCode}
+                    onChange={(e) => setPhoneCode(e.target.value)}
+                    maxLength={6}
+                    inputMode="numeric"
+                    className="flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="shrink-0"
+                    onClick={handleSendPhoneCode}
+                    disabled={phoneCd > 0 || sendingPhoneCode}
+                  >
+                    {sendingPhoneCode ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : phoneCd > 0 ? (
+                      `${phoneCd}s`
+                    ) : (
+                      t("settings.personal.sendCode")
+                    )}
+                  </Button>
+                </div>
+              ) : null}
             </div>
             <div className="space-y-2">
               <Label>{t("settings.personal.systemRole")}</Label>

@@ -12,7 +12,11 @@ from app.models.user import gen_uuid
 
 
 class PaymentOrder(Base):
-    __tablename__ = "payment_orders"
+    # ⚠️ 表名不是 payment_orders：生产库同名表是同事旧「家长会员订单」表
+    #    （列 = order_no/parent_user_id/amount，含 2 行 2026-06 真实数据，动不得），
+    #    与本模型列名大面积对不上 ⇒ 口径 B 订单改用 payment_orders_v2，
+    #    旧表原样保留。建表由 `_ensure_payment_tables()`（无条件段）自动跟随本表名。
+    __tablename__ = "payment_orders_v2"
     __table_args__ = (
         Index("idx_payment_order_user_time", "user_id", "created_at"),
         Index("idx_payment_order_status", "status"),

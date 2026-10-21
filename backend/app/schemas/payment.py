@@ -74,6 +74,22 @@ class OrderCreateOut(BaseModel):
     pay_params: dict[str, Any] = Field(default_factory=dict)
 
 
+class OrderStatusOut(BaseModel):
+    """订单状态轮询响应（`GET /payment/orders/{order_id}`）。
+
+    前端拿它在二维码弹窗里 2s 一次轮询「到账了没」；⛔ 不回 pay_params
+    （code_url 不需要反复下发，也少一份暴露面）。
+    """
+
+    order_id: str
+    channel: str
+    status: str
+    amount_fen: int
+    paid_amount_fen: Optional[int] = None
+    created_at: Optional[str] = None
+    paid_at: Optional[str] = None
+
+
 # ────────────────────────── Phase 3：开票申请（P3-1）──────────────────────────
 
 class InvoiceCreateIn(BaseModel):

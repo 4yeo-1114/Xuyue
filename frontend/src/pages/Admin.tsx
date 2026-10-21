@@ -15,6 +15,7 @@ import { AdminTeacherGradingPage } from "@/components/admin/AdminTeacherGradingP
 import { AdminFlowGradingPage } from "@/components/admin/AdminFlowGradingPage";
 import { AdminMultiProjectPage } from "@/components/admin/AdminMultiProjectPage";
 import { AdminQuotaPage } from "@/components/quota/AdminQuotaPage";
+import { AdminAccountsOverviewPage } from "@/components/admin/AdminAccountsOverviewPage";
 import { isMultiProjectAdmin } from "@/lib/multiProjectAccess";
 import { useLocale } from "@/contexts/LocaleContext";
 import { translateSystemRole } from "@/i18n/index";
@@ -26,6 +27,7 @@ import {
   ShieldCheck,
   UserCheck,
   Coins,
+  BarChart3,
   LucideIcon,
 } from "lucide-react";
 
@@ -41,6 +43,12 @@ interface AdminSubTab {
 const SUB_PAGE_LESS_TABS = new Set(["teacher-grading", "flow-grading", "multi-project"]);
 
 const ADMIN_SUB_TABS: AdminSubTab[] = [
+  {
+    id: "overview",
+    labelKey: "admin.overview.title",
+    icon: BarChart3,
+    Page: AdminAccountsOverviewPage,
+  },
   {
     id: "dashboard",
     labelKey: "admin.dashboard.title",

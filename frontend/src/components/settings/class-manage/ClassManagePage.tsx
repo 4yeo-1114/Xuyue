@@ -6,7 +6,6 @@ import { StudentTable } from "./StudentTable";
 import { StudentDetailPanel } from "./StudentDetailPanel";
 import { PermissionsPanel } from "./PermissionsPanel";
 import { DataSyncPanel } from "./DataSyncPanel";
-import { StudentImportDialog } from "@/components/class-detail/StudentImportDialog";
 import { GlobalStudentImportDialog } from "./GlobalStudentImportDialog";
 import { useClasses } from "@/hooks/useClasses";
 import { useStudents } from "@/hooks/useStudents";
@@ -48,7 +47,6 @@ export function ClassManagePage() {
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(
     null,
   );
-  const [importOpen, setImportOpen] = useState(false);
   const [globalImportOpen, setGlobalImportOpen] = useState(false);
 
   const selectedStudent =
@@ -59,7 +57,6 @@ export function ClassManagePage() {
   );
   const activeHeadTeacherName = headTeacherByClassId[activeClassId] || "—";
 
-  const handleBatchImport = () => setImportOpen(true);
   const handleGlobalImport = () => setGlobalImportOpen(true);
 
   useEffect(() => {
@@ -152,7 +149,6 @@ export function ClassManagePage() {
           className={selectedClass?.name || ""}
           selectedStudentId={selectedStudentId}
           onSelectStudent={setSelectedStudentId}
-          onBatchImport={handleBatchImport}
         />
         <StudentDetailPanel student={selectedStudent} classId={activeClassId} />
       </div>
@@ -170,16 +166,10 @@ export function ClassManagePage() {
         />
       </div>
 
-      <StudentImportDialog
-        open={importOpen}
-        onOpenChange={setImportOpen}
-        classId={activeClassId}
-        className={selectedClass?.name || ""}
-      />
-
       <GlobalStudentImportDialog
         open={globalImportOpen}
         onOpenChange={setGlobalImportOpen}
+        fallbackClassId={activeClassId}
       />
     </div>
   );

@@ -151,9 +151,10 @@ def collect_wrong_question_images(folder_names: list[str]) -> list[dict]:
                 if not student_dir.is_dir():
                     continue
                 student_name = student_dir.name
-                for q_file in student_dir.glob("*_question.jpg"):
+                # 多页卷（参照批改）的裁图落在 p1/p2 页面子目录，递归扫；作答图与题图同目录
+                for q_file in sorted(student_dir.rglob("*_question.jpg")):
                     title_base = q_file.name.replace("_question.jpg", "")
-                    a_file = student_dir / f"{title_base}_answer.jpg"
+                    a_file = q_file.parent / f"{title_base}_answer.jpg"
                     try:
                         q_rel = q_file.relative_to(ct_root.parent).as_posix()
                     except ValueError:

@@ -477,6 +477,7 @@ export const classDetailZh: TranslationDict = {
   "classDetail.暂无数据": "暂无数据",
   "classDetail.noWrongQuestions": "暂无错题",
   "classDetail.变式推荐": "变式推荐",
+  "classDetail.变式推荐生成中": "变式题生成中…",
   "classDetail.变式推荐加载失败": "变式推荐加载失败",
   "classDetail.暂无变式推荐": "暂无变式推荐",
   "classDetail.变式推荐上报成功": "已记录作答反馈",
@@ -488,6 +489,7 @@ export const classDetailZh: TranslationDict = {
   "classDetail.recommendMode.explore": "探索",
   "classDetail.recommendMode.exploit": "利用",
   "classDetail.recommendMode.fallback": "兜底",
+  "classDetail.recommendMode.ai": "AI生成",
   "classDetail.请选择学科或学生查看错题": "请选择具体学科或学生查看错题",
   "classDetail.暂无班级": "暂无班级",
   "classDetail.暂无考试记录": "暂无考试记录",
@@ -1395,6 +1397,25 @@ export const classDetailZh: TranslationDict = {
     "薄弱点 {count} 项",
   "classDetail.targetedImprove.recommendContent.reevaluateFailed": "复测失败",
   "classDetail.targetedImprove.recommendContent.close": "关闭",
+  "classDetail.targetedImprove.taskList.title": "个性化学习任务清单",
+  "classDetail.targetedImprove.taskList.progressBadge": "{done}/{total} 已完成",
+  "classDetail.targetedImprove.taskList.progressLabel": "完成进度 {done}/{total}",
+  "classDetail.targetedImprove.taskList.selectStudent": "选择学生",
+  "classDetail.targetedImprove.taskList.filterAll": "全部",
+  "classDetail.targetedImprove.taskList.filterPending": "未完成",
+  "classDetail.targetedImprove.taskList.filterDone": "已完成",
+  "classDetail.targetedImprove.taskList.importFromReport": "从报告导入任务",
+  "classDetail.targetedImprove.taskList.syncSuccess":
+    "已导入 {created} 条新任务（共 {total} 条）",
+  "classDetail.targetedImprove.taskList.syncFailed": "导入任务失败",
+  "classDetail.targetedImprove.taskList.toggleFailed": "更新任务状态失败",
+  "classDetail.targetedImprove.taskList.loading": "正在加载任务清单...",
+  "classDetail.targetedImprove.taskList.loadFailed": "任务清单加载失败",
+  "classDetail.targetedImprove.taskList.empty":
+    "暂无任务。生成靶向报告后，点击「从报告导入任务」即可创建清单。",
+  "classDetail.targetedImprove.taskList.emptyFiltered": "当前筛选下暂无任务",
+  "classDetail.targetedImprove.taskList.fromReport": "来源：靶向报告",
+  "classDetail.targetedImprove.taskList.doneAt": "已完成",
   "classDetail.viewListLabel": "查看名单",
   "classDetail.studentListDialogTitle": "错题学生名单",
   "classDetail.studentListEmpty": "暂无名单",
@@ -1623,6 +1644,36 @@ export const classDetailZh: TranslationDict = {
   "classDetail.weeklyReport.radarEmpty": "暂无能力雷达数据",
   "classDetail.weeklyReport.legendThisClass": "本班",
   "classDetail.weeklyReport.legendClassAvg": "班级均分",
+
+  // ── 多场考试成绩柱状对比（成绩趋势图型切换） ──
+  "classDetail.examBars.desc": "同一班级各场考试均分柱状对比",
+  "classDetail.examBars.toggleAria": "切换折线图与柱状图",
+  "classDetail.examBars.modeLine": "折线",
+  "classDetail.examBars.modeBar": "柱状",
+  "classDetail.examBars.avg": "均分",
+
+  // ── 错题巩固卷（挑题 → 生成 → 下发打印） ──
+  "classReview.wrongSheet.selectTopN": "全选 TOP {count}",
+  "classReview.wrongSheet.selectedTop": "已选中最薄弱的 {count} 题",
+  "classReview.wrongSheet.clearSelection": "清空选择",
+  "classReview.wrongSheet.selectQuestion": "选择「{title}」生成错题卷",
+  "classReview.wrongSheet.selectedCount": "已选 {count} 题",
+  "classReview.wrongSheet.generate": "生成错题卷",
+  "classReview.wrongSheet.dialogTitle": "生成错题巩固卷",
+  "classReview.wrongSheet.dialogDesc": "将把选中的 {count} 道错题排成新卷，可下载或打印下发。",
+  "classReview.wrongSheet.studentFilter": "按学生过滤（可选）",
+  "classReview.wrongSheet.studentFilterHint": "不选则汇总全班错题；点名字可只保留某几个学生的错题",
+  "classReview.wrongSheet.studentFilterActive": "已过滤 {count} 个学生的错题",
+  "classReview.wrongSheet.includeAnswers": "附答案与解析",
+  "classReview.wrongSheet.downloadPdf": "下载 PDF",
+  "classReview.wrongSheet.print": "打印",
+  "classReview.wrongSheet.oneClick": "一体机文印",
+  "classReview.wrongSheet.oneClickHint": "一体机文印待机型/协议确定后对接，当前请先下载或浏览器打印。",
+  "classReview.wrongSheet.oneClickNotConfigured": "一体机对接未配置",
+  "classReview.wrongSheet.emptySelection": "请先勾选至少一道错题",
+  "classReview.wrongSheet.exportSuccess": "错题巩固卷已下载",
+  "classReview.wrongSheet.printOpened": "已打开打印视图，请在浏览器中完成打印",
+  "classReview.wrongSheet.exportFailed": "生成错题卷失败",
 };
 
 export const classDetailEn: TranslationDict = {
@@ -2131,6 +2182,7 @@ export const classDetailEn: TranslationDict = {
   "classDetail.暂无数据": "No data",
   "classDetail.noWrongQuestions": "No wrong questions",
   "classDetail.变式推荐": "Variant Recommendations",
+  "classDetail.变式推荐生成中": "Generating variants…",
   "classDetail.变式推荐加载失败": "Failed to load variant recommendations",
   "classDetail.暂无变式推荐": "No variant recommendations yet",
   "classDetail.变式推荐上报成功": "Response recorded",
@@ -2142,6 +2194,7 @@ export const classDetailEn: TranslationDict = {
   "classDetail.recommendMode.explore": "Explore",
   "classDetail.recommendMode.exploit": "Exploit",
   "classDetail.recommendMode.fallback": "Fallback",
+  "classDetail.recommendMode.ai": "AI",
   "classDetail.请选择学科或学生查看错题":
     "Select a specific subject or student to view wrong questions",
   "classDetail.暂无班级": "No classes",
@@ -3158,6 +3211,27 @@ export const classDetailEn: TranslationDict = {
   "classDetail.targetedImprove.recommendContent.reevaluateFailed":
     "Re-evaluation failed",
   "classDetail.targetedImprove.recommendContent.close": "Close",
+  "classDetail.targetedImprove.taskList.title": "Personalized Learning Tasks",
+  "classDetail.targetedImprove.taskList.progressBadge": "{done}/{total} done",
+  "classDetail.targetedImprove.taskList.progressLabel": "Progress {done}/{total}",
+  "classDetail.targetedImprove.taskList.selectStudent": "Select student",
+  "classDetail.targetedImprove.taskList.filterAll": "All",
+  "classDetail.targetedImprove.taskList.filterPending": "Pending",
+  "classDetail.targetedImprove.taskList.filterDone": "Done",
+  "classDetail.targetedImprove.taskList.importFromReport": "Import from report",
+  "classDetail.targetedImprove.taskList.syncSuccess":
+    "Imported {created} new tasks ({total} total)",
+  "classDetail.targetedImprove.taskList.syncFailed": "Failed to import tasks",
+  "classDetail.targetedImprove.taskList.toggleFailed":
+    "Failed to update task status",
+  "classDetail.targetedImprove.taskList.loading": "Loading task list...",
+  "classDetail.targetedImprove.taskList.loadFailed": "Failed to load task list",
+  "classDetail.targetedImprove.taskList.empty":
+    "No tasks yet. Generate a targeted report, then click “Import from report”.",
+  "classDetail.targetedImprove.taskList.emptyFiltered":
+    "No tasks match the current filter",
+  "classDetail.targetedImprove.taskList.fromReport": "From report",
+  "classDetail.targetedImprove.taskList.doneAt": "Done",
   "classDetail.viewListLabel": "View list",
   "classDetail.studentListDialogTitle": "Wrong-Question Student List",
   "classDetail.studentListEmpty": "No students yet",
@@ -3413,4 +3487,38 @@ export const classDetailEn: TranslationDict = {
   "classDetail.weeklyReport.radarEmpty": "No ability radar data",
   "classDetail.weeklyReport.legendThisClass": "This class",
   "classDetail.weeklyReport.legendClassAvg": "Class average",
+
+  // ── Multi-exam score bar comparison (score-trend chart toggle) ──
+  "classDetail.examBars.desc": "Class average score by exam (bar comparison)",
+  "classDetail.examBars.toggleAria": "Toggle line and bar chart",
+  "classDetail.examBars.modeLine": "Line",
+  "classDetail.examBars.modeBar": "Bar",
+  "classDetail.examBars.avg": "Average",
+
+  // ── Wrong-question practice sheet (select → generate → print) ──
+  "classReview.wrongSheet.selectTopN": "Select TOP {count}",
+  "classReview.wrongSheet.selectedTop": "Selected the {count} weakest questions",
+  "classReview.wrongSheet.clearSelection": "Clear selection",
+  "classReview.wrongSheet.selectQuestion": "Select “{title}” for the practice sheet",
+  "classReview.wrongSheet.selectedCount": "{count} selected",
+  "classReview.wrongSheet.generate": "Generate sheet",
+  "classReview.wrongSheet.dialogTitle": "Generate wrong-question sheet",
+  "classReview.wrongSheet.dialogDesc":
+    "Arrange the {count} selected questions into a new sheet for download or print.",
+  "classReview.wrongSheet.studentFilter": "Filter by student (optional)",
+  "classReview.wrongSheet.studentFilterHint":
+    "Leave empty for class-wide items; tap names to keep only certain students' questions",
+  "classReview.wrongSheet.studentFilterActive":
+    "Filtered to {count} students' questions",
+  "classReview.wrongSheet.includeAnswers": "Include answers & analysis",
+  "classReview.wrongSheet.downloadPdf": "Download PDF",
+  "classReview.wrongSheet.print": "Print",
+  "classReview.wrongSheet.oneClick": "One-click printer",
+  "classReview.wrongSheet.oneClickHint":
+    "One-click printer integration pending device/protocol; download or browser-print for now.",
+  "classReview.wrongSheet.oneClickNotConfigured": "One-click printer not configured",
+  "classReview.wrongSheet.emptySelection": "Select at least one question first",
+  "classReview.wrongSheet.exportSuccess": "Wrong-question sheet downloaded",
+  "classReview.wrongSheet.printOpened": "Print view opened; finish printing in the browser",
+  "classReview.wrongSheet.exportFailed": "Failed to generate the sheet",
 };

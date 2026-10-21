@@ -10,6 +10,10 @@ from app.models.system_settings import SystemSettings
 
 DEFAULT_QWEN_MODEL = "qwen3.7-plus"
 
+# 视觉模型：旧 qwen-vl-* 系列 2026-10 已在 DashScope 下线（404 Model not exist；
+# qwen-vl-max-latest/qwen2.5-vl-* 对当前 key 403），统一走 qwen3-vl 系。
+DEFAULT_VL_MODEL = "qwen3-vl-plus"
+
 # 旧部署/误填模型名统一映射到当前默认模型
 _LEGACY_MODEL_ALIASES = {
     "qwen-max-latest": DEFAULT_QWEN_MODEL,
@@ -34,6 +38,13 @@ AI_GENERATOR = "qwen"
 def normalize_qwen_model(model: str, *, default: str = DEFAULT_QWEN_MODEL) -> str:
     name = (model or "").strip() or default
     return _LEGACY_MODEL_ALIASES.get(name, name)
+
+
+def get_vl_model() -> str:
+    """视觉 VL 模型名（env QWEN_VL_MODEL 可现场覆盖，缺省 DEFAULT_VL_MODEL）。
+
+    ⛔ 不走 normalize_qwen_model：别名表把旧视觉名映射到文本模型，视觉调用会用错。"""
+    return (os.environ.get("QWEN_VL_MODEL") or "").strip() or DEFAULT_VL_MODEL
 
 
 def mask_secret(value: str) -> str:

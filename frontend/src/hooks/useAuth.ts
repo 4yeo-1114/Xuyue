@@ -18,6 +18,7 @@ export interface AuthUser {
 export interface RegisterPayload {
   email: string;
   password: string;
+  email_code: string;
   display_name?: string;
   role: string;
   teaching_subject?: string;
@@ -140,6 +141,63 @@ export function useAuth() {
     return { error: null };
   };
 
+  /** 通用错误解包：Pydantic 校验错误取 detail[0].msg，其余取 detail 字符串。 */
+  const extractError = (data: any, fallback: string) => {
+    const msg = Array.isArray(data.detail) ? data.detail[0]?.msg : data.detail;
+    return msg || fallback;
+  };
+
+  /** 签发验证码：target 为邮箱或手机号，channel ∈ email|sms，purpose ∈ register|login|bind。 */
+  const sendCode = async (target: string, channel: "email" | "sms", purpose: "register" | "login" | "bind") => {
+    const res = await fetch(`${API_PREFIX}/auth/send-code`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, channel, purpose }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { error: { message: extractError(data, "验证码发送失败") } };
+    }
+    return { error: null };
+  };
+
+  /** 手机号 + 短信验证码登录。 */
+  const phoneLogin = async (phone: string, code: string) => {
+    const res = await fetch(`${API_PREFIX}/auth/phone-login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, code }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { error: { message: extractError(data, "登录失败") } };
+    }
+    const token = data.access_token as string;
+    const u = data.user as AuthUser;
+    storeSession(token, u);
+    return { error: null, user: u };
+  };
+
+  /** 登录态绑定手机号（需短信验证码）。 */
+  const bindPhone = async (phone: string, code: string) => {
+    const token = localStorage.getItem(TOKEN_KEY);
+    const res = await fetch(`${API_PREFIX}/auth/bind-phone`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ phone, code }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { error: { message: extractError(data, "绑定失败") } };
+    }
+    const u = data as AuthUser;
+    setUser(u);
+    return { error: null, user: u };
+  };
+
   const refreshUser = useCallback(async () => {
     const token = localStorage.getItem(TOKEN_KEY);
     if (!token) return;
@@ -154,5 +212,5 @@ export function useAuth() {
     // status === "error"：保留令牌与当前登录态，不做处理
   }, [fetchMe]);
 
-  return { user, session, loading, signIn, register, signOut, refreshUser };
+  return { user, session, loading, signIn, register, signOut, refreshUser, sendCode, phoneLogin, bindPhone };
 }

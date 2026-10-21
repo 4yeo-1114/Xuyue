@@ -6,7 +6,7 @@
 """
 import re
 
-from app.utils.question_fingerprint import question_fingerprint
+from app.utils.question_fingerprint import question_fingerprint, text_fingerprint
 
 _FP_RE = re.compile(r"^fp_[0-9a-f]{64}$")
 
@@ -101,3 +101,21 @@ def test_field_boundary_not_ambiguous():
     a = _fp("a", None, "b|c", None)
     b = _fp("a|b", None, "c", None)
     assert a != b
+
+
+# ── text_fingerprint：判分缓存的作答身份哈希 ─────────────────────────
+
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def test_text_fingerprint_stable_and_normalized():
+    a = text_fingerprint("x=2")
+    b = text_fingerprint("  x＝2  ")  # 全角＝+首尾空白应被归一吸收
+    assert a == b
+    assert _HEX64_RE.fullmatch(a)
+
+
+def test_text_fingerprint_differs_on_content():
+    assert text_fingerprint("x=2") != text_fingerprint("x=3")
+    # 与题目指纹不同命名空间：无 fp_ 前缀（定长 64 hex）
+    assert not text_fingerprint("x=2").startswith("fp_")

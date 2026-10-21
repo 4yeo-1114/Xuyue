@@ -47,6 +47,8 @@ export type GlobalPrintPrefs = {
   marginMm?: number;
   /** 打印份数，1~10 */
   copies?: number;
+  /** 打印批注：开=用带错因批注的留痕图，关=普通留痕图（默认开） */
+  printWrongNotes?: boolean;
 };
 
 export function parseStoredPaperSize(raw: unknown): PrintPaperSize | undefined {
@@ -73,6 +75,8 @@ export function readGlobalPrintPrefs(): Partial<GlobalPrintPrefs> {
       marginMm:
         typeof j?.marginMm === "number" && Number.isFinite(j.marginMm) ? j.marginMm : undefined,
       copies: typeof j?.copies === "number" && Number.isFinite(j.copies) ? j.copies : undefined,
+      printWrongNotes:
+        typeof j?.printWrongNotes === "boolean" ? j.printWrongNotes : undefined,
     };
   } catch {
     return {};
@@ -93,6 +97,7 @@ export function writeGlobalPrintPrefs(prefs: GlobalPrintPrefs): void {
         printMode: prefs.printMode,
         marginMm: prefs.marginMm,
         copies: prefs.copies,
+        printWrongNotes: prefs.printWrongNotes,
       })
     );
     window.dispatchEvent(new CustomEvent(GLOBAL_PRINT_PREFS_EVENT));
@@ -151,5 +156,6 @@ export function defaultGlobalPrintPrefs(): GlobalPrintPrefs {
     printMode: "standard",
     marginMm: 5,
     copies: 1,
+    printWrongNotes: true,
   };
 }

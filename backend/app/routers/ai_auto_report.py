@@ -10,7 +10,13 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import bind_grading_user_context, get_current_user_id
 from app.services.ai_auto_report.generator import stream_auto_report
-from app.services.ai_auto_report.store import get_report, list_pending, mark_consumed
+from app.services.ai_auto_report.store import (
+    begin_stream,
+    end_stream,
+    get_report,
+    list_pending,
+    mark_consumed,
+)
 from app.services.audit.access_log import log_access, resolve_user_role
 
 router = APIRouter(
@@ -44,6 +50,12 @@ def api_stream_auto_report(
     if report.get("status") != "pending":
         raise HTTPException(status_code=409, detail="报告已处理")
 
+    # 同账号同文件夹同时只允许一路生成（1013 磁盘吞吐打穿事故防线：
+    # 多标签页/重复入队会并发生成两批全班报告，图片读盘量翻倍）
+    folder_safe = str(report.get("folder_safe") or "")
+    if not begin_stream(user_id, folder_safe):
+        raise HTTPException(status_code=409, detail="该班级的分析报告正在生成中，请稍候完成后再试")
+
     payload = report.get("payload") or {}
     # E03/E14：AI auto-report 拉取留痕（写失败不阻断）
     try:
@@ -60,8 +72,19 @@ def api_stream_auto_report(
         )
     except Exception:  # noqa: BLE001
         pass
+    def _guarded_stream():
+        # try/finally 保证生成结束/中断/客户端断开都能释放同文件夹生成权
+        from app.services.heavy_budget import heavy_slot
+
+        try:
+            # 1015 根治：报告生成进全局重活预算排队（与批改/打印共享槽位）
+            with heavy_slot("ai-report"):
+                yield from stream_auto_report(db, payload)
+        finally:
+            end_stream(user_id, folder_safe)
+
     return StreamingResponse(
-        stream_auto_report(db, payload),
+        _guarded_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

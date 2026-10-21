@@ -53,7 +53,7 @@ export function StudentImportDialog({
         if (!v) reset();
       }}
     >
-      <DialogContent className="sm:max-w-[480px]">
+      <DialogContent className="sm:max-w-[480px] max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
             {t("classDetail.batchImportTitle", { className })}

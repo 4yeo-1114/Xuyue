@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useSyncExternalStore, useCallback } from "react";
 import { getSubjectsBySchoolLevel } from "@/components/SubjectTabs";
 import { denormalizeGrade } from "@/i18n";
 
@@ -40,17 +40,42 @@ function saveFilters(filters: GlobalFilters) {
   }
 }
 
-export function useGlobalFilters(lockedSubject?: string) {
-  const [filters, setFiltersState] = useState<GlobalFilters>(loadFilters);
+/* ── 全局单一状态源 ──────────────────────────────────────────────
+ * 修复 bug：此前每个组件调用 useGlobalFilters 都拿一份独立的 useState
+ * 副本（各自 mount 时读一次 localStorage 就冻结），顶部切科目只更新
+ * Index 手里那份，「开始批改」建文件夹读的是 GradingStartPage 自己手里
+ * 的旧副本 → 科目标签永远是旧值（默认语文）；且各副本互写 localStorage
+ * 会互相覆盖。现在全部组件共享同一份状态，任何一处修改即全局同步。
+ */
+let current: GlobalFilters = loadFilters();
+const listeners = new Set<() => void>();
 
-  // Persist on change
-  useEffect(() => {
-    saveFilters(filters);
-  }, [filters]);
+function setFilters(updater: (prev: GlobalFilters) => GlobalFilters) {
+  const next = updater(current);
+  // 引用不变（无实际变更）时不通知，避免多余重渲染
+  if (next === current) return;
+  current = next;
+  saveFilters(current);
+  listeners.forEach((l) => l());
+}
+
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function getSnapshot(): GlobalFilters {
+  return current;
+}
+
+export function useGlobalFilters(lockedSubject?: string) {
+  const filters = useSyncExternalStore(subscribe, getSnapshot);
 
   const setSchoolLevel = useCallback(
     (schoolLevel: string) => {
-      setFiltersState((prev) => {
+      setFilters((prev) => {
         // Reset class when school level changes
         const newSubjects = getSubjectsBySchoolLevel(schoolLevel);
         const subjectStillExists = newSubjects.some(
@@ -73,7 +98,7 @@ export function useGlobalFilters(lockedSubject?: string) {
   );
 
   const setGrade = useCallback((grade: string) => {
-    setFiltersState((prev) => ({
+    setFilters((prev) => ({
       ...prev,
       grade,
       selectedClass: "",
@@ -81,13 +106,13 @@ export function useGlobalFilters(lockedSubject?: string) {
   }, []);
 
   const setSelectedClass = useCallback((selectedClass: string) => {
-    setFiltersState((prev) => ({ ...prev, selectedClass }));
+    setFilters((prev) => ({ ...prev, selectedClass }));
   }, []);
 
   const setSelectedSubject = useCallback(
     (selectedSubject: string) => {
       if (lockedSubject) return; // 科目锁定：no-op
-      setFiltersState((prev) => ({ ...prev, selectedSubject }));
+      setFilters((prev) => ({ ...prev, selectedSubject }));
     },
     [lockedSubject],
   );
@@ -95,7 +120,7 @@ export function useGlobalFilters(lockedSubject?: string) {
   /** Bulk update (e.g. syncing from class record) without triggering cascading resets */
   const syncFromClass = useCallback(
     (classRecord: { school_level: string; grade: string; id: string }) => {
-      setFiltersState((prev) => ({
+      setFilters((prev) => ({
         ...prev,
         schoolLevel: classRecord.school_level,
         grade: denormalizeGrade(classRecord.grade),

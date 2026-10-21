@@ -44,6 +44,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import get_current_user_id
 from app.models.ledger_entry import LedgerEntry
+from app.models.payment_order import PaymentOrder
 from app.models.usage_event import UsageEvent
 from app.schemas.common import ApiResponse
 from app.schemas.payment import (
@@ -54,6 +55,7 @@ from app.schemas.payment import (
     LedgerPageOut,
     OrderCreateIn,
     OrderCreateOut,
+    OrderStatusOut,
     PaymentAccountOut,
     ReconciliationOut,
     ReconcileE1Out,
@@ -250,6 +252,37 @@ def api_create_order(
             status=order.status,
             payee_entity_id=order.payee_entity_id,
             pay_params=dict(intent.pay_params or {}),
+        )
+    )
+
+
+@router.get("/orders/{order_id}", response_model=ApiResponse[OrderStatusOut])
+def api_get_order_status(
+    order_id: str,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    """订单状态轮询（前端二维码弹窗 2s 一次）。⛔ 只能查自己的订单（无 user_id 入参）。
+
+    不存在 **或不属于当前用户** ⇒ 同一个 404（照 `/invoices` 的越权口径：
+    不区分「没有这条」和「不是你的」，避免订单号被枚举探测）。
+    """
+    order = (
+        db.query(PaymentOrder)
+        .filter(PaymentOrder.id == str(order_id).strip(), PaymentOrder.user_id == user_id)
+        .first()
+    )
+    if order is None:
+        raise HTTPException(status_code=404, detail=f"订单不存在：{order_id}")
+    return ApiResponse(
+        data=OrderStatusOut(
+            order_id=order.id,
+            channel=order.channel,
+            status=order.status,
+            amount_fen=int(order.amount_fen or 0),
+            paid_amount_fen=int(order.paid_amount_fen) if order.paid_amount_fen is not None else None,
+            created_at=_iso(order.created_at),
+            paid_at=_iso(order.paid_at),
         )
     )
 

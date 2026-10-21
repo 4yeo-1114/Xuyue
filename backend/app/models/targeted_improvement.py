@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, Text, Column, DateTime, ForeignKey, String, UniqueConstraint, Boolean
+from sqlalchemy import JSON, Text, Column, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, Boolean
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.sql import func
@@ -51,4 +51,33 @@ class TargetedRecommendation(Base):
 
     __table_args__ = (
         UniqueConstraint("class_id", "subject", name="uq_targeted_recommendation_class_subject"),
+    )
+
+
+class TargetedImprovementTask(Base):
+    """个性化学习任务清单（客户功能 #15 闭环）。
+
+    从靶向报告 plan_json 的 phases[].student_tasks / stages[].dailyTasks 等抽成可勾选任务行；
+    同一 report 重复 sync 按 (class_id, student_name, subject, report_id, task_text) 应用层去重。
+    """
+    __tablename__ = "targeted_improvement_tasks"
+
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    class_id = Column(String(36), ForeignKey("classes.id", ondelete="CASCADE"), nullable=False, index=True)
+    student_id = Column(String(36), ForeignKey("students.id", ondelete="SET NULL"), nullable=True, index=True)
+    student_name = Column(String(128), nullable=False, index=True)
+    subject = Column(String(64), nullable=False, index=True)
+    report_id = Column(String(36), ForeignKey("targeted_improvement_reports.id", ondelete="SET NULL"), nullable=True, index=True)
+    task_text = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False)
+    stage_label = Column(String(128), nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0, server_default="0")
+    is_done = Column(Boolean, nullable=False, default=False, server_default="0")
+    done_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index("ix_tit_class_student_subject", "class_id", "student_name", "subject"),
+        # 生产 DDL 口径：字符串列 COLLATE 用 0900_ai_ci（memory/xuyue-ddl-drift）
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_0900_ai_ci"},
     )

@@ -9,7 +9,8 @@ export default defineConfig(({ mode }) => ({
     host: "0.0.0.0", // 修改为 0.0.0.0 以支持 IPv4
     port: 6889, // 前端页面端口
     hmr: {
-      overlay: false,
+      // 1020：overlay 关掉时改码出错只给纯白屏、看不到原因；开着才显示错误面板
+      overlay: true,
     },
     allowedHosts: true, // 允许所有 host 访问，解决在其他 IP 地址访问时的白屏问题
     cors: true, // 开启 CORS 允许跨域

@@ -49,6 +49,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import {
   FileText,
@@ -66,6 +67,7 @@ import {
   Save,
   Sparkles,
   BookCopy,
+  Layers,
 } from "lucide-react";
 import {
   getAllUsers,
@@ -82,12 +84,18 @@ import {
   UnitRow,
   KPRow,
 } from "@/services/api";
+import {
+  getMasteryDistribution,
+  type MasteryDistributionItem,
+} from "@/services/dashboardApi";
 import { useAuth } from "@/hooks/useAuth";
+import { useAdminAuth } from "@/hooks/useAdminAuth";
 import { normalizeExamQuestions } from "@/utils/examMathFormat";
 import { readGlobalPrintPrefs } from "@/lib/globalPrintPrefs";
 import { withCompatPrint } from "@/utils/printCompat";
 import { QuestionBankPicker } from "@/components/question-bank/QuestionBankPicker";
 import { stripHtmlText, type BankQuestion } from "@/services/questionBankApi";
+import { TieredComposePanel } from "@/components/class-detail/layered-push/TieredComposePanel";
 
 export type QuestionType =
   | "choice"
@@ -255,7 +263,7 @@ function bankQuestionToExamQuestion(q: BankQuestion): ExamQuestion {
     ? (q.options as unknown[]).map((o) => String(o ?? ""))
     : [];
   return {
-    id: `q_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+    id: newQuestionId("q"),
     type,
     stem: stripHtmlText(q.question),
     content: "",
@@ -331,6 +339,46 @@ function requirementsFromTemplates(
   return out;
 }
 
+// ── 题目 id 生成 / AI 题干序号清理 ────────────────────────────────────
+// 时间戳 + 递增序号 + 随机后缀：同一毫秒内批量生成也绝不重复
+let questionIdSeq = 0;
+function newQuestionId(prefix: string): string {
+  questionIdSeq += 1;
+  return `${prefix}_${Date.now()}_${questionIdSeq}_${Math.random().toString(36).substring(2, 8)}`;
+}
+
+// AI 生成的题干/内容常自带 "1." "2、" 这类题号前缀，与前端自带题号叠加会「题号一样/串号」
+function stripLeadingQuestionNumber(text: string): string {
+  return text.replace(/^\s*\d+(?:[.、．]\s+|[.、．](?!\d))/, "");
+}
+
+/** 保证题目 id 非空且唯一（历史数据/模型输出可能带重复或空 id，会让按 id 查找的题号塌缩成同一个号） */
+function ensureUniqueQuestionIds(qs: ExamQuestion[]): ExamQuestion[] {
+  const used = new Set<string>();
+  return qs.map((q) => {
+    const id = typeof q.id === "string" && q.id ? q.id : "";
+    if (id && !used.has(id)) {
+      used.add(id);
+      return q;
+    }
+    return { ...q, id: newQuestionId("q") };
+  });
+}
+
+// 掌握度滑条配色（与学生画像 Module 3.5 同阈值：80/60/50）
+function kpMasteryTextColor(v: number) {
+  if (v >= 80) return "text-emerald-600";
+  if (v >= 60) return "text-yellow-600";
+  if (v >= 50) return "text-orange-600";
+  return "text-destructive";
+}
+function kpMasteryBarColor(v: number) {
+  if (v >= 80) return "[&>div]:bg-emerald-500";
+  if (v >= 60) return "[&>div]:bg-yellow-500";
+  if (v >= 50) return "[&>div]:bg-orange-500";
+  return "[&>div]:bg-destructive";
+}
+
 /** 按组卷要求搭建空白骨架题（供「模板成卷」后 AI 填充） */
 function buildSkeleton(
   reqs: { type: string; count: number; score: number }[],
@@ -340,7 +388,7 @@ function buildSkeleton(
     const type = r.type as QuestionType;
     for (let i = 0; i < r.count; i += 1) {
       out.push({
-        id: `tpl_${Date.now()}_${type}_${i}_${Math.random().toString(36).substring(2, 6)}`,
+        id: newQuestionId(`tpl_${type}`),
         type,
         stem: "",
         content: "",
@@ -369,6 +417,9 @@ interface Props {
   selectedSchoolLevel?: string;
   loadResourceId?: string;
   onResourceLoaded?: () => void;
+  /** 讲评/班级分析「按薄弱点出卷」带入的知识点，进入后自动开 AI 出题弹窗并预填 */
+  initialTopics?: string[];
+  onTopicsConsumed?: () => void;
 }
 
 export interface ExamPaperRecord {
@@ -382,8 +433,11 @@ export interface ExamPaperRecord {
 export function ExamGenPage({
   onNavChange,
   selectedSubject,
+  selectedClass,
   loadResourceId,
   onResourceLoaded,
+  initialTopics,
+  onTopicsConsumed,
 }: Props) {
   const { user } = useAuth();
   const { t, locale } = useLocale();
@@ -413,6 +467,8 @@ export function ExamGenPage({
   const [activeExamId, setActiveExamId] = useState<string | null>(null);
   const [localSubject, setLocalSubject] = useState("语文");
   const [loadingExams, setLoadingExams] = useState(false);
+  // 按层出卷入口（A/B/C 分层卷）
+  const [tieredOpen, setTieredOpen] = useState(false);
 
   // 卸载守卫:await 之后的 setState 需确认组件仍挂载,避免卸载后更新泄漏。
   const mountedRef = useRef(true);
@@ -464,6 +520,25 @@ export function ExamGenPage({
     onResourceLoaded?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadResourceId, exams, loadingExams]);
+
+  // 讲评/班级分析「按薄弱点出卷」：带知识点进来 → 新建空白卷 + 打开 AI 弹窗预填主题。
+  // 题型走「按题型模板」出骨架（新卷没有占位题，占位模式会报「请先添加占位题」）。
+  const handledTopicsRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!initialTopics || initialTopics.length === 0) {
+      handledTopicsRef.current = null;
+      return;
+    }
+    const token = initialTopics.join("|");
+    if (handledTopicsRef.current === token) return;
+    handledTopicsRef.current = token;
+    openEditor();
+    setTemplateMode("type");
+    setAiForm((f) => ({ ...f, topic: initialTopics.join("、") }));
+    setAiModalOpen(true);
+    onTopicsConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTopics]);
 
   const handleSaveExam = async () => {
     try {
@@ -527,7 +602,9 @@ export function ExamGenPage({
     // 记录进入编辑器时的已保存快照,作为脏数据判定的基准(paperTitle/localSubject/questions)
     const initialTitle = exam ? exam.title : defaultTitle;
     const initialSubject = exam ? exam.subject : selectedSubject || "语文";
-    const initialQuestions = exam ? toExamQuestions(exam.questions) : [];
+    const initialQuestions = exam
+      ? ensureUniqueQuestionIds(toExamQuestions(exam.questions))
+      : [];
     if (exam) {
       setActiveExamId(exam.id);
     } else {
@@ -712,6 +789,35 @@ export function ExamGenPage({
     };
   }, [aiModalOpen, localSubject, aiForm.grade, aiForm.term]);
 
+  // AI 弹窗知识点树的班级掌握度滑条（与学生画像 Module 3.5 同口径：
+  // 错题分布派生、按知识点名锚定；无班级/无数据时不显示滑条）
+  const { schoolId } = useAdminAuth();
+  const [kpMasteryByName, setKpMasteryByName] = useState<
+    Record<string, MasteryDistributionItem>
+  >({});
+  useEffect(() => {
+    if (!aiModalOpen || !selectedClass || !schoolId) {
+      setKpMasteryByName({});
+      return;
+    }
+    let cancelled = false;
+    getMasteryDistribution(schoolId, { class_id: selectedClass })
+      .then((items) => {
+        if (cancelled) return;
+        const map: Record<string, MasteryDistributionItem> = {};
+        (items ?? []).forEach((it) => {
+          if (it && it.name) map[it.name.trim()] = it;
+        });
+        setKpMasteryByName(map);
+      })
+      .catch(() => {
+        if (!cancelled) setKpMasteryByName({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [aiModalOpen, selectedClass, schoolId]);
+
   const isLanguage = localSubject === "语文" || localSubject === "英语";
   const isMathScience = ["数学", "物理", "化学", "生物", "科学"].includes(
     localSubject,
@@ -734,7 +840,7 @@ export function ExamGenPage({
   const handleAddQuestion = (type: QuestionType) => {
     setQuestions((prev) => {
       const newQ: ExamQuestion = {
-        id: `q_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        id: newQuestionId("q"),
         type,
         stem: "",
         content: "",
@@ -909,7 +1015,16 @@ export function ExamGenPage({
       generatedQuestions.forEach((q) => {
         if (q && isQuestionType(q.type)) {
           if (!queueByType[q.type]) queueByType[q.type] = [];
-          queueByType[q.type].push(q as ExamQuestion);
+          const ai = q as ExamQuestion;
+          // AI 常在题干/内容/子问题里自带 "1." "2、" 题号前缀，和前端题号叠加会串号，入桶前清掉
+          queueByType[q.type].push({
+            ...ai,
+            stem: stripLeadingQuestionNumber(String(ai.stem ?? "")),
+            content: stripLeadingQuestionNumber(String(ai.content ?? "")),
+            subQuestions: ai.subQuestions?.map((s) =>
+              stripLeadingQuestionNumber(String(s)),
+            ),
+          });
         }
       });
 
@@ -946,12 +1061,13 @@ export function ExamGenPage({
           for (let i = consumed; i < bucket.length; i += 1) {
             appended.push({
               ...bucket[i],
-              id: `ai_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 6)}`,
+              id: newQuestionId("ai"),
             });
           }
         });
 
-        return [...next, ...appended];
+        // 防御历史占位 id 重复/为空：合并结果整体再过一遍唯一化，保证预览题号不塌缩
+        return ensureUniqueQuestionIds([...next, ...appended]);
       });
 
       toast.success(t("examGen.toast.aiSuccessMerged"));
@@ -1113,6 +1229,42 @@ export function ExamGenPage({
     [getSectionNumber],
   );
 
+  // 大题号按「实际存在的题型」顺序连续编号（一、二、三…），
+  // 而不是 TYPE_ORDER 固定槽位——否则没出的题型会把大题号顶出空档（如「三」直接跳「九」）
+  const sectionNumberIndex = useMemo(() => {
+    const map: Record<string, number> = {};
+    let seq = 0;
+    TYPE_ORDER.forEach((type) => {
+      if ((questionsByType[type]?.length ?? 0) > 0) {
+        map[type] = seq;
+        seq += 1;
+      }
+    });
+    return map;
+  }, [questionsByType]);
+
+  // 小题号跨大题连续累计（1-10 选择、11-15 填空……），与纸质试卷习惯一致
+  const questionNumberBase = useMemo(() => {
+    const map: Record<string, number> = {};
+    let acc = 0;
+    TYPE_ORDER.forEach((type) => {
+      const n = questionsByType[type]?.length ?? 0;
+      if (n > 0) {
+        map[type] = acc;
+        acc += n;
+      }
+    });
+    return map;
+  }, [questionsByType]);
+
+  /** 小题号：按题目在本题型中的位置编号；分页引用暂时落后时回退按 id 查找 */
+  const getQuestionNumber = (q: ExamQuestion): number => {
+    const qsOfType = questionsByType[q.type] ?? [];
+    let pos = qsOfType.indexOf(q);
+    if (pos < 0) pos = qsOfType.findIndex((qt) => qt.id === q.id);
+    return (questionNumberBase[q.type] ?? 0) + Math.max(pos, 0) + 1;
+  };
+
   const [paginatedQuestions, setPaginatedQuestions] = useState<
     ExamQuestion[][]
   >([]);
@@ -1231,13 +1383,42 @@ export function ExamGenPage({
                   </div>
                 </div>
               </div>
-              <Button className="gap-2" onClick={() => openEditor()}>
-                <Plus className="h-4 w-4" />
-                {t("examGen.createExam")}
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  className="gap-2"
+                  onClick={() => setTieredOpen(true)}
+                >
+                  <Layers className="h-4 w-4" />
+                  {t("smartGen.tiered.entry")}
+                </Button>
+                <Button className="gap-2" onClick={() => openEditor()}>
+                  <Plus className="h-4 w-4" />
+                  {t("examGen.createExam")}
+                </Button>
+              </div>
             </div>
           </CardHeader>
         </Card>
+
+        {/* 按层出卷弹窗：与分层推送页同一端点/面板 */}
+        <Dialog
+          open={tieredOpen}
+          onOpenChange={(o) => {
+            setTieredOpen(o);
+            if (!o) fetchExams();
+          }}
+        >
+          <DialogContent className="max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>{t("smartGen.tiered.title")}</DialogTitle>
+            </DialogHeader>
+            <TieredComposePanel
+              classId={selectedClass || ""}
+              subject={selectedSubject || localSubject}
+            />
+          </DialogContent>
+        </Dialog>
 
         {loadingExams ? (
           <Card className="border-dashed">
@@ -1857,7 +2038,8 @@ export function ExamGenPage({
               {TYPE_ORDER.map((type) => {
                 const qs = questionsByType[type];
                 if (!qs || qs.length === 0) return null;
-                const sectionIndex = TYPE_ORDER.indexOf(type);
+                const sectionIndex =
+                  sectionNumberIndex[type] ?? TYPE_ORDER.indexOf(type);
                 const sectionScore = qs.reduce(
                   (sum, q) => sum + (Number(q.score) || 0),
                   0,
@@ -1887,7 +2069,7 @@ export function ExamGenPage({
                       >
                         <div className="flex gap-2">
                           <span className="font-medium shrink-0">
-                            {qIdx + 1}.
+                            {(questionNumberBase[type] ?? 0) + qIdx + 1}.
                           </span>
                           <div className="flex-1">
                             {q.stem && (
@@ -1995,19 +2177,10 @@ export function ExamGenPage({
                               </div>
                             </div>
                           )}
-                        {(q.type === "fill" ||
-                          q.type === "calculation" ||
+                        {/* 填空题答案写在题干的「＿＿＿」里，不再画横线；计算/应用题不画线，留白作答 */}
+                        {(q.type === "calculation" ||
                           q.type === "application") && (
-                          <div className="mt-6 pl-6">
-                            {Array.from({
-                              length: q.type === "fill" ? 1 : 3,
-                            }).map((_, i) => (
-                              <div
-                                key={i}
-                                className="border-b border-gray-400 mt-8"
-                              ></div>
-                            ))}
-                          </div>
+                          <div className="mt-4 pl-6 min-h-[140px]"></div>
                         )}
                         {q.type === "essay" && (
                           <div className="mt-6 border border-gray-400 min-h-[400px] p-2 text-sm text-gray-400 text-center flex items-center justify-center">
@@ -2072,15 +2245,14 @@ export function ExamGenPage({
                           const showHeader = q.type !== currentType;
                           currentType = q.type;
 
-                          const sectionIndex = TYPE_ORDER.indexOf(q.type);
+                          const sectionIndex =
+                            sectionNumberIndex[q.type] ?? TYPE_ORDER.indexOf(q.type);
                           const qsOfType = questionsByType[q.type] || [];
                           const sectionScore = qsOfType.reduce(
                             (sum, qt) => sum + (Number(qt.score) || 0),
                             0,
                           );
-                          const qGlobalIdx = qsOfType.findIndex(
-                            (qt) => qt.id === q.id,
-                          );
+                          const qNumber = getQuestionNumber(q);
 
                           return (
                             <div key={q.id} className="space-y-4">
@@ -2102,7 +2274,7 @@ export function ExamGenPage({
                               <div className="text-base leading-relaxed break-inside-avoid print:break-inside-avoid">
                                 <div className="flex gap-2">
                                   <span className="font-medium shrink-0">
-                                    {qGlobalIdx + 1}.
+                                    {qNumber}.
                                   </span>
                                   <div className="flex-1">
                                     {q.stem && (
@@ -2244,19 +2416,10 @@ export function ExamGenPage({
                                     </div>
                                   )}
 
-                                {(q.type === "fill" ||
-                                  q.type === "calculation" ||
+                                {/* 填空题答案写在题干的「＿＿＿」里，不再画横线；计算/应用题不画线，留白作答 */}
+                                {(q.type === "calculation" ||
                                   q.type === "application") && (
-                                  <div className="mt-6 pl-6">
-                                    {Array.from({
-                                      length: q.type === "fill" ? 1 : 3,
-                                    }).map((_, i) => (
-                                      <div
-                                        key={i}
-                                        className="border-b border-gray-400 mt-8"
-                                      ></div>
-                                    ))}
-                                  </div>
+                                  <div className="mt-4 pl-6 min-h-[140px]"></div>
                                 )}
 
                                 {q.type === "essay" && (
@@ -2504,51 +2667,89 @@ export function ExamGenPage({
                     {t("examGen.aiModal.kpEmpty")}
                   </div>
                 ) : (
-                  <ScrollArea className="max-h-40 p-2">
-                    {kpUnits.map((u) => {
-                      const points = kpList.filter((k) => k.unit_id === u.id);
-                      if (points.length === 0) return null;
-                      return (
-                        <div key={u.id} className="mb-2">
-                          <div className="mb-1 text-xs font-medium text-muted-foreground">
-                            {u.name}
+                  <ScrollArea className="h-56">
+                    <div className="p-2">
+                      {kpUnits.map((u) => {
+                        const points = kpList.filter((k) => k.unit_id === u.id);
+                        if (points.length === 0) return null;
+                        return (
+                          <div key={u.id} className="mb-2">
+                            <div className="mb-1 text-xs font-medium text-muted-foreground">
+                              {u.name}
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {points.map((k) => {
+                                const checked = selectedKpIds.includes(k.id);
+                                const m = kpMasteryByName[k.name.trim()];
+                                const pct = m
+                                  ? Math.round(m.mastery * 100)
+                                  : null;
+                                return (
+                                  <label
+                                    key={k.id}
+                                    title={
+                                      pct !== null
+                                        ? t("examGen.aiModal.kpMasteryTip", {
+                                            pct,
+                                            count: m.wrong_count,
+                                          })
+                                        : undefined
+                                    }
+                                    className={cn(
+                                      "inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
+                                      checked
+                                        ? "border-primary bg-primary/10 text-primary"
+                                        : "border-border hover:bg-muted",
+                                    )}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="h-3 w-3"
+                                      checked={checked}
+                                      onChange={(e) => {
+                                        setSelectedKpIds((prev) =>
+                                          e.target.checked
+                                            ? [...prev, k.id]
+                                            : prev.filter((id) => id !== k.id),
+                                        );
+                                      }}
+                                    />
+                                    {k.name}
+                                    {pct !== null && (
+                                      <>
+                                        <Progress
+                                          value={pct}
+                                          className={cn(
+                                            "h-1.5 w-10",
+                                            kpMasteryBarColor(pct),
+                                          )}
+                                        />
+                                        <span
+                                          className={cn(
+                                            "text-[10px] leading-none",
+                                            kpMasteryTextColor(pct),
+                                          )}
+                                        >
+                                          {pct}%
+                                        </span>
+                                      </>
+                                    )}
+                                  </label>
+                                );
+                              })}
+                            </div>
                           </div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {points.map((k) => {
-                              const checked = selectedKpIds.includes(k.id);
-                              return (
-                                <label
-                                  key={k.id}
-                                  className={cn(
-                                    "inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
-                                    checked
-                                      ? "border-primary bg-primary/10 text-primary"
-                                      : "border-border hover:bg-muted",
-                                  )}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    className="h-3 w-3"
-                                    checked={checked}
-                                    onChange={(e) => {
-                                      setSelectedKpIds((prev) =>
-                                        e.target.checked
-                                          ? [...prev, k.id]
-                                          : prev.filter((id) => id !== k.id),
-                                      );
-                                    }}
-                                  />
-                                  {k.name}
-                                </label>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </ScrollArea>
                 )}
               </div>
+              {Object.keys(kpMasteryByName).length > 0 && (
+                <p className="text-[10px] text-muted-foreground">
+                  {t("examGen.aiModal.kpMasteryHint")}
+                </p>
+              )}
               <Textarea
                 placeholder={t("examGen.aiModal.topicPlaceholder")}
                 value={aiForm.topic}

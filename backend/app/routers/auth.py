@@ -1,4 +1,5 @@
 import logging
+import secrets
 import threading
 import time
 from typing import List, Optional
@@ -14,14 +15,18 @@ from app.dependencies import get_current_user_id
 from app.grading.user_paths import ensure_user_grading_layout
 from app.models.user import User
 from app.schemas.auth import (
+    BindPhoneRequest,
     ChangePasswordRequest,
     LocaleUpdateRequest,
     LoginRequest,
+    PhoneLoginRequest,
     RegisterRequest,
+    SendCodeRequest,
     TokenResponse,
     UpdateProfileRequest,
     UserResponse,
 )
+from app.services import verification
 from app.schemas.common import ApiResponse
 from app.services.multi_project_settings import is_multi_project_admin_email
 from app.utils.security import create_access_token, decode_access_token, hash_password, verify_password
@@ -74,12 +79,29 @@ def _client_ip(request: Request) -> str:
         return ""
 
 
+def _bearer_user_id(request: Request) -> Optional[str]:
+    """从 Authorization: Bearer <token> 解析 user_id；无效/缺失返回 None（不抛异常）。"""
+    authorization = request.headers.get("authorization", "")
+    if not authorization.startswith("Bearer "):
+        return None
+    token = authorization.replace("Bearer ", "").strip()
+    return decode_access_token(token)
+
+
 def _validate_loose_email(raw: str) -> str:
     """宽松邮箱校验：演示环境允许保留域（如 @grade.local），仅要求非空且含 @。"""
     email = (raw or "").strip()
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="邮箱格式不正确")
     return email
+
+
+def _normalize_phone(raw: str) -> str:
+    """手机号规范化：去空格/横线；要求为 11 位大陆手机号（1 开头）。"""
+    phone = (raw or "").strip().replace(" ", "").replace("-", "")
+    if len(phone) != 11 or not phone.isdigit() or not phone.startswith("1"):
+        raise HTTPException(status_code=400, detail="手机号格式不正确")
+    return phone
 
 
 # ── 免审核自助注册（演示环境）──────────────────────────────
@@ -122,6 +144,37 @@ def _record_register(ip: str) -> None:
     with _REGISTER_LOCK:
         _prune_register_counts(ip)
         _REGISTER_COUNTS.setdefault(ip, []).append(now)
+
+
+def _create_phone_user(db: Session, phone: str, ip: str) -> User:
+    """手机号未注册时自动注册（任课教师）：合成唯一邮箱 + 随机密码（用户不持有）。
+
+    与邮箱自助注册同受 ALLOW_PUBLIC_REGISTRATION 开关与注册限频约束。
+    """
+    if not getattr(settings, "ALLOW_PUBLIC_REGISTRATION", True):
+        raise HTTPException(status_code=403, detail="暂未开放自助注册")
+    if _register_locked(ip):
+        raise HTTPException(status_code=429, detail="注册过于频繁，请 1 小时后再试")
+
+    email = f"{phone}@phone.local"
+    new_user = User(
+        email=email,
+        password_hash=hash_password(secrets.token_hex(16)),
+        display_name=f"手机用户{phone[-4:]}",
+        phone=phone,
+        roles="任课教师",
+    )
+    db.add(new_user)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="该手机号已注册")
+    db.commit()
+    db.refresh(new_user)
+    _record_register(ip)
+    logging.info("手机号自助注册成功: user_id=%s phone=%s ip=%s", new_user.id, phone, ip)
+    return new_user
 
 
 @router.api_route("/login", methods=["OPTIONS"])
@@ -201,6 +254,10 @@ def register(data: RegisterRequest, request: Request, db: Session = Depends(get_
     if exists:
         raise HTTPException(status_code=409, detail="该邮箱已被注册")
 
+    # 合规：注册前必须校验邮箱验证码（真实邮箱验证）。老账号不追溯，仅影响新注册。
+    if not verification.verify_code(db, email, "email", "register", data.email_code):
+        raise HTTPException(status_code=400, detail="邮箱验证码错误或已过期")
+
     # 科目：可选、自由填写（独立老师可能教任意科目，不做白名单）；只保留 strip 与长度上限
     subject = (data.teaching_subject or "").strip() or None
     if subject and len(subject) > MAX_TEACHING_SUBJECT_LEN:
@@ -240,6 +297,98 @@ def register(data: RegisterRequest, request: Request, db: Session = Depends(get_
     token = create_access_token(subject=new_user.id)
     logging.info("自助注册成功: user_id=%s role=%s ip=%s", new_user.id, data.role, ip)
     return TokenResponse(access_token=token, token_type="bearer", user=user_to_response(new_user))
+
+
+@router.post("/send-code")
+def send_code(data: SendCodeRequest, request: Request, db: Session = Depends(get_db)):
+    """签发验证码（免登录，但限频）。
+
+    支持的组合（其它组合 400）：
+    - email + register：注册前邮箱验证（先查未注册，409 已注册）。
+    - sms + login：手机号验证码登录/注册（未注册也能发码，登录时自动注册）。
+    - sms + bind：登录态绑定手机号（需授权头，先查未被他人占用，409 已占用）。
+
+    fail-closed：SMTP / 阿里云短信任一未配置时返回 501「通道未配置」。
+    """
+    if data.channel == "email":
+        if data.purpose != "register":
+            raise HTTPException(status_code=400, detail="不支持的邮箱验证码用途")
+        email = _validate_loose_email(data.target)
+        exists = db.query(User).filter(func.lower(User.email) == email.lower()).first()
+        if exists:
+            raise HTTPException(status_code=409, detail="该邮箱已被注册")
+        target = email
+    elif data.channel == "sms":
+        phone = _normalize_phone(data.target)
+        if data.purpose == "bind":
+            auth = _bearer_user_id(request)
+            if not auth:
+                raise HTTPException(status_code=401, detail="未登录")
+            occupied = db.query(User).filter(User.phone == phone, User.id != auth).first()
+            if occupied:
+                raise HTTPException(status_code=409, detail="该手机号已被其他账号绑定")
+        elif data.purpose != "login":
+            raise HTTPException(status_code=400, detail="不支持的短信验证码用途")
+        # purpose == "login"：手机号登录/注册合一，未注册也能发码（登录时自动注册）
+        target = phone
+    else:
+        raise HTTPException(status_code=400, detail="未知发送渠道")
+
+    try:
+        verification.issue_code(db, target, data.channel, data.purpose)
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except RuntimeError as e:
+        # fail-closed：通道未配置 / 发送失败，明确报错，不静默
+        raise HTTPException(status_code=501, detail=str(e))
+    return {"ok": True}
+
+
+@router.post("/phone-login", response_model=TokenResponse)
+def phone_login(data: PhoneLoginRequest, request: Request, db: Session = Depends(get_db)):
+    """手机号 + 短信验证码登录/注册：未注册的手机号验证通过后自动创建账号并登录。"""
+    phone = _normalize_phone(data.phone)
+    ip = _client_ip(request)
+    if _is_login_locked(phone, ip):
+        raise HTTPException(status_code=429, detail="尝试次数过多，请 15 分钟后再试")
+
+    if not verification.verify_code(db, phone, "sms", "login", data.code):
+        _record_login_failure(phone, ip)
+        raise HTTPException(status_code=401, detail="验证码错误或已过期")
+
+    user = db.query(User).filter(User.phone == phone).first()
+    if not user:
+        user = _create_phone_user(db, phone, ip)
+
+    _clear_login_failures(phone, ip)
+    ensure_user_grading_layout(user.id)
+    token = create_access_token(subject=user.id)
+    logging.info("手机号登录成功: user_id=%s ip=%s", user.id, ip)
+    return TokenResponse(access_token=token, token_type="bearer", user=user_to_response(user))
+
+
+@router.post("/bind-phone", response_model=UserResponse)
+def bind_phone(data: BindPhoneRequest, request: Request, db: Session = Depends(get_db)):
+    """登录态绑定手机号（先验证码，再应用层查重，防重复绑定）。"""
+    user_id = _bearer_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未登录")
+    phone = _normalize_phone(data.phone)
+
+    occupied = db.query(User).filter(User.phone == phone, User.id != user_id).first()
+    if occupied:
+        raise HTTPException(status_code=409, detail="该手机号已被其他账号绑定")
+
+    if not verification.verify_code(db, phone, "sms", "bind", data.code):
+        raise HTTPException(status_code=400, detail="验证码错误或已过期")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="用户不存在")
+    user.phone = phone
+    db.commit()
+    db.refresh(user)
+    return user_to_response(user)
 
 
 @router.get("/me", response_model=UserResponse)

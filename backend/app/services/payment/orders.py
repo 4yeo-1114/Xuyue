@@ -13,13 +13,13 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.payment_order import PaymentOrder
-from app.models.user import gen_uuid
 from app.services import quota_service
 from app.services.payment import ledger as ledger_svc
 from app.services.payment.channels import (
@@ -69,7 +69,10 @@ def create_order(
 
     adapter = get_adapter(channel)  # 未知通道 ⇒ UnknownChannelError(404)
     order = PaymentOrder(
-        id=gen_uuid(),                      # 显式 id：通道要拿它当 out_trade_no
+        # 显式 id：通道要拿它当 out_trade_no。⛔ 不能用带连字符的 36 位 UUID ——
+        # 微信 out_trade_no 限 6~32 字符（36 位 UUID 下单必报 PARAM_ERROR「商户订单号错误」，
+        # 2026-09-28 实测）。uuid4().hex = 32 位纯 hex，满足上限且回调按原样反查订单。
+        id=uuid.uuid4().hex,
         user_id=str(user_id).strip(),
         channel=adapter.channel,
         status=ledger_svc.ORDER_PENDING,

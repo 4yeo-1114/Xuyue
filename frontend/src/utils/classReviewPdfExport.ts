@@ -1,10 +1,12 @@
 /**
- * 课堂讲评 PDF 导出：仅包含讲评方案/二次巩固的文字内容，不含「错题关联」图片。
+ * 课堂讲评 PDF 导出：讲评方案/二次巩固文字内容 + 可选「错题原卷」附录。
  * 在离屏 DOM 中单独排版后生成 PDF，与页面上的图片预览区域无关。
+ * 错题原卷图 URL 与网页预览同源（report.pre_class.all_wrong_images + gradingImageUrl）。
  */
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import type { ClassReviewReport } from "@/services/api";
+import { gradingImageUrl } from "@/services/gradingApi";
 import { readGlobalPrintPrefs } from "@/lib/globalPrintPrefs";
 
 const BOOK_FONT =
@@ -30,6 +32,103 @@ const BLOCK_GAP_MM = 4;
 const PDF_MARGIN_X = 18;
 const PDF_MARGIN_TOP = 22;
 const PDF_MARGIN_BOTTOM = 18;
+
+// ── 课堂讲评导出偏好（localStorage，惯例对齐 globalPrintPrefs / printWrongNotes）──
+export const CLASS_REVIEW_EXPORT_PREFS_KEY = "class_review_export_prefs_v1";
+
+export type ClassReviewExportPrefs = {
+  /** 导出讲评方案 PDF 时是否附上「错题原卷」附录（默认开） */
+  includeWrongPaper: boolean;
+};
+
+export type ClassReviewExportOptions = {
+  /** 覆盖本地偏好；不传则读 localStorage */
+  includeWrongPaper?: boolean;
+};
+
+export function defaultClassReviewExportPrefs(): ClassReviewExportPrefs {
+  return { includeWrongPaper: true };
+}
+
+export function readClassReviewExportPrefs(): ClassReviewExportPrefs {
+  const defaults = defaultClassReviewExportPrefs();
+  try {
+    const raw = localStorage.getItem(CLASS_REVIEW_EXPORT_PREFS_KEY);
+    if (!raw) return defaults;
+    const j = JSON.parse(raw);
+    return {
+      includeWrongPaper:
+        typeof j?.includeWrongPaper === "boolean"
+          ? j.includeWrongPaper
+          : defaults.includeWrongPaper,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+export function writeClassReviewExportPrefs(
+  prefs: ClassReviewExportPrefs,
+): void {
+  try {
+    localStorage.setItem(
+      CLASS_REVIEW_EXPORT_PREFS_KEY,
+      JSON.stringify({
+        includeWrongPaper: prefs.includeWrongPaper,
+      }),
+    );
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+/** 错题原卷条目结构：与 classReview 报告 pre_class.all_wrong_images / 网页预览一致 */
+export type WrongPaperImage = {
+  student_name?: string;
+  title?: string;
+  image_url?: string;
+  answer_url?: string;
+};
+
+/**
+ * 从标题解析排序键：「第12题-区3」「第12题」「12.」等。
+ * 题号优先，同题再按作答区号；解析失败排最后。
+ */
+export function parseWrongPaperSortKey(title: unknown): {
+  q: number;
+  slot: number;
+} {
+  const s = String(title ?? "");
+  const qm = s.match(/(\d+)\s*题/) || s.match(/(\d+)/);
+  const sm = s.match(/区\s*(\d+)/) || s.match(/[-_]\s*s(\d+)/i);
+  return {
+    q: qm ? Number(qm[1]) : Number.MAX_SAFE_INTEGER,
+    slot: sm ? Number(sm[1]) : 0,
+  };
+}
+
+/** 按学生分节，节内按题号/作答区排序（与网页预览分组一致） */
+export function groupWrongPaperImagesByStudent(
+  images: unknown,
+): Array<{ student: string; items: WrongPaperImage[] }> {
+  const list = Array.isArray(images) ? images : [];
+  const map = new Map<string, WrongPaperImage[]>();
+  for (const raw of list) {
+    const img = (raw || {}) as WrongPaperImage;
+    const student = String(img.student_name || "").trim() || "未命名学生";
+    const bucket = map.get(student);
+    if (bucket) bucket.push(img);
+    else map.set(student, [img]);
+  }
+  return Array.from(map.entries()).map(([student, items]) => ({
+    student,
+    items: [...items].sort((a, b) => {
+      const ka = parseWrongPaperSortKey(a.title);
+      const kb = parseWrongPaperSortKey(b.title);
+      return ka.q - kb.q || ka.slot - kb.slot;
+    }),
+  }));
+}
 
 interface PdfLayout {
   marginX: number;
@@ -204,6 +303,16 @@ function baseStyles() {
     .cr-doc .flow-label { display: block; font-weight: 700; margin-bottom: 5px; color: #1a3a5c; font-size: 12px; }
     .cr-doc .score { display: inline-block; margin-top: 10px; padding: 4px 12px; border: 1px solid #c5ccd8; font-size: 12px; background: #eef2f7; color: #1a3a5c; border-radius: 2px; }
     .cr-doc .duration-note { margin-top: 10px; padding-top: 8px; border-top: 1px solid #e8ebf0; font-size: 12.5px; color: #5c6678; }
+    .cr-doc .wrong-student-name { margin: 0 0 10px; font-size: 14.5px; font-weight: 700; color: #1a3a5c; }
+    .cr-doc .wrong-card { border: 1px solid #d5dae3; border-radius: 2px; background: #fff; overflow: hidden; }
+    .cr-doc .wrong-card-title { margin: 0; padding: 8px 12px; font-size: 12.5px; font-weight: 700; color: #243b53; background: #f4f6f9; border-bottom: 1px solid #e8ebf0; }
+    .cr-doc .wrong-card-body { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; padding: 10px 12px; }
+    .cr-doc .wrong-img-block { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .cr-doc .wrong-img-label { font-size: 11px; color: #5c6678; }
+    .cr-doc .wrong-img-frame { border: 1px solid #e2e6ed; border-radius: 2px; background: #fff; padding: 6px; display: flex; align-items: center; justify-content: center; min-height: 72px; }
+    .cr-doc .wrong-img { display: block; max-width: 100%; max-height: 220px; height: auto; object-fit: contain; }
+    .cr-doc .wrong-img-block.answer .wrong-img { max-height: 120px; }
+    .cr-doc .wrong-empty { color: #6b7280; font-size: 11px; }
   `;
 }
 
@@ -252,6 +361,83 @@ export function hasConsolidationContent(report: ClassReviewReport | null | undef
   return false;
 }
 
+/** 错题原卷单题卡片：原卷图 + 作答区域图（URL 取法与网页预览一致） */
+function renderWrongPaperCard(img: WrongPaperImage) {
+  const title = escapeHtml(img.title || "错题");
+  const questionUrl = img.image_url ? gradingImageUrl(img.image_url) : "";
+  const answerUrl = img.answer_url ? gradingImageUrl(img.answer_url) : "";
+  const questionHtml = questionUrl
+    ? `<img class="wrong-img" src="${escapeHtml(questionUrl)}" alt="${title}" />`
+    : `<p class="wrong-empty">暂无图片</p>`;
+  const answerHtml = answerUrl
+    ? `<div class="wrong-img-block answer">
+         <div class="wrong-img-label">作答区域</div>
+         <div class="wrong-img-frame">
+           <img class="wrong-img" src="${escapeHtml(answerUrl)}" alt="${title} 作答" />
+         </div>
+       </div>`
+    : "";
+  return exportBlock(`
+    <div class="wrong-card">
+      <p class="wrong-card-title">${title}</p>
+      <div class="wrong-card-body">
+        <div class="wrong-img-block">
+          <div class="wrong-img-label">错题原卷</div>
+          <div class="wrong-img-frame">${questionHtml}</div>
+        </div>
+        ${answerHtml}
+      </div>
+    </div>
+  `);
+}
+
+/**
+ * 「错题原卷」附录：按学生分节，节内按题号/作答区排序。
+ * 无图时返回空串，不占导出篇幅。
+ */
+function renderWrongPaperSection(images: unknown) {
+  const groups = groupWrongPaperImagesByStudent(images);
+  if (!groups.length) return "";
+  const parts: string[] = [
+    exportBlock(
+      sectionPart(
+        "错题原卷",
+        `<p class="muted">按学生汇总的错题原卷与作答区域，供课堂讲评对照使用。</p>`
+      )
+    ),
+  ];
+  for (const group of groups) {
+    parts.push(
+      exportBlock(
+        `<p class="wrong-student-name">学生：${escapeHtml(group.student)}</p>`
+      )
+    );
+    for (const img of group.items) {
+      parts.push(renderWrongPaperCard(img));
+    }
+  }
+  return parts.join("");
+}
+
+/** 等离屏 DOM 内图片加载完成再截图，避免 html2canvas 拍到空白图框 */
+async function waitForImages(root: HTMLElement) {
+  const imgs = Array.from(root.querySelectorAll("img"));
+  await Promise.all(
+    imgs.map(
+      (img) =>
+        new Promise<void>((resolve) => {
+          if (img.complete) {
+            resolve();
+            return;
+          }
+          const done = () => resolve();
+          img.addEventListener("load", done, { once: true });
+          img.addEventListener("error", done, { once: true });
+        })
+    )
+  );
+}
+
 function mountExportRoot(innerHtml: string) {
   const el = document.createElement("div");
   el.style.position = "fixed";
@@ -264,7 +450,11 @@ function mountExportRoot(innerHtml: string) {
   return el;
 }
 
-function createReviewPlanElement(report: ClassReviewReport, subject: string) {
+function createReviewPlanElement(
+  report: ClassReviewReport,
+  subject: string,
+  includeWrongPaper: boolean
+) {
   const preClass = report.pre_class || {};
   const overview = preClass.overview || {};
   const plan = preClass.review_plan || {};
@@ -274,6 +464,10 @@ function createReviewPlanElement(report: ClassReviewReport, subject: string) {
     examNames.length
       ? examNames.map((n) => `<span class="pill">${escapeHtml(n)}</span>`).join("")
       : `<p class="muted">暂无导入考试</p>`;
+
+  const wrongPaperHtml = includeWrongPaper
+    ? renderWrongPaperSection(preClass.all_wrong_images)
+    : "";
 
   const innerHtml = `
     <div class="cr-sheet" data-export-sheet>
@@ -303,6 +497,7 @@ function createReviewPlanElement(report: ClassReviewReport, subject: string) {
         sectionPart("课堂互动问题", renderList(plan.interaction_questions))
       )}
       ${renderFlow(plan.teaching_flow)}
+      ${wrongPaperHtml}
     </div>
   `;
   return mountExportRoot(innerHtml);
@@ -398,6 +593,9 @@ async function renderElementToPdf(element: HTMLElement, filename: string, docTit
   const sheet = element.querySelector<HTMLElement>("[data-export-sheet]") || element;
   const blocks = Array.from(sheet.querySelectorAll<HTMLElement>("[data-export-block]"));
 
+  // 错题原卷附录带 <img>，先等图加载再逐块截图
+  await waitForImages(sheet);
+
   let y = 0;
   let hasPage = false;
 
@@ -436,12 +634,18 @@ export type ClassReviewPdfKind = "review_plan" | "consolidation";
 export async function exportClassReviewPdf(
   kind: ClassReviewPdfKind,
   report: ClassReviewReport,
-  subject: string
+  subject: string,
+  options?: ClassReviewExportOptions
 ) {
+  // 错题原卷只进「讲评方案」PDF；二次巩固是课后文档不附图
+  const includeWrongPaper =
+    kind === "review_plan" &&
+    (options?.includeWrongPaper ??
+      readClassReviewExportPrefs().includeWrongPaper);
   const date = new Date().toLocaleDateString("zh-CN").replace(/\//g, "-");
   const element =
     kind === "review_plan"
-      ? createReviewPlanElement(report, subject)
+      ? createReviewPlanElement(report, subject, includeWrongPaper)
       : createConsolidationElement(report, subject);
   const filename =
     kind === "review_plan"

@@ -55,6 +55,8 @@ type Props = {
   pages: ReferenceLayoutPage[];
   loading?: boolean;
   preparing?: boolean;
+  /** 打开时落点页（从识别列表「答题区框」跳进来改某页的框用）；缺省第一页 */
+  initialPageNo?: number;
   onOpenChange: (open: boolean) => void;
   onConfirm: (pages: ReferenceLayoutPage[]) => Promise<void> | void;
   onReprepare: () => Promise<void> | void;
@@ -230,6 +232,7 @@ export function ReferenceLayoutCorrectionDialog({
   pages,
   loading = false,
   preparing = false,
+  initialPageNo,
   onOpenChange,
   onConfirm,
   onReprepare,
@@ -264,7 +267,8 @@ export function ReferenceLayoutCorrectionDialog({
   useEffect(() => {
     if (!open) return;
     setWorkingPages(clonePages(pages));
-    setPageIndex(0);
+    // 落点页：从识别列表点的那页的框进来的就停在那页，找不到退回第一页
+    setPageIndex(Math.max(0, pages.findIndex((item) => item.page_no === initialPageNo)));
     setSelection(null);
     setAnswerTargetQuestionId(null);
     setEditMode("select");
@@ -272,7 +276,7 @@ export function ReferenceLayoutCorrectionDialog({
     setHistory([]);
     setFuture([]);
     setQuestionScoreDrafts({});
-  }, [open, pages]);
+  }, [open, pages, initialPageNo]);
 
   const page = workingPages[pageIndex] ?? null;
   const imageWidth = page?.image_size?.[0] || 1;

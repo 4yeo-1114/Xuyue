@@ -6,7 +6,7 @@
   GET  /dingtalk/departments  拉取全公司部门（前端选择器用）
   POST /dingtalk/sync         选定一个部门（含其子部门）→ 同步成班级+学生
 """
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException
@@ -130,6 +130,9 @@ class SyncRequest(BaseModel):
     dept_id: int
     school_level: str  # primary / junior / senior
     grade: str
+    # 同步范围：class=整班名单（默认） / student=只同步单个学生
+    scope: str = "class"
+    student_userid: Optional[str] = None
 
 
 @router.get("/status", response_model=ApiResponse[dict])
@@ -150,11 +153,20 @@ def dingtalk_status(
         .filter(Student.dingtalk_userid.isnot(None), Student.user_id == user_id)
         .count()
     )
+    # 工作台入口链接（重新授权/打开钉钉门户用）：仅配置齐全时给出
+    from urllib.parse import quote
+
+    base = (settings.DINGTALK_FRONTEND_BASE_URL or "").strip().rstrip("/")
+    corp_id = (settings.DINGTALK_CORP_ID or "").strip()
+    entry_url = None
+    if configured and base and corp_id:
+        entry_url = f"{base}/dingtalk/entry?corpId={corp_id}&redirect={quote('/nav/ai-layered', safe='')}"
     return ApiResponse(
         data={
             "configured": configured,
             "synced_class_count": class_count,
             "synced_student_count": student_count,
+            "entry_url": entry_url,
         }
     )
 
@@ -162,6 +174,26 @@ def dingtalk_status(
 @router.get("/departments", response_model=ApiResponse[List[dict]])
 def dingtalk_departments(user_id: str = Depends(get_current_user_id)):
     return ApiResponse(data=_list_all_departments())
+
+
+@router.get("/departments/{dept_id}/users", response_model=ApiResponse[List[dict]])
+def dingtalk_department_users(dept_id: int, user_id: str = Depends(get_current_user_id)):
+    """某部门成员（userid+姓名+手机号），供「只同步单个学生」时选择。"""
+    if dept_id == DEPT_ROOT:
+        raise HTTPException(status_code=400, detail="请选择一个具体部门（不能选根部门）")
+    out: List[Dict[str, Any]] = []
+    for m in _list_dept_users(dept_id):
+        uid = (m.get("userid") or "").strip()
+        if not uid:
+            continue
+        out.append(
+            {
+                "userid": uid,
+                "name": (m.get("name") or "").strip(),
+                "mobile": (m.get("mobile") or "").strip(),
+            }
+        )
+    return ApiResponse(data=out)
 
 
 @router.post("/sync", response_model=ApiResponse[dict])
@@ -172,6 +204,8 @@ def dingtalk_sync(
 ):
     level = (body.school_level or "").strip()
     grade = (body.grade or "").strip()
+    scope = (body.scope or "class").strip()
+    stu_uid = (body.student_userid or "").strip()
     if level not in _VALID_LEVELS:
         raise HTTPException(
             status_code=400,
@@ -181,12 +215,26 @@ def dingtalk_sync(
         raise HTTPException(status_code=400, detail="请填写年级")
     if body.dept_id == DEPT_ROOT:
         raise HTTPException(status_code=400, detail="请选择一个具体部门（不能选根部门）")
+    if scope not in ("class", "student"):
+        raise HTTPException(status_code=400, detail=f"scope 取值应为 class / student，收到 {scope!r}")
+    if scope == "student" and not stu_uid:
+        raise HTTPException(status_code=400, detail="同步单个学生时必须指定学生")
 
-    # 1) 收集要同步的部门（选定部门 + 全部后代）
-    all_depts = _list_all_departments()
-    selected = _collect_subtree(body.dept_id, all_depts)
-    if not selected:
-        raise HTTPException(status_code=400, detail="该部门下没有可同步的部门")
+    # 1) 收集要同步的部门
+    #    class：选定部门 + 全部后代（整班名单）；student：只取所选部门本身
+    if scope == "student":
+        info = next(
+            (d for d in _list_all_departments() if d["dept_id"] == body.dept_id),
+            None,
+        )
+        if info is None:
+            raise HTTPException(status_code=400, detail="未找到所选部门")
+        selected = [info]
+    else:
+        all_depts = _list_all_departments()
+        selected = _collect_subtree(body.dept_id, all_depts)
+        if not selected:
+            raise HTTPException(status_code=400, detail="该部门下没有可同步的部门")
 
     class_created = class_updated = 0
     student_created = student_updated = 0
@@ -221,10 +269,12 @@ def dingtalk_sync(
             class_updated += 1
         touched_classes.append(cls)
 
-        # 3) 成员 → 学生（手机号当学号）
+        # 3) 成员 → 学生（手机号当学号）；scope=student 时只处理选中的那一个
         for m in _list_dept_users(dept_id):
             uid = (m.get("userid") or "").strip()
             if not uid:
+                continue
+            if scope == "student" and uid != stu_uid:
                 continue
             detail = _get_user_detail(uid)
             name = (detail.get("name") or m.get("name") or "").strip()
@@ -294,6 +344,7 @@ def dingtalk_sync(
 
     return ApiResponse(
         data={
+            "scope": scope,
             "departments": len(selected),
             "classes_created": class_created,
             "classes_updated": class_updated,

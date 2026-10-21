@@ -1,7 +1,15 @@
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { useLocale } from "@/contexts/LocaleContext";
 import { Button } from "@/components/ui/button";
-import { useToast } from "@/hooks/use-toast";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import {
   Layers,
   RefreshCw,
@@ -9,26 +17,49 @@ import {
   Megaphone,
   BarChart3,
 } from "lucide-react";
+import { useSendReport, useStartPush, useSyncRoster } from "@/hooks/useLayeredPush";
 
 interface LayeredHeaderProps {
   subject: string;
-  className?: string;
+  classId: string;
+  /** 班级显示名（徽标用） */
+  className: string;
   dingTalkConnected: boolean;
+  /** 钉钉工作台入口（重新授权打开） */
+  entryUrl?: string | null;
+  /** 本班人数（徽标计数） */
+  studentCount: number;
+  /** 重新授权：打开入口 + 刷新连接状态 */
+  onReauth: () => void;
 }
 
 export function LayeredHeader({
   subject,
+  classId,
   className: cls,
   dingTalkConnected,
+  entryUrl,
+  studentCount,
+  onReauth,
 }: LayeredHeaderProps) {
   const { t } = useLocale();
-  const { toast } = useToast();
+  const syncRoster = useSyncRoster();
+  const startPush = useStartPush();
+  const reportMutation = useSendReport();
+  const [noticeOpen, setNoticeOpen] = useState(false);
+  const [noticeText, setNoticeText] = useState("");
 
-  const demoToast = () => {
-    toast({
-      title: t("layeredPush.demoTitle"),
-      description: t("layeredPush.demoDesc"),
+  const sendNotice = () => {
+    const text = noticeText.trim();
+    if (!text) return;
+    startPush.mutate({
+      class_id: classId,
+      subject,
+      notice_only: true,
+      notice_text: text,
     });
+    setNoticeOpen(false);
+    setNoticeText("");
   };
 
   return (
@@ -64,6 +95,7 @@ export function LayeredHeader({
             {dingTalkConnected
               ? t("layeredPush.connected", {
                   cls: cls || t("layeredPush.defaultClass"),
+                  count: studentCount,
                 })
               : t("layeredPush.notConnected")}
           </Badge>
@@ -71,7 +103,8 @@ export function LayeredHeader({
             variant="outline"
             size="sm"
             className="text-xs gap-1.5"
-            onClick={demoToast}
+            onClick={onReauth}
+            title={entryUrl || undefined}
           >
             <RefreshCw className="w-3.5 h-3.5" /> {t("layeredPush.reauthorize")}
           </Button>
@@ -79,7 +112,7 @@ export function LayeredHeader({
       </div>
 
       {/* Quick DingTalk actions */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <span className="text-xs text-muted-foreground mr-1">
           {t("layeredPush.quickActions")}
         </span>
@@ -87,7 +120,8 @@ export function LayeredHeader({
           variant="outline"
           size="sm"
           className="text-xs gap-1.5 h-7"
-          onClick={demoToast}
+          disabled={syncRoster.isPending}
+          onClick={() => syncRoster.mutate({ class_id: classId })}
         >
           <Paperclip className="w-3.5 h-3.5" /> {t("layeredPush.syncHomework")}
         </Button>
@@ -95,7 +129,7 @@ export function LayeredHeader({
           variant="outline"
           size="sm"
           className="text-xs gap-1.5 h-7"
-          onClick={demoToast}
+          onClick={() => setNoticeOpen(true)}
         >
           <Megaphone className="w-3.5 h-3.5" /> {t("layeredPush.sendNotice")}
         </Button>
@@ -103,12 +137,52 @@ export function LayeredHeader({
           variant="outline"
           size="sm"
           className="text-xs gap-1.5 h-7"
-          onClick={demoToast}
+          disabled={reportMutation.isPending}
+          onClick={() =>
+            reportMutation.mutate({
+              class_id: classId,
+              subject,
+              kind: "round",
+              recipient: "self",
+            })
+          }
         >
           <BarChart3 className="w-3.5 h-3.5" />{" "}
           {t("layeredPush.generateReport")}
         </Button>
       </div>
+
+      {/* 发送钉钉通知（notice_only：只发通知，不建任务） */}
+      <Dialog open={noticeOpen} onOpenChange={setNoticeOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("layeredPush.noticeDialogTitle")}</DialogTitle>
+          </DialogHeader>
+          <Textarea
+            value={noticeText}
+            onChange={(e) => setNoticeText(e.target.value)}
+            placeholder={t("layeredPush.noticePlaceholder")}
+            rows={4}
+            className="text-sm"
+          />
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setNoticeOpen(false)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              size="sm"
+              disabled={!noticeText.trim() || startPush.isPending}
+              onClick={sendNotice}
+            >
+              {t("common.confirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

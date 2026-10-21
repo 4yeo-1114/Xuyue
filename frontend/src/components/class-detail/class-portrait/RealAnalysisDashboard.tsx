@@ -10,6 +10,7 @@ import {
   Image,
   Lightbulb,
   Minus,
+  Sparkles,
   Target,
   TrendingUp,
   Users,
@@ -35,6 +36,8 @@ import type { ClassAnalysisReport } from "@/services/api";
 interface RealAnalysisDashboardProps {
   report: ClassAnalysisReport;
   onNavigateToStudent?: (studentName: string) => void;
+  /** 「按薄弱点出卷」：把薄弱知识点带去组卷页出卷 */
+  onGenerateFromWeakPoints?: (topics: string[]) => void;
 }
 
 function numberText(value: number | null | undefined, suffix = "") {
@@ -197,14 +200,33 @@ function KnowledgeHeatmap({ report }: { report: ClassAnalysisReport }) {
   );
 }
 
-function WeakPoints({ report }: { report: ClassAnalysisReport }) {
+function WeakPoints({ report, onGenerateFromWeakPoints }: { report: ClassAnalysisReport; onGenerateFromWeakPoints?: (topics: string[]) => void }) {
   const { t } = useLocale();
   const weakPoints = report.analysis.weak_points || [];
   return (
     <section className="rounded-lg border bg-card shadow-sm">
-      <div className="border-b px-5 py-4">
-        <h3 className="flex items-center gap-2 text-sm font-semibold"><Target className="h-4 w-4 text-rose-600" />{t("classAnalysis.weakPoints.title")}</h3>
-        <p className="mt-1 text-xs text-muted-foreground">{t("classAnalysis.weakPoints.subtitle")}</p>
+      <div className="flex items-start justify-between gap-3 border-b px-5 py-4">
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-semibold"><Target className="h-4 w-4 text-rose-600" />{t("classAnalysis.weakPoints.title")}</h3>
+          <p className="mt-1 text-xs text-muted-foreground">{t("classAnalysis.weakPoints.subtitle")}</p>
+        </div>
+        {onGenerateFromWeakPoints && weakPoints.length > 0 ? (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 shrink-0 gap-1.5 px-3 text-xs"
+            onClick={() =>
+              onGenerateFromWeakPoints(
+                weakPoints
+                  .map((item) => (item.knowledge_point ?? "").trim())
+                  .filter(Boolean),
+              )
+            }
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            {t("classAnalysis.weakPoints.generateExam")}
+          </Button>
+        ) : null}
       </div>
       {weakPoints.length === 0 ? (
         <div className="flex h-[240px] items-center justify-center text-sm text-muted-foreground">{t("classAnalysis.weakPoints.empty")}</div>
@@ -390,7 +412,7 @@ function RankingTable({ report, onNavigateToStudent }: RealAnalysisDashboardProp
   );
 }
 
-export function RealAnalysisDashboard({ report, onNavigateToStudent }: RealAnalysisDashboardProps) {
+export function RealAnalysisDashboard({ report, onNavigateToStudent, onGenerateFromWeakPoints }: RealAnalysisDashboardProps) {
   const { locale, t } = useLocale();
   const metrics = report.source_summary.overall_metrics || {};
   const overall = report.analysis.overall_level || {};
@@ -481,7 +503,7 @@ export function RealAnalysisDashboard({ report, onNavigateToStudent }: RealAnaly
 
       <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
         <ScoreTrend report={report} />
-        <WeakPoints report={report} />
+        <WeakPoints report={report} onGenerateFromWeakPoints={onGenerateFromWeakPoints} />
       </div>
 
       <KnowledgeHeatmap report={report} />

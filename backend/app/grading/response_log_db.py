@@ -101,6 +101,18 @@ def _read_folder_meta(folder_safe: str) -> dict:
         return {}
 
 
+def _text_or_none(value: Any) -> Optional[str]:
+    """块文本字段归一：list 先 join（⛔ 直接 str(list) 会把 "['x']" 写进库/缓存键），
+    其余转 str 去首尾空白，空串归 None。"""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        joined = "\n".join(str(item).strip() for item in value if str(item or "").strip())
+        return joined or None
+    text = str(value).strip()
+    return text or None
+
+
 def _row_from_block(
     *,
     user_id: str,
@@ -136,9 +148,12 @@ def _row_from_block(
         "grade": grade or None,
         "homework_type": homework_type or None,
         "question_id": str(qid).strip() or None,
-        "question_content": str(block.get("question_content") or block.get("question") or "").strip() or None,
-        "correct_answer": str(block.get("correct_answer") or "").strip() or None,
-        "student_answer": str(block.get("student_answer") or "").strip() or None,
+        "question_content": _text_or_none(
+            block.get("question_content") or block.get("question") or block.get("question_text")
+        ),
+        # answer_key 旧块字段叫 expected_answer，兼容两种命名
+        "correct_answer": _text_or_none(block.get("correct_answer") or block.get("expected_answer")),
+        "student_answer": _text_or_none(block.get("student_answer")),
         "status": status,
         "is_correct": True if status == "correct" else (False if status else None),
         "score": _to_float(block.get("score")),

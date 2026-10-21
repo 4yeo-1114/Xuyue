@@ -7,11 +7,18 @@
 import json
 import os
 import re
+import time
 from typing import Optional
 
 from PIL import Image
 
-from app.grading.pipeline import _get_openai_client, _pil_image_to_data_url
+from app.grading.pipeline import (
+    _enhance_crop_for_vl,
+    _get_openai_client,
+    _pil_image_to_data_url,
+    _transcription_flagged,
+)
+from app.utils.qwen_settings import get_vl_model
 
 # ---- 答案文本解析 ----
 
@@ -103,7 +110,7 @@ def _extract_answer_key_text_from_pil(im) -> str:
         client = _get_openai_client()
         data_url = _pil_image_to_data_url(im)
         completion = client.chat.completions.create(
-            model="qwen-vl-max",
+            model=get_vl_model(),
             messages=[
                 {
                     "role": "user",
@@ -163,6 +170,7 @@ _STUDENT_ANSWER_PROMPT = (
     "这是答题卡中的一个作答区。请只输出学生在该区域写下的答案内容本身"
     "（例如 A / B / √ / × / 42 / 单词 / 公式结果等），不要任何解释、不要带「答案」二字。"
     "如果该区域是空白、没有作答，只输出一个空字符串。"
+    "看不清的单字用 [?] 占位，两种读法都像的写 [字1|字2]；不要猜、不要照着常见答案脑补。"
 )
 
 
@@ -204,9 +212,9 @@ def extract_student_answer(image_path: str, bbox) -> Optional[str]:
             if box is None:
                 return None
             crop = im.crop(tuple(box))
-            data_url = _pil_image_to_data_url(crop, max_side=1600)
+            data_url = _pil_image_to_data_url(_enhance_crop_for_vl(crop), max_side=1600)
         completion = client.chat.completions.create(
-            model="qwen-vl-max",
+            model=get_vl_model(),
             messages=[
                 {
                     "role": "user",
@@ -262,10 +270,12 @@ def match_answers(student: str, expected: str) -> str:
         return "错"
     if s == e:
         return "对"
-    # 多选题：字母序列按字符排序后比较（ABD == DAB）
-    if e.isalpha() and len(e) > 1 and s.isalpha() and len(s) > 1:
-        if "".join(sorted(s)) == "".join(sorted(e)):
-            return "对"
+    # 多选题（标准答案为 A-D 多字母）：字母序列按字符排序后比较（ABD == DAB）；
+    # 不等即错——少选/多选都不许走下面的「包含即对」误判成对
+    # （少选=半对的比例分由选择题支路的字母集合比对给出，这里只兜底对/错）。
+    if re.fullmatch(r"[A-Da-d]{2,}", e):
+        s_letters = re.sub(r"[^A-Za-z]", "", s)
+        return "对" if "".join(sorted(s_letters)) == "".join(sorted(e)) else "错"
     # 填空/简答：非纯数字且较长的答案互相包含时视为对（避免 12 误含 2 这类数字误判）
     if not e.isdigit() and not s.isdigit() and len(e) >= 2 and len(s) >= 2:
         if e in s or s in e:
@@ -401,18 +411,33 @@ def _ocr_choice_answers(image_path: str, region=None) -> dict[int, str]:
                 buf = io.BytesIO()
                 crop.save(buf, format="PNG")
                 img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-            _rate_limiter.acquire()
-            token = _get_access_token()
-            resp = _requests.post(
-                f"{ACCURATE_BASIC_URL}?access_token={token}",
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                data={"image": img_b64, "detect_direction": "false"},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("error_code"):
-                raise RuntimeError(data.get("error_msg"))
+            last_data = {}
+            for attempt in range(12):
+                _rate_limiter.acquire()
+                token = _get_access_token()
+                resp = _requests.post(
+                    f"{ACCURATE_BASIC_URL}?access_token={token}",
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    data={"image": img_b64, "detect_direction": "false"},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                last_data = data
+                ec = data.get("error_code")
+                if ec in (110, "110", 111, "111"):
+                    _get_access_token(force_refresh=True)
+                    continue
+                # 18: Open api qps request limit reached —— 指数退避（对齐 manual 切题）
+                if ec in (18, "18"):
+                    wait = min(3.0, 0.3 * (2 ** min(attempt, 4)))
+                    time.sleep(wait)
+                    continue
+                if ec:
+                    raise RuntimeError(data.get("error_msg"))
+                break
+            else:
+                raise RuntimeError(f"百度接口持续限流(QPS)，请稍后重试：{last_data}")
             words = []
             for wd in data.get("words_result") or []:
                 loc = wd.get("location") or {}
@@ -519,7 +544,7 @@ def _vl_read_choice_answer(image_path: str, bbox) -> Optional[str]:
             crop = im.crop((x1, y1, x2, y2))
             data_url = _pil_image_to_data_url(crop, max_side=1600)
         completion = client.chat.completions.create(
-            model="qwen-vl-max",
+            model=get_vl_model(),
             messages=[
                 {
                     "role": "user",
@@ -560,10 +585,13 @@ _SUBJECTIVE_GRADE_PROMPT = (
     "partial_ratio = 写对的小问数 / 总小问数（0~1 的小数），向上取整到 0.1（如 3 小问对 2 小问给 0.7，不是 0.5）。"
     "correctResult 必须与 result 一致。\n"
     "4. 全部小问都错、或完全答非所问，判「错」（correctResult=2）。裁剪图空白、没有作答判 3（未作答）。\n"
-    "5. student_answer 抄录学生在图里写下的作答内容（空白则为空字符串）。\n"
-    "6. reason / analysis 用中文，写明对错原因；不要用 TeX/LaTeX/反斜杠/美元符，"
+    "5. student_answer 逐字抄录学生在图里写下的作答内容（空白则为空字符串）；看不清的单字用 [?] 占位，"
+    "两种读法都像的写 [字1|字2]，不要猜、不要按标准答案脑补。\n"
+    "6. 只要 student_answer 里有 [?] 或 [字1|字2]，且这一点影响对错判断，correctResult 填 5、result 填「待确认」，"
+    "reason 写明哪部分认不清；宁可「待确认」交还老师，也不许硬判成对或错。\n"
+    "7. reason / analysis 用中文，写明对错原因；不要用 TeX/LaTeX/反斜杠/美元符，"
     "用 Unicode 数学符号（如 √、²、×、÷、≈）。\n"
-    "7. 只返回一个合法 JSON 对象，不要 Markdown 代码块、不要多余字段。\n\n"
+    "8. 只返回一个合法 JSON 对象，不要 Markdown 代码块、不要多余字段。\n\n"
     "JSON 结构：\n"
     '{"question_id":{QID},"correctResult":1,"result":"对","reason":"...","analysis":"...",'
     '"confidence":0.0,"partial_ratio":null,"student_answer":"学生写的内容"}'
@@ -582,15 +610,19 @@ _FILLIN_GRADE_PROMPT = (
     "2. 某个空判「对」：学生填的内容与标准答案一致，或为等价写法。以下一律算对：\n"
     "   - 近义词（「减小」≈「变小」≈「降低」、「大于」≈「>」、「等于」≈「=」）。\n"
     "   - 单位/符号等价（「60J」≈「每秒做功60J」≈「1s做功60J」≈「每秒做的功为60J」）。\n"
-    "   - 手写字迹潦草不清时，结合标准答案判断学生想写的是不是那个词，不要因为字迹潦草就判错。\n"
-    "3. 某个空空白、或填的内容与标准答案明显不同，判「错」。\n"
+    "   - 书写不规范但能辨认出确实是标准答案的判对。\n"
+    "3. 某个空空白、或填的内容与标准答案明显不同，判「错」。字迹潦草到无法确认写的是什么时不要猜"
+    "（见规则 7）：既不许照着标准答案脑补成对，也不许硬判成错。\n"
     "4. 全对 result=「对」correctResult=1；全错 result=「错」correctResult=2；"
     "部分对 result=「半对」correctResult=4。correctResult 必须与 result 一致。\n"
     "5. partial_ratio = 写对的空数 / 总空数（0~1 的小数），只有全错才给 0。\n"
-    "6. student_answer 逐空抄录学生在图里写下的内容（空白则为空字符串），不要把相邻空的内容搞混。\n"
-    "7. reason / analysis 用中文写明对错原因；不要用 TeX/LaTeX/反斜杠/美元符，"
+    "6. student_answer 逐空抄录学生在图里写下的内容（空白则为空字符串），不要把相邻空的内容搞混；"
+    "看不清的单字用 [?] 占位，两种读法都像的写 [字1|字2]。\n"
+    "7. 只要 student_answer 里有 [?] 或 [字1|字2]，且这一点影响判分，correctResult 填 5、result 填「待确认」，"
+    "reason 写明哪部分认不清；宁可「待确认」交还老师，也不许硬判成对或错。\n"
+    "8. reason / analysis 用中文写明对错原因；不要用 TeX/LaTeX/反斜杠/美元符，"
     "用 Unicode 数学符号（如 √、²、×、÷、≈）。\n"
-    "8. 只返回一个合法 JSON 对象，不要 Markdown 代码块、不要多余字段。\n\n"
+    "9. 只返回一个合法 JSON 对象，不要 Markdown 代码块、不要多余字段。\n\n"
     "JSON 结构：\n"
     '{"question_id":{QID},"correctResult":1,"result":"对","reason":"...","analysis":"...",'
     '"confidence":0.0,"partial_ratio":null,"student_answer":"学生写的内容"}'
@@ -605,7 +637,7 @@ def _format_fillin_blanks(expected: str, q: int) -> str:
     return "；".join(f"第{i}空：{b}" for i, b in enumerate(blanks, 1))
 
 
-_CODE_TO_STATUS = {1: "correct", 2: "wrong", 3: "unanswered", 4: "partial"}
+_CODE_TO_STATUS = {1: "correct", 2: "wrong", 3: "unanswered", 4: "partial", 5: "ungraded"}
 
 
 def _is_subjective_answer(expected: str, question_no: int = 0) -> bool:
@@ -649,12 +681,12 @@ def _ai_grade_subjective(
             if box is None:
                 return None
             crop = im.crop(tuple(box))
-            data_url = _pil_image_to_data_url(crop, max_side=1600)
+            data_url = _pil_image_to_data_url(_enhance_crop_for_vl(crop), max_side=1600)
         prompt = prompt_template.replace("{EXPECTED}", str(expected_text)).replace(
             "{QID}", str(int(question_id or 0))
         )
         completion = client.chat.completions.create(
-            model="qwen-vl-max",
+            model=get_vl_model(),
             messages=[
                 {
                     "role": "user",
@@ -675,6 +707,13 @@ def _ai_grade_subjective(
         status = _CODE_TO_STATUS.get(norm["correctResult"])
         if status is None:
             return None
+        # 读不准不判：转写含 [?]/[字|字] 或模型自报「待确认」→ ungraded（交老师手动判），不许蒙。
+        read_uncertain = bool(
+            (student_answer and _transcription_flagged(student_answer))
+            or str(data.get("result") or "").strip() == "待确认"
+        )
+        if read_uncertain and status != "ungraded":
+            status = "ungraded"
         # 模型偶发 correctResult=2(错) 但 result/reason 明确是「半对」：以中文判定为准，
         # 避免大题半对被误判成全错（用户明确要求按半对给分）。
         if status == "wrong" and (
@@ -696,6 +735,9 @@ def _ai_grade_subjective(
             "reason": norm.get("reason") or "",
             "analysis": norm.get("analysis") or "",
             "student_answer": student_answer,
+            # C1：置信度随块落盘，激活 low-confidence 队列（此前恒 NULL）
+            "confidence": norm.get("confidence"),
+            "read_uncertain": read_uncertain,
         }
     except Exception:
         return None
@@ -705,14 +747,19 @@ def _ai_grade_subjective(
 _STATUS_TO_MANUAL = {"对": "correct", "错": "wrong", "未作答": "unanswered", "半对": "partial"}
 
 
-def grade_paper_by_answer_key(image_path: str, blocks, answer_key: dict) -> dict:
+def grade_paper_by_answer_key(image_path: str, blocks, answer_key: dict, subject: Optional[str] = None) -> dict:
     """对一张卷的所有作答区做答案比对，返回 {slot_id: {status}}，并就地补充块字段。
 
     - 选择题：百度 OCR 读涂卡（缺失字母 = 所涂选项）→ 字母比对。
     - 大题（标准答案含 (N) 小问或较长）：千问 VL 语义比对，支持半对 partial + score。
     - 填空/客观：抽取学生答案 → 字符串快判。
     - 没有标准答案、或抽取/VL 失败的 slot：保持 ungraded，交由老师手动判。
+
+    subject（C3 判分缓存身份）：与回写侧共用同一取值，缺省 None 也能成键
+    （question_fingerprint 容忍缺席字段）；调用点从 folder meta.json 取。
     """
+    from app.grading.verdict_cache import decision_status_from_result, lookup_block
+
     decisions: dict[str, dict] = {}
     answer_key = answer_key if isinstance(answer_key, dict) else {}
     if not isinstance(blocks, list):
@@ -742,6 +789,8 @@ def grade_paper_by_answer_key(image_path: str, blocks, answer_key: dict) -> dict
             continue
         expected = str(expected).strip()
         block["expected_answer"] = expected
+        # 名字对齐 _row_from_block / 缓存键（response_logs 取 correct_answer）
+        block["correct_answer"] = expected
 
         # 选择题：优先用墨迹密度 OMR 直接读「涂黑」的选项（涂黑区域 = 所涂选项，比 OCR 的
         # 「缺失字母=所涂选项」推断更可靠），OMR 读不出再退回全页 OCR → VL。
@@ -760,22 +809,39 @@ def grade_paper_by_answer_key(image_path: str, blocks, answer_key: dict) -> dict
             if not s:
                 decisions[slot_id] = {"status": "unanswered"}
                 continue
-            # 多选题：按每个选项（空）独立计分，选对几个给几分（整数），选错不多扣
-            if e.isalpha() and len(e) > 1 and s.isalpha():
-                e_set = set(e)
-                s_set = set(s)
-                hit = len(s_set & e_set)
+            # C3 判分缓存预查：同（题, 作答）命中直接复用判分，跳过比对
+            hit = lookup_block(block, subject)
+            if hit is not None:
+                status = decision_status_from_result(hit.get("result"))
+                if status:
+                    dec = {"status": status, "partial_ratio": hit.get("partial_ratio")}
+                    if status == "partial":
+                        max_score = float(block.get("max_score") or 1)
+                        dec["score"] = _snap_int((hit.get("partial_ratio") or 0.5) * max_score)
+                    decisions[slot_id] = dec
+                    continue
+            # 多选题（标准答案多字母）字母集合比对（20261021 用户定规则）：
+            # - 集合全同 → 对（整题满分）；
+            # - 选错任意一个（含错选+少选混合）→ 错，0 分不给；
+            # - 只少选没多选 → 半对，按选对选项数/正确选项数给分（整数）。
+            # 学生串剥掉分隔符（「A、D」「A D」）再比，顺序无关（ABD == DAB）。
+            e_letters = re.sub(r"[^A-Za-z]", "", e)
+            s_letters = re.sub(r"[^A-Za-z]", "", s)
+            if e.isalpha() and len(e) > 1 and s_letters:
+                e_set = set(e_letters)
+                s_set = set(s_letters)
                 if s_set == e_set:
                     decisions[slot_id] = {"status": "correct"}
-                elif hit == 0:
+                elif s_set - e_set:
+                    # 选错任意一个选项 → 错，不给分
                     decisions[slot_id] = {"status": "wrong"}
                 else:
-                    # 多选按选对的选项数给部分分（用户要求「按空给分」；涂卡识别有噪声，
-                    # 不因误识别的多余选项就整题判 0）
+                    # 只少选没多选 → 半对，按选对选项数给分
                     max_score = float(block.get("max_score") or 1)
                     decisions[slot_id] = {
                         "status": "partial",
-                        "score": _snap_int(hit / len(e_set) * max_score),
+                        "score": _snap_int(len(s_set) / len(e_set) * max_score),
+                        "partial_ratio": round(len(s_set) / len(e_set), 3),
                     }
                 continue
             status = match_answers(student, expected)
@@ -794,7 +860,12 @@ def grade_paper_by_answer_key(image_path: str, blocks, answer_key: dict) -> dict
                 block["student_answer"] = ai.get("student_answer")
                 block["reason"] = ai.get("reason")
                 block["analysis"] = ai.get("analysis")
+                block["confidence"] = ai.get("confidence")
                 block["ai_grade"] = True
+                if ai["status"] == "ungraded" or ai.get("read_uncertain"):
+                    # 读不准不判：保持 ungraded 交老师手动判，不许蒙
+                    block["read_uncertain"] = True
+                    continue
                 score = None
                 if ai["status"] == "partial":
                     max_score = float(block.get("max_score") or 1)
@@ -818,7 +889,13 @@ def grade_paper_by_answer_key(image_path: str, blocks, answer_key: dict) -> dict
         if ai is not None:
             block["reason"] = ai.get("reason")
             block["analysis"] = ai.get("analysis")
+            block["confidence"] = ai.get("confidence")
             block["ai_grade"] = True
+            if ai.get("status") == "ungraded" or ai.get("read_uncertain"):
+                # 读不准不判：保持 ungraded 交老师手动判，不许蒙
+                block["student_answer"] = ai.get("student_answer")
+                block["read_uncertain"] = True
+                continue
             # 用 VL 的语义判定比例作为字符串快判的补充（纠正「每秒做的功为60J」≈「1s做功60J」这类等价误判）。
             # 只用来「向上修正」，不向下压分。
             if ai.get("status") == "correct":
@@ -831,6 +908,10 @@ def grade_paper_by_answer_key(image_path: str, blocks, answer_key: dict) -> dict
             student = extract_student_answer(image_path, block.get("bbox"))
         block["student_answer"] = student if isinstance(student, str) else None
         if student is None:
+            continue
+        if isinstance(student, str) and _transcription_flagged(student):
+            # 纯提取路径读出 [?]/[字|字]：同样不判，交老师
+            block["read_uncertain"] = True
             continue
         if not normalize_answer(student or ""):
             decisions[slot_id] = {"status": "unanswered"}
@@ -845,4 +926,48 @@ def grade_paper_by_answer_key(image_path: str, blocks, answer_key: dict) -> dict
             decisions[slot_id] = {"status": "partial", "score": _snap_int(ratio * max_score)}
         else:
             decisions[slot_id] = {"status": "wrong"}
+    # C3 判分缓存回写：选择题（含命中复用）+ 主观/填空（只写不查——student_answer
+    # 是本次 VL 产出，先有鸡后有蛋）。ungraded 不写；human 行永不被 ai 覆盖。
+    _store_answer_key_cache(blocks, decisions, subject)
     return decisions
+
+
+# decisions 英文状态 → result 中文（缓存行与 response_logs 同口径）
+_RESULT_FOR_STATUS = {"correct": "对", "wrong": "错", "partial": "半对", "unanswered": "未作答"}
+
+
+def _store_answer_key_cache(blocks, decisions: dict, subject) -> None:
+    """把已判 slot 回填 result 文本后写入判分缓存（旁路静默，缓存永远可弃）。"""
+    try:
+        from app.grading.verdict_cache import store_blocks
+
+        rows = []
+        for index, block in enumerate(blocks or []):
+            if not isinstance(block, dict):
+                continue
+            slot_id = str(block.get("slot_id") or f"slot-{index + 1}")
+            decision = decisions.get(slot_id)
+            if not isinstance(decision, dict):
+                continue
+            result = _RESULT_FOR_STATUS.get(str(decision.get("status") or ""))
+            if not result:
+                continue
+            block["result"] = result
+            if result == "半对":
+                pr = decision.get("partial_ratio")
+                if pr is None:
+                    score = decision.get("score")
+                    max_score = float(block.get("max_score") or 1)
+                    try:
+                        pr = (float(score) / max_score) if (score is not None and max_score > 0) else 0.5
+                    except (TypeError, ValueError):
+                        pr = 0.5
+                block["partial_ratio"] = pr
+            else:
+                block["partial_ratio"] = None
+            block["comment"] = str(block.get("analysis") or block.get("reason") or "").strip() or None
+            rows.append(block)
+        if rows:
+            store_blocks(rows, subject, "answer_key", "ai")
+    except Exception as e:
+        print(f"判分缓存回写失败: {e}")

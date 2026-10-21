@@ -29,8 +29,14 @@ export function useGlobalImportStudents() {
   const { t } = useLocale();
 
   return useMutation({
-    mutationFn: async ({ file }: { file: File }) => {
-      return globalImportStudents(file);
+    mutationFn: async ({
+      file,
+      classId,
+    }: {
+      file: File;
+      classId?: string;
+    }) => {
+      return globalImportStudents(file, classId);
     },
     onSuccess: (count) => {
       queryClient.invalidateQueries({ queryKey: ["students"] });

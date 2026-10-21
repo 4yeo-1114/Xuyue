@@ -27,6 +27,8 @@ describe("saveManualSlotDecisions", () => {
       scores: {},
       decisions: { "p1-q1-s1": { status: "correct", score: 2 } },
       generate_marks: true,
+      // 批改完自动推送钉钉开关（默认自动推）
+      push_dingtalk: true,
     });
   });
 });

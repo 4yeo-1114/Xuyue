@@ -61,12 +61,15 @@ interface ClassPortraitPageProps {
   selectedSubject: string;
   selectedClass: string;
   onNavigateToStudent?: (studentName: string) => void;
+  /** 「按薄弱点出卷」：把薄弱知识点带去组卷页出卷 */
+  onGenerateFromWeakPoints?: (topics: string[]) => void;
 }
 
 export function ClassPortraitPage({
   selectedSubject,
   selectedClass,
   onNavigateToStudent,
+  onGenerateFromWeakPoints,
 }: ClassPortraitPageProps) {
   const { locale, t } = useLocale();
   const [subject, setSubject] = useState(() =>
@@ -298,6 +301,7 @@ export function ClassPortraitPage({
                 key={report.id}
                 report={report}
                 onNavigateToStudent={onNavigateToStudent}
+                onGenerateFromWeakPoints={onGenerateFromWeakPoints}
               />
             </div>
           )}

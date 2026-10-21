@@ -434,44 +434,52 @@ def _sync_exam_scores(
     _refresh_current_scores(db, class_id, subject, affected_students)
     return normalized_scores, affected_students, bool(existing_rows)
 
-@router.post("/import-scores", response_model=ApiResponse[dict])
-def import_scores(
-    body: ImportScoresRequest,
-    user_id: str = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
-):
-    _assert_class_access(db, user_id, body.class_id)
+def import_scores_core(
+    db: Session,
+    *,
+    class_id: str,
+    subject: str,
+    exam_name: str,
+    class_avg: Optional[int] = None,
+    scores: Optional[List] = None,
+    record_id: Optional[str] = None,
+) -> dict:
+    """批改成绩导入核心（/import-scores 端点与「批改后自动同步」共用）。
+
+    写成绩历史+当前分；带 record_id（folder_safe）时同口径重建错题。commit 本函数内完成。
+    需在 grading 用户上下文中调用（读批改历史依赖 user_paths）。
+    """
     normalized_scores, _, refreshed = _sync_exam_scores(
         db,
-        class_id=body.class_id,
-        subject=body.subject,
-        exam_name=body.exam_name,
-        class_avg=body.class_avg,
-        scores=body.scores,
+        class_id=class_id,
+        subject=subject,
+        exam_name=exam_name,
+        class_avg=class_avg,
+        scores=scores or [],
     )
-    
+
     # 3. Process wrong questions if record_id is provided
-    if body.record_id:
-        safe = body.record_id
+    if record_id:
+        safe = record_id
         # Remove old wrong questions for this exam
         db.query(StudentWrongQuestion).filter(
-            StudentWrongQuestion.class_id == body.class_id,
-            StudentWrongQuestion.subject == body.subject,
-            StudentWrongQuestion.exam_name == body.exam_name
+            StudentWrongQuestion.class_id == class_id,
+            StudentWrongQuestion.subject == subject,
+            StudentWrongQuestion.exam_name == exam_name
         ).delete()
-        
+
         # Read smart grading history
         history = _read_grading_history(safe, "default")
         completed = history.get("completed", {})
-        
+
         # Read manual grading history
         manual_history = _read_grading_history(safe, "manual")
         manual_completed = manual_history.get("completed", {})
-        
+
         for item in normalized_scores:
             wrong_questions = []
             student_name = item["student_name"]
-            
+
             # Check smart grading
             for filename, info in completed.items():
                 if _paper_box_stem(filename) == student_name:
@@ -482,36 +490,55 @@ def import_scores(
                         for sub in b.get("subItems", []):
                             if sub.get("status") in ["wrong", "blank"]:
                                 wrong_questions.append(f"{b.get('title', '')}-{sub.get('title', '')}")
-                                
+
             # Check manual grading
             for filename, info in manual_completed.items():
                 if _paper_box_stem(filename) == student_name:
                     try:
                         parsed = json.loads(info.get("result", "{}"))
-                        scores = parsed.get("scores", {})
-                        for title, score in scores.items():
+                        scores_map = parsed.get("scores", {})
+                        for title, score in scores_map.items():
                             if score == 0:
                                 wrong_questions.append(title)
                     except Exception:
                         pass
-                        
+
             # Insert into database
             wrong_questions = list(set(wrong_questions))
             for q_title in wrong_questions:
                 wq = StudentWrongQuestion(
-                    class_id=body.class_id,
+                    class_id=class_id,
                     student_name=student_name,
-                    subject=body.subject,
-                    exam_name=body.exam_name,
+                    subject=subject,
+                    exam_name=exam_name,
                     question_title=q_title
                 )
                 db.add(wq)
-                
+
         db.commit()
     else:
         db.commit()
 
-    return ApiResponse(data={"ok": True, "imported_count": len(normalized_scores), "refreshed": refreshed})
+    return {"ok": True, "imported_count": len(normalized_scores), "refreshed": refreshed}
+
+
+@router.post("/import-scores", response_model=ApiResponse[dict])
+def import_scores(
+    body: ImportScoresRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    _assert_class_access(db, user_id, body.class_id)
+    data = import_scores_core(
+        db,
+        class_id=body.class_id,
+        subject=body.subject,
+        exam_name=body.exam_name,
+        class_avg=body.class_avg,
+        scores=body.scores,
+        record_id=body.record_id,
+    )
+    return ApiResponse(data=data)
 
 
 @router.post("/import-scores/excel", response_model=ApiResponse[dict])
@@ -1074,11 +1101,12 @@ def get_latest_wrong_questions(
         student_assets_dir = ct_root / f"cls_{class_id}" / "assets" / exam_name / student_name
 
         if student_assets_dir.is_dir():
-            for q_file in student_assets_dir.glob("*_question.jpg"):
+            # 多页卷裁图落在 p1/p2 页面子目录，递归扫；作答图与题图同目录
+            for q_file in sorted(student_assets_dir.rglob("*_question.jpg")):
                 title_base = q_file.name.replace("_question.jpg", "")
 
                 # Find matching answer file if exists
-                a_file = student_assets_dir / f"{title_base}_answer.jpg"
+                a_file = q_file.parent / f"{title_base}_answer.jpg"
                 a_rel = None
                 if a_file.is_file():
                     try:

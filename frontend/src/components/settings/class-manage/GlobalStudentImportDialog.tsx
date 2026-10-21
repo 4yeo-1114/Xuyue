@@ -8,9 +8,15 @@ import { useLocale } from "@/contexts/LocaleContext";
 interface GlobalStudentImportDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** 表格缺「年级」「班级」列时的兜底目标班级（通常是当前选中的班级） */
+  fallbackClassId?: string;
 }
 
-export function GlobalStudentImportDialog({ open, onOpenChange }: GlobalStudentImportDialogProps) {
+export function GlobalStudentImportDialog({
+  open,
+  onOpenChange,
+  fallbackClassId,
+}: GlobalStudentImportDialogProps) {
   const { t } = useLocale();
   const [file, setFile] = useState<File | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -23,7 +29,7 @@ export function GlobalStudentImportDialog({ open, onOpenChange }: GlobalStudentI
   const handleImport = async () => {
     if (!file) return;
     try {
-      await importMutation.mutateAsync({ file });
+      await importMutation.mutateAsync({ file, classId: fallbackClassId });
       onOpenChange(false);
       reset();
     } catch (e) {
@@ -33,7 +39,7 @@ export function GlobalStudentImportDialog({ open, onOpenChange }: GlobalStudentI
 
   return (
     <Dialog open={open} onOpenChange={(v) => { onOpenChange(v); if (!v) reset(); }}>
-      <DialogContent className="sm:max-w-[480px]">
+      <DialogContent className="sm:max-w-[480px] max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{t("settingsClass.import.title")}</DialogTitle>
         </DialogHeader>

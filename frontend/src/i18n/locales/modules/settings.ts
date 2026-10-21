@@ -36,6 +36,11 @@ export const settingsZh: TranslationDict = {
   "settings.personal.pwd.new": "新密码",
   "settings.personal.pwd.confirm": "确认新密码",
   "settings.personal.pwd.confirmBtn": "确认修改",
+  "settings.personal.sendCode": "发送验证码",
+  "settings.personal.codePlaceholder": "请输入短信验证码",
+  "settings.personal.toast.invalidPhone": "请输入有效的手机号",
+  "settings.personal.toast.codeSent": "验证码已发送",
+  "settings.personal.toast.codeRequired": "请输入短信验证码",
 
   "settings.system.title": "系统设置",
   "settings.system.subtitle":
@@ -178,6 +183,11 @@ export const settingsEn: TranslationDict = {
   "settings.personal.pwd.new": "New Password",
   "settings.personal.pwd.confirm": "Confirm New Password",
   "settings.personal.pwd.confirmBtn": "Confirm",
+  "settings.personal.sendCode": "Send code",
+  "settings.personal.codePlaceholder": "Enter SMS code",
+  "settings.personal.toast.invalidPhone": "Enter a valid phone number",
+  "settings.personal.toast.codeSent": "Code sent",
+  "settings.personal.toast.codeRequired": "Enter SMS code",
 
   "settings.system.title": "System Settings",
   "settings.system.subtitle":

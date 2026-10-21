@@ -1005,6 +1005,121 @@ def build_manual_layout_page_from_boxes(
     }
 
 
+def build_manual_layout_page_from_reference_layout(
+    ref_page: dict[str, Any],
+    *,
+    page_no: int,
+    filename: str,
+    image_url: str,
+    image_path: str,
+    number_offset: int = 0,
+) -> dict[str, Any]:
+    """从标准答题区（reference layout）生成自主阅卷切题页，供「试卷（手动批改）」使用。
+
+    与 build_manual_layout_page_from_boxes 同构（同一 page 结构），切题审查弹窗、
+    confirm_manual_layout、_materialize_manual_layout_history 全链原样复用。区别只在
+    框线来源：普通试卷没有答题卡印刷框线（detect_answer_card_boxes 会「未识别到题目」），
+    改取标准答案识别列表已确认的题目/作答区框，等比缩放到模板卷面（第一份学生卷）坐标系。
+    没画作答区的题用题干框兜底出一格，保证每题都能手动批（与选择题挂涂卡格同理）。
+
+    number_offset：标准答题区题号按页各编各的（第 2 页又从 1 起），而答题卡链路/答案表/
+    原始试卷分值/统分键都是全卷印刷题号（第 2 页第 1 题=第 14 题，见 _scoring_title_offsets
+    同一口径）。这里 display_no 加偏移折算到全卷号，slot label/question_id/slot_id 一并按
+    全卷号重生成（q-N-sM 不带页号跨页撞号，弃用）。
+    """
+    layout = ref_page.get("layout") if isinstance(ref_page, dict) else None
+    if not isinstance(layout, dict):
+        layout = ref_page if isinstance(ref_page, dict) else {}
+    questions = layout.get("questions")
+    if not isinstance(questions, list) or not questions:
+        raise RuntimeError("标准答题区缺少题目框，请先在「标准答案识别列表」完成切题审查")
+    ref_size = layout.get("image_size") or ref_page.get("image_size") or [0, 0]
+    src_width = max(1, int(ref_size[0] or 1))
+    src_height = max(1, int(ref_size[1] or 1))
+    with Image.open(image_path) as image:
+        target_size = [int(image.width), int(image.height)]
+    scale_x = target_size[0] / src_width
+    scale_y = target_size[1] / src_height
+    number_offset = int(number_offset or 0)
+
+    def scale_box(value: Any) -> list[int]:
+        box = _valid_bbox(value, (src_width, src_height)) or [0, 0, src_width, src_height]
+        return [
+            round(box[0] * scale_x),
+            round(box[1] * scale_y),
+            round(box[2] * scale_x),
+            round(box[3] * scale_y),
+        ]
+
+    output: list[dict[str, Any]] = []
+    for fallback_index, question in enumerate(questions, start=1):
+        if not isinstance(question, dict):
+            continue
+        try:
+            page_local_no = int(question.get("display_no") or 0)
+        except (TypeError, ValueError):
+            page_local_no = 0
+        display_no = (page_local_no or fallback_index) + number_offset
+        raw_regions = [r for r in question.get("regions") or [] if isinstance(r, dict)]
+        regions = [{**copy.deepcopy(r), "bbox": scale_box(r.get("bbox"))} for r in raw_regions]
+        slots = []
+        for slot_index, slot in enumerate(question.get("answer_slots") or [], start=1):
+            if not isinstance(slot, dict):
+                continue
+            raw_slot_regions = [r for r in slot.get("regions") or [] if isinstance(r, dict)]
+            raw_box = slot.get("bbox") or (raw_slot_regions[0].get("bbox") if raw_slot_regions else None)
+            slot_box = scale_box(raw_box)
+            slot_regions = [{**copy.deepcopy(r), "bbox": scale_box(r.get("bbox"))} for r in raw_slot_regions]
+            slots.append(
+                {
+                    **copy.deepcopy(slot),
+                    "slot_id": f"p{page_no}-q{display_no}-s{slot_index}",
+                    "label": f"{display_no}_{slot_index}",
+                    "order": slot_index,
+                    "bbox": slot_box,
+                    "regions": slot_regions or [{"bbox": slot_box}],
+                    "has_handwriting_location": slot.get("has_handwriting_location") is not False,
+                    # 标准答题区没有分值字段：先默认 1 分，apply_paper_scores_to_page/切题审查里可改。
+                    "max_score": round(float(slot.get("max_score") or 1.0), 2),
+                }
+            )
+        if not slots:
+            fallback_box = regions[0]["bbox"] if regions else [0, 0, target_size[0], target_size[1]]
+            slots.append(
+                {
+                    "slot_id": f"p{page_no}-q{display_no}-s1",
+                    "label": f"{display_no}_1",
+                    "order": 1,
+                    "bbox": fallback_box,
+                    "regions": [{"bbox": fallback_box}],
+                    "has_handwriting_location": True,
+                    "max_score": 1.0,
+                }
+            )
+        output.append(
+            {
+                "question_id": f"p{page_no}-q{display_no}",
+                "display_no": display_no,
+                "baidu_question_id": question.get("baidu_question_id", display_no),
+                "question_type": question.get("question_type") or "",
+                "kind": question.get("kind") or "",
+                "question_text": question.get("question_text") or "",
+                "regions": regions,
+                "answer_slots": slots,
+            }
+        )
+    if not output:
+        raise RuntimeError("标准答题区没有可批改题目")
+    output.sort(key=lambda item: int(item.get("display_no") or 0))
+    return {
+        "page_no": int(page_no),
+        "filename": str(filename),
+        "image_url": str(image_url),
+        "image_size": target_size,
+        "questions": output,
+    }
+
+
 def _norm_bbox(bbox: list, size: tuple) -> tuple:
     width, height = size
     if width < 1 or height < 1:
@@ -1496,6 +1611,11 @@ def manual_layout_blocks_for_image(
                     "kind": question.get("kind") or "",
                     "has_handwriting_location": slot.get("has_handwriting_location") is not False,
                     "is_sub": True,
+                    # C1 管道字段：题干/题型进块（response_logs / 判分缓存身份键用）。
+                    # 答题卡链路没有独立标准答案文本，correct_answer 由
+                    # grade_paper_by_answer_key 命中答案表后回填。
+                    "question_content": str(question.get("question_text") or "").strip() or None,
+                    "question_type": str(question.get("question_type") or "").strip() or None,
                 }
             )
     return blocks, target_size

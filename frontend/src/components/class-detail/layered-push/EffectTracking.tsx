@@ -1,14 +1,29 @@
-import { Button } from "@/components/ui/button";
+import { useState } from "react";
 import { useLocale } from "@/contexts/LocaleContext";
-import { useToast } from "@/hooks/use-toast";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { BarChart3, Phone, FileText, Bot, MessageSquare } from "lucide-react";
-import type { TrackingTier, DingTalkInteraction } from "./layeredData";
+import { BarChart3, Phone, FileText, History, CheckCircle2 } from "lucide-react";
+import type { LayeredRound, LayeredRosterStudent, LayeredStats } from "@/services/api";
+import {
+  usePatchTaskStatus,
+  useSendReport,
+  useUrgePush,
+} from "@/hooks/useLayeredPush";
+import { TIER_STYLES, TIERS, type Tier } from "./layeredData";
 
 interface EffectTrackingProps {
-  tracking: TrackingTier[];
-  interaction: DingTalkInteraction;
-  weekNum: number;
+  stats?: LayeredStats;
+  rounds: LayeredRound[];
+  roster: LayeredRosterStudent[];
+  classId: string;
+  subject: string;
 }
 
 function statusIcon(completedPct: number) {
@@ -17,20 +32,36 @@ function statusIcon(completedPct: number) {
   return { icon: "🟠", color: "text-orange-600" };
 }
 
+function fmtTime(v?: string | null): string {
+  if (!v) return "—";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return v;
+  return d.toLocaleString();
+}
+
 export function EffectTracking({
-  tracking,
-  interaction,
-  weekNum,
+  stats,
+  rounds,
+  roster,
+  classId,
+  subject,
 }: EffectTrackingProps) {
   const { t } = useLocale();
-  const { toast } = useToast();
+  const urgeMutation = useUrgePush();
+  const patchTask = usePatchTaskStatus(classId, subject);
+  const reportMutation = useSendReport();
+  const [phoneTier, setPhoneTier] = useState<Tier | null>(null);
 
-  const demoToast = () => {
-    toast({
-      title: t("layeredPush.demoTitle"),
-      description: t("layeredPush.demoDesc"),
-    });
-  };
+  const hasRound = !!stats?.round_id;
+  const tierKeys = TIERS.filter((tr) => stats?.tiers[tr]);
+
+  // 「电话家长」名单：本层未完成 → 按名字找回家长联系方式（PII 权限内才有值）
+  const phoneTargets =
+    phoneTier && stats?.tiers[phoneTier]
+      ? stats.tiers[phoneTier].unfinished
+          .map((u) => roster.find((s) => s.name === u.name))
+          .filter((s): s is LayeredRosterStudent => !!s)
+      : [];
 
   return (
     <div
@@ -39,24 +70,40 @@ export function EffectTracking({
     >
       <h3 className="text-sm font-bold text-foreground flex items-center gap-2 mb-4">
         <BarChart3 className="w-4 h-4 text-primary" />{" "}
-        {t("layeredPush.trackingTitle", { week: weekNum })}
+        {hasRound
+          ? t("layeredPush.trackingTitle", { week: stats?.round_index ?? 0 })
+          : t("layeredPush.trackingEmptyTitle")}
       </h3>
 
+      {!hasRound && (
+        <p className="text-xs text-muted-foreground mb-1">
+          {t("layeredPush.statsEmpty")}
+        </p>
+      )}
+
       <div className="space-y-4">
-        {tracking.map((tr) => {
+        {tierKeys.map((tr) => {
+          const bucket = stats!.tiers[tr];
+          const style = TIER_STYLES[tr];
           const completedPct =
-            tr.total > 0 ? Math.round((tr.completed / tr.total) * 100) : 0;
+            bucket.total > 0 ? Math.round((bucket.completed / bucket.total) * 100) : 0;
           const st = statusIcon(completedPct);
+          const hiddenUnfinished = Math.max(
+            0,
+            bucket.total - bucket.completed - bucket.unfinished.length,
+          );
+          const unfinishedNames = bucket.unfinished.map((u) => u.name);
+
           return (
             <div
-              key={tr.tier}
+              key={tr}
               className="rounded-lg bg-muted/30 border border-border/30 p-3 space-y-2"
             >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-foreground">
                   {t("layeredPush.tierPeople", {
-                    label: t(tr.labelKey),
-                    count: tr.total,
+                    label: t(style.labelKey),
+                    count: bucket.total,
                   })}
                 </span>
                 <span className="text-sm">{st.icon}</span>
@@ -65,20 +112,41 @@ export function EffectTracking({
               <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">
-                    {t("layeredPush.viewed")}
+                    {t("layeredPush.statSentOk")}
                   </span>
                   <span className="text-foreground font-medium">
-                    {Math.round((tr.viewed / tr.total) * 100)}%（
-                    {tr.viewed}/{tr.total}）
+                    {bucket.sent_ok}
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">
-                    {t("layeredPush.entered")}
+                    {t("layeredPush.statSentFailed")}
+                  </span>
+                  <span
+                    className={cn(
+                      "font-medium",
+                      bucket.sent_failed > 0
+                        ? "text-destructive"
+                        : "text-foreground",
+                    )}
+                  >
+                    {bucket.sent_failed}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">
+                    {t("layeredPush.statSkipped")}
                   </span>
                   <span className="text-foreground font-medium">
-                    {Math.round((tr.entered / tr.total) * 100)}%（
-                    {tr.entered}/{tr.total}）
+                    {bucket.sent_skipped}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">
+                    {t("layeredPush.statPending")}
+                  </span>
+                  <span className="text-foreground font-medium">
+                    {bucket.sent_pending}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -86,59 +154,75 @@ export function EffectTracking({
                     {t("layeredPush.completed")}
                   </span>
                   <span className={cn("font-medium", st.color)}>
-                    {completedPct}%
+                    {completedPct}%（{bucket.completed}/{bucket.total}）
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">
-                    {t("layeredPush.avgTime")}
+                    {t("layeredPush.statParentSent")}
                   </span>
                   <span className="text-foreground font-medium">
-                    {t("layeredPush.minutesUnit", { value: tr.avgMinutes })}
+                    {bucket.parent_sent_ok}
                   </span>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 text-xs">
-                <span className="text-muted-foreground">
-                  {t("layeredPush.feedback")}
-                </span>
-                <span>
-                  {t("layeredPush.feedbackGood", { count: tr.feedback.good })}
-                </span>
-                <span>
-                  {t("layeredPush.feedbackNeutral", {
-                    count: tr.feedback.neutral,
-                  })}
-                </span>
-                <span>
-                  {t("layeredPush.feedbackBad", { count: tr.feedback.bad })}
-                </span>
-              </div>
-
-              {tr.unfinished.length > 0 && (
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-xs h-6 px-2 text-orange-600 border-orange-500/30"
-                    onClick={demoToast}
-                  >
-                    {t("layeredPush.urge", {
-                      names: tr.unfinished.join("、"),
-                    })}
-                  </Button>
-                  {tr.tier === "C" && (
+              {bucket.unfinished.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {bucket.unfinished.map((u) => (
+                      <button
+                        key={u.task_id}
+                        title={t("layeredPush.markCompleteHint")}
+                        disabled={patchTask.isPending}
+                        onClick={() =>
+                          patchTask.mutate({
+                            task_id: u.task_id,
+                            status: "completed",
+                          })
+                        }
+                        className="inline-flex items-center gap-1 rounded-md border border-orange-500/30 bg-orange-500/10 px-1.5 py-0.5 text-[11px] text-orange-700 hover:bg-orange-500/20 disabled:opacity-50"
+                      >
+                        <CheckCircle2 className="w-3 h-3" />
+                        {u.name}
+                      </button>
+                    ))}
+                    {hiddenUnfinished > 0 && (
+                      <span className="text-[11px] text-muted-foreground">
+                        {t("layeredPush.unfinishedMore", { n: hiddenUnfinished })}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 text-xs mt-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-xs h-6 px-2 text-orange-600 border-orange-500/30"
+                      disabled={urgeMutation.isPending}
+                      onClick={() =>
+                        urgeMutation.mutate({
+                          class_id: classId,
+                          subject,
+                          tier: tr,
+                        })
+                      }
+                    >
+                      {t("layeredPush.urge", {
+                        names:
+                          unfinishedNames.length > 2
+                            ? `${unfinishedNames.slice(0, 2).join("、")}${t("layeredPush.urgeEtc", { count: unfinishedNames.length })}`
+                            : unfinishedNames.join("、"),
+                      })}
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
                       className="text-xs h-6 px-2 gap-1"
-                      onClick={demoToast}
+                      onClick={() => setPhoneTier(tr)}
                     >
-                      <Phone className="w-3 h-3" />{" "}
-                      {t("layeredPush.callParents")}
+                      <Phone className="w-3 h-3" /> {t("layeredPush.callParents")}
                     </Button>
-                  )}
+                  </div>
                 </div>
               )}
             </div>
@@ -146,57 +230,55 @@ export function EffectTracking({
         })}
       </div>
 
-      {/* DingTalk interaction */}
+      {/* 推送记录（真实轮次，新→旧） */}
       <div
         className="mt-4 rounded-lg bg-primary/5 border border-primary/20 p-3"
         data-tour="lp-interaction"
       >
         <div className="flex items-center gap-1.5 mb-2">
-          <MessageSquare className="w-3.5 h-3.5 text-primary" />
+          <History className="w-3.5 h-3.5 text-primary" />
           <span className="text-xs font-semibold text-foreground">
-            {t("layeredPush.interactionData")}
+            {t("layeredPush.roundsTitle")}
           </span>
         </div>
-        <div className="grid grid-cols-3 gap-2 text-xs mb-2">
-          <div className="text-center">
-            <p className="text-lg font-bold text-foreground">
-              {interaction.groupMessages}
-            </p>
-            <p className="text-muted-foreground">
-              {t("layeredPush.groupDiscussion")}
-            </p>
+        {rounds.length === 0 ? (
+          <p className="text-[11px] text-muted-foreground">{t("layeredPush.noRounds")}</p>
+        ) : (
+          <div className="space-y-1">
+            {rounds.slice(0, 6).map((r) => (
+              <div
+                key={r.round_id}
+                className="flex items-center justify-between text-[11px] text-muted-foreground"
+              >
+                <span>{fmtTime(r.pushed_at)}</span>
+                <span className="text-foreground">
+                  {t("layeredPush.roundRow", {
+                    sent: r.sent_ok,
+                    total: r.total,
+                    completed: r.completed,
+                  })}
+                </span>
+              </div>
+            ))}
           </div>
-          <div className="text-center">
-            <p className="text-lg font-bold text-foreground">
-              {interaction.sharedWorks}
-            </p>
-            <p className="text-muted-foreground">
-              {t("layeredPush.excellentShare")}
-            </p>
-          </div>
-          <div className="text-center">
-            <p className="text-lg font-bold text-foreground">
-              {interaction.parentMessages}
-            </p>
-            <p className="text-muted-foreground">
-              {t("layeredPush.parentMessages")}
-            </p>
-          </div>
-        </div>
-        <p className="text-[11px] text-muted-foreground">
-          {t("layeredPush.mainTopicLabel", {
-            topic: t(interaction.mainTopicKey),
-          })}
-        </p>
+        )}
       </div>
 
-      {/* Actions */}
+      {/* Actions：真实报告（本人/班主任钉钉） */}
       <div className="flex gap-2 mt-4">
         <Button
           variant="outline"
           size="sm"
           className="text-xs gap-1.5"
-          onClick={demoToast}
+          disabled={reportMutation.isPending}
+          onClick={() =>
+            reportMutation.mutate({
+              class_id: classId,
+              subject,
+              kind: "weekly",
+              recipient: "self",
+            })
+          }
         >
           <FileText className="w-3.5 h-3.5" /> {t("layeredPush.weeklyReport")}
         </Button>
@@ -204,32 +286,74 @@ export function EffectTracking({
           variant="outline"
           size="sm"
           className="text-xs gap-1.5"
-          onClick={demoToast}
+          disabled={reportMutation.isPending}
+          onClick={() =>
+            reportMutation.mutate({
+              class_id: classId,
+              subject,
+              kind: "weekly",
+              recipient: "head",
+            })
+          }
         >
           {t("layeredPush.sendToManagement")}
         </Button>
       </div>
 
-      {/* Robot broadcast */}
-      <div className="mt-4 rounded-lg bg-muted/30 border border-border/30 p-3">
-        <div className="flex items-center gap-1.5 mb-1.5">
-          <Bot className="w-3.5 h-3.5 text-primary" />
-          <span className="text-xs font-semibold text-foreground">
-            {t("layeredPush.robotBroadcast")}
-          </span>
-        </div>
-        <p className="text-[11px] text-muted-foreground italic mb-2">
-          {t("layeredPush.robotMessage")}
-        </p>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-xs h-6 px-2 text-primary"
-          onClick={demoToast}
-        >
-          {t("layeredPush.setBroadcastRule")}
-        </Button>
-      </div>
+      {/* 电话家长 */}
+      <Dialog open={phoneTier !== null} onOpenChange={(o) => !o && setPhoneTier(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {phoneTier
+                ? t("layeredPush.phoneDialogTitle", {
+                    tier: t(TIER_STYLES[phoneTier].labelKey),
+                  })
+                : ""}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[320px] overflow-y-auto space-y-1.5">
+            {phoneTargets.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                {t("layeredPush.piiHidden")}
+              </p>
+            )}
+            {phoneTargets.map((s) => (
+              <div
+                key={s.id}
+                className="flex items-center justify-between rounded-lg border border-border/50 bg-background px-3 py-2 text-xs"
+              >
+                <span className="font-medium text-foreground">
+                  {s.name}
+                  {s.parent_name && (
+                    <span className="text-muted-foreground font-normal">
+                      {" "}
+                      · {s.parent_name}
+                    </span>
+                  )}
+                </span>
+                {s.parent_phone ? (
+                  <a
+                    href={`tel:${s.parent_phone}`}
+                    className="text-primary hover:underline"
+                  >
+                    {s.parent_phone}
+                  </a>
+                ) : (
+                  <span className="text-muted-foreground">
+                    {t("layeredPush.noPhone")}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setPhoneTier(null)}>
+              {t("common.close")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

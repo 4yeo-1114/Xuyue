@@ -447,7 +447,7 @@ def build_local_schema_doc(user_id: str) -> str:
 |-------------------|------|----------|------------|
 | `correct_documents/test_paper/` | **考试归档根目录** | 每场考试一个子文件夹，文件夹名即 exam_key（如 `cls_{{uuid}}__考试名`），内存原始试卷 PDF/图片 | 间接查：virtual `local_exam_list` |
 | `correct_documents/test_paper_img/` | **试卷预览图** | 与 test_paper 同结构的子文件夹；PDF/Word 转成的 `*_img.jpg` 或原图副本，供 OCR/批改预览 | 暂无虚拟表（仅 OCR 中间产物） |
-| `grading_history/` | **批改结果与得分** | 每场考试对应 JSON：`{{exam_key}}.json`（智能批改）、`{{exam_key}}__manual.json`（答题卡（自主阅卷））、`{{exam_key}}__essay.json`（作文）；内含 completed/failed 各学生批改详情与分数 | **可查**：`local_grading_scores`、`local_exam_list` |
+| `grading_history/` | **批改结果与得分** | 每场考试对应 JSON：`{{exam_key}}.json`（智能批改）、`{{exam_key}}__manual.json`（自主阅卷）、`{{exam_key}}__essay.json`（作文）；内含 completed/failed 各学生批改详情与分数 | **可查**：`local_grading_scores`、`local_exam_list` |
 | `ct/cls_{{class_id}}/records/` | **按班级的批改记录** | 每场考试一个 JSON，结构含 class、papers（每生一卷）、wrong_questions、summary | **可查**：`local_ct_students`、`local_ct_wrong_questions` |
 | `ct/cls_{{class_id}}/analysis/` | **按班级的错题分析** | 与 records 类似，侧重错题聚合分析 | **可查**：同上虚拟表 |
 | `scan/` | **扫描仪导入缓存** | 从扫描仪批量导入的临时图片/批次文件，导入后会进入正式批改流程 | 暂无虚拟表 |

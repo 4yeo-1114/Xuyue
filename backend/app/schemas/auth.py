@@ -19,10 +19,28 @@ class RegisterRequest(BaseModel):
     # 宽松校验：同 LoginRequest，路由层做"非空且含 @" 检查
     email: str
     password: str
+    email_code: str  # 邮箱验证码（合规：真实邮箱验证，注册前必须校验）
     display_name: Optional[str] = None
     role: RegisterRole
     teaching_subject: Optional[str] = None  # 可选、自由填写；长度上限见 routers/auth.py
     teaching_grade: Optional[str] = None  # 可选、自由填写；长度上限见 routers/auth.py
+
+
+class SendCodeRequest(BaseModel):
+    # target：邮箱（channel=email）或手机号（channel=sms），路由层按 channel 规范化
+    target: str
+    channel: Literal["email", "sms"]
+    purpose: Literal["register", "login", "bind"]
+
+
+class PhoneLoginRequest(BaseModel):
+    phone: str
+    code: str
+
+
+class BindPhoneRequest(BaseModel):
+    phone: str
+    code: str
 
 
 class UserResponse(BaseModel):

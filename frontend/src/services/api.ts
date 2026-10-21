@@ -216,6 +216,16 @@ export interface GradingJobItem {
     image_marks_only?: string | null;
     json?: string;
   };
+  /** 判错原因批注（题号 → 批注）；首页作业记录里由异步生成/手动编辑维护 */
+  wrong_annotations?: Record<
+    string,
+    {
+      text: string;
+      source: "ai" | "manual";
+      edited: boolean;
+      generated_at?: string;
+    }
+  > | null;
 }
 
 /** 首页最近作业列表项（GET /grading/home/recent 的 items） */
@@ -2102,9 +2112,15 @@ export async function importStudents(
   return json.data;
 }
 
-export async function globalImportStudents(file: File): Promise<number> {
+export async function globalImportStudents(
+  file: File,
+  fallbackClassId?: string,
+): Promise<number> {
   const formData = new FormData();
   formData.append("file", file);
+  if (fallbackClassId) {
+    formData.append("fallback_class_id", fallbackClassId);
+  }
 
   const token = await getAuthToken();
   const headers: Record<string, string> = {};
@@ -2458,9 +2474,12 @@ export interface DingtalkSyncStatus {
   configured: boolean;
   synced_class_count: number;
   synced_student_count: number;
+  /** 钉钉工作台入口链接（未配置时为 null） */
+  entry_url?: string | null;
 }
 
 export interface DingtalkSyncResult {
+  scope?: "class" | "student";
   departments: number;
   classes_created: number;
   classes_updated: number;
@@ -2472,6 +2491,17 @@ export interface DingtalkSyncPayload {
   dept_id: number;
   school_level: "primary" | "junior" | "senior";
   grade: string;
+  /** 同步范围：class=整班名单（默认） / student=只同步单个学生 */
+  scope?: "class" | "student";
+  /** scope=student 时必填：要同步的钉钉成员 userid */
+  student_userid?: string;
+}
+
+/** 钉钉部门成员（选择「只同步单个学生」用） */
+export interface DingtalkDeptUser {
+  userid: string;
+  name: string;
+  mobile?: string;
 }
 
 /** 查询钉钉接入状态与已同步数量 */
@@ -2484,6 +2514,15 @@ export async function listDingtalkDepartments(): Promise<DingtalkDepartment[]> {
   return request<DingtalkDepartment[]>("/dingtalk/departments");
 }
 
+/** 拉取某钉钉部门的成员列表（同步单个学生时选择用） */
+export async function listDingtalkDeptUsers(
+  deptId: number,
+): Promise<DingtalkDeptUser[]> {
+  return request<DingtalkDeptUser[]>(
+    `/dingtalk/departments/${deptId}/users`,
+  );
+}
+
 /** 同步指定钉钉部门（及其子部门）为班级+学生 */
 export async function syncDingtalkClasses(
   payload: DingtalkSyncPayload,
@@ -2492,4 +2531,266 @@ export async function syncDingtalkClasses(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+// ---- 分层推送（nav/ai-layered）----
+
+/** 分层名单行：学生 + 平均分 + 当前分层 + 钉钉同步状态（家长联系方式仅班主任可见） */
+export interface LayeredRosterStudent {
+  id: string;
+  name: string;
+  student_number?: string | null;
+  tier?: string | null;
+  score?: number | null;
+  dingtalk_synced: boolean;
+  parent_name?: string | null;
+  parent_phone?: string | null;
+}
+
+/** 单层作业内容（存 system_config，读侧合并默认值） */
+export interface LayeredTierContent {
+  assignments: {
+    title: string;
+    desc?: string | null;
+    icon?: string | null;
+    exam_id?: string | null;
+  }[];
+  materials: { name: string; url: string }[];
+  estimated_minutes: number;
+  deadline_weekday: number; // 1=周一 … 7=周日
+  deadline_time: string;
+  require_parent_sign: boolean;
+  require_photo: boolean;
+  require_voice: boolean;
+}
+
+/** 分层推送设置（与后端 LayeredPushSettings 同构） */
+export interface LayeredPushSettings {
+  thresholds: { a: number; b: number };
+  timing: { mode: "now" | "scheduled"; scheduled_at?: string | null; fired_at?: string | null };
+  notify: { student: boolean; parent: boolean; reminder24h: boolean; late: boolean };
+  form_type: "dingtalk" | "h5";
+  tiers: Record<string, LayeredTierContent>;
+  templates: { name: string; saved_at?: string | null; snapshot: Record<string, unknown> }[];
+}
+
+/** 最近一轮统计中的单层桶 */
+export interface LayeredStatsTier {
+  total: number;
+  sent_ok: number;
+  sent_failed: number;
+  sent_skipped: number;
+  sent_pending: number;
+  parent_sent_ok: number;
+  completed: number;
+  unfinished: { task_id: string; name: string }[];
+  read_count: number | null;
+}
+
+/** GET /layered-push/stats：最近一轮分层统计（未推送时 tiers 为空） */
+export interface LayeredStats {
+  round_id: string | null;
+  round_index: number;
+  rounds: number;
+  tiers: Record<string, LayeredStatsTier>;
+  updated_at?: string | null;
+}
+
+/** GET /layered-push/rounds：历史轮次（新→旧） */
+export interface LayeredRound {
+  round_id: string;
+  total: number;
+  sent_ok: number;
+  sent_failed: number;
+  completed: number;
+  pushed_at?: string | null;
+}
+
+/** 真实名单（学生 + 平均分 + 分层 + 钉钉同步状态） */
+export async function getLayeredRoster(
+  classId: string,
+  subject?: string,
+): Promise<LayeredRosterStudent[]> {
+  const params = new URLSearchParams({ class_id: classId });
+  if (subject) params.set("subject", subject);
+  return request<LayeredRosterStudent[]>(`/layered-push/roster?${params.toString()}`);
+}
+
+/** 按平均分自动分层（score≥a→A，≥b→B，其余 C；无成绩保持原分层） */
+export async function autoTier(payload: {
+  class_id: string;
+  subject?: string;
+  thresholds?: { a?: number; b?: number };
+}): Promise<{ updated: number; no_score: number; tiers: Record<string, string[]> }> {
+  return request("/layered-push/tiers/auto", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 批量/拖拽调整分层 */
+export async function batchMoveTiers(payload: {
+  class_id: string;
+  moves: { student_id: string; tier: "A" | "B" | "C" }[];
+}): Promise<{ updated: number }> {
+  return request("/layered-push/tiers/batch", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 读取本班分层推送设置（未存过返回 null） */
+export async function getLayeredPushSettings(
+  classId: string,
+  subject?: string,
+): Promise<LayeredPushSettings | null> {
+  const params = new URLSearchParams({ class_id: classId });
+  if (subject) params.set("subject", subject);
+  return request<LayeredPushSettings | null>(
+    `/layered-push/settings?${params.toString()}`,
+  );
+}
+
+/** 全量保存本班分层推送设置（仅班主任） */
+export async function saveLayeredPushSettings(payload: {
+  class_id: string;
+  subject?: string;
+  settings: LayeredPushSettings;
+}): Promise<{ saved: boolean }> {
+  return request("/layered-push/settings", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 预览某一层真实会发出的钉钉消息（与推送同一拼装函数） */
+export async function getMessagePreview(
+  classId: string,
+  subject: string,
+  tier: string,
+): Promise<{ title: string; body_markdown: string }> {
+  const params = new URLSearchParams({ class_id: classId, tier });
+  if (subject) params.set("subject", subject);
+  return request(`/layered-push/message-preview?${params.toString()}`);
+}
+
+/** 测试推送：给当前老师本人发配置摘要，验证钉钉通道 */
+export async function testPush(payload: {
+  class_id: string;
+  subject?: string;
+}): Promise<{ ok: boolean; message: string }> {
+  return request("/layered-push/test-push", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 确认推送：立即返回轮次，后台线程逐学生发送并回写结果 */
+export async function startPush(payload: {
+  class_id: string;
+  subject?: string;
+  notice_only?: boolean;
+  notice_text?: string;
+}): Promise<{
+  round_id: string;
+  total: number;
+  created_tasks: number;
+  notice_only?: boolean;
+}> {
+  return request("/layered-push/push", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    timeout: 30000,
+  });
+}
+
+/** 催交：对最近一轮未完成的学生（+家长）发提醒 */
+export async function urgePush(payload: {
+  class_id: string;
+  subject?: string;
+  tier?: "A" | "B" | "C";
+}): Promise<{ sent: number; failed: number }> {
+  return request("/layered-push/urge", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 最近一轮的分层推送统计 */
+export async function getLayeredStats(
+  classId: string,
+  subject?: string,
+): Promise<LayeredStats> {
+  const params = new URLSearchParams({ class_id: classId });
+  if (subject) params.set("subject", subject);
+  return request<LayeredStats>(`/layered-push/stats?${params.toString()}`);
+}
+
+/** 历史推送轮次（新→旧） */
+export async function listLayeredRounds(
+  classId: string,
+  subject?: string,
+): Promise<LayeredRound[]> {
+  const params = new URLSearchParams({ class_id: classId });
+  if (subject) params.set("subject", subject);
+  return request<LayeredRound[]>(`/layered-push/rounds?${params.toString()}`);
+}
+
+/** 教师标记任务完成/未完成（完成状态以教师为准） */
+export async function patchLayeredTaskStatus(
+  taskId: string,
+  status: "pending" | "completed",
+): Promise<{ id: string; status: string }> {
+  return request(`/layered-push/tasks/${encodeURIComponent(taskId)}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+}
+
+/** 生成真实统计报告并发钉钉（本人/班主任） */
+export async function sendLayeredReport(payload: {
+  class_id: string;
+  subject?: string;
+  kind?: "weekly" | "round";
+  recipient?: "self" | "head";
+}): Promise<{ ok: boolean; message: string }> {
+  return request("/layered-push/report", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 按班级绑定的钉钉部门整班刷新名单（仅班主任） */
+export async function syncLayeredRoster(payload: {
+  class_id: string;
+}): Promise<{ created: number; updated: number; total: number }> {
+  return request("/layered-push/sync-roster", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    timeout: 60000,
+  });
+}
+
+/** 资源文件下载链接（相对 API_PREFIX，配合 downloadResourceFile 带票下载） */
+export function resourceDownloadUrl(folderName: string, fileName: string): string {
+  return `/resources/folders/${encodePath(folderName)}/files/${encodeURIComponent(fileName)}/download`;
+}
+
+/** 带鉴权下载资源文件并触发浏览器保存 */
+export async function downloadResourceFile(
+  urlPath: string,
+  fileName: string,
+): Promise<void> {
+  const token = await getAuthToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${API_PREFIX}${urlPath}`, { headers });
+  if (!res.ok) throw new ApiError(res.status, `下载失败: ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
 }

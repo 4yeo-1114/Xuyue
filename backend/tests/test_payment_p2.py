@@ -355,9 +355,10 @@ def _alipay_callback(priv_pem: str, *, order_id: str, trade_no: str, amount_yuan
         "trade_no": trade_no,
         "trade_status": trade_status,
     }
-    # 支付宝签名串：剔除 sign/sign_type 与空值，按 key 升序 `k=v` 以 `&` 连接（独立复算）
+    # 支付宝签名串：剔除 sign 与空值（sign_type **参与**签名 —— 实测网关回显其验签串
+    # 含 sign_type=RSA2，剔掉必失败），按 key 升序 `k=v` 以 `&` 连接（独立复算）
     items = sorted((k, v) for k, v in params.items()
-                   if k not in ("sign", "sign_type") and v != "")
+                   if k != "sign" and v != "")
     message = "&".join("{}={}".format(k, v) for k, v in items).encode("utf-8")
     params["sign"] = _rsa_sign(priv_pem, message)
     from urllib.parse import urlencode
@@ -1299,7 +1300,7 @@ def test_p2_tax_columns_declared_in_model_and_nullable():
 
     cols = PaymentOrder.__table__.columns
     for name in TAX_COLUMNS:
-        assert name in cols, "{} 不在 payment_orders 模型里".format(name)
+        assert name in cols, "{} 不在 payment_orders_v2 模型里".format(name)
         assert cols[name].nullable is True, name
         assert isinstance(cols[name].type, Integer), name
     # 账本表⛔不许出现税字段
@@ -1310,7 +1311,7 @@ def test_p2_tax_columns_declared_in_model_and_nullable():
 def test_p2_tax_columns_self_heal_when_auto_ddl_false(monkeypatch, caplog):
     """**价税分离补列自己的红**：真·旧库（缺这 3 列）＋ `AUTO_DDL=false` ⇒ `init_db()` 必须补齐。
 
-    ⚠️ 为什么不能只靠 `create_all`：Phase 0 已把 `payment_orders` 建出来了，`create_all` 对
+    ⚠️ 为什么不能只靠 `create_all`：Phase 0 已把 `payment_orders_v2` 建出来了，`create_all` 对
        **已存在的表**是空操作 ⇒ 缺的列永远补不上（首次开票才 1054）。
     ⚠️ 判据两条：(a) 3 列回来；(b) **二次调用幂等**且**表集合不变**（⛔ 不能靠重建表来补列）。
     """
@@ -1322,41 +1323,41 @@ def test_p2_tax_columns_self_heal_when_auto_ddl_false(monkeypatch, caplog):
     Base.metadata.create_all(bind=eng)
     with eng.begin() as conn:
         for name in TAX_COLUMNS:
-            conn.execute(text("ALTER TABLE payment_orders DROP COLUMN {}".format(name)))
-    cols = {c["name"] for c in inspect(eng).get_columns("payment_orders")}
+            conn.execute(text("ALTER TABLE payment_orders_v2 DROP COLUMN {}".format(name)))
+    cols = {c["name"] for c in inspect(eng).get_columns("payment_orders_v2")}
     assert not (set(TAX_COLUMNS) & cols), cols
     # 既有订单行：补列不能把老数据搞没（可空列 ⇒ 老行取 NULL）
     with eng.begin() as conn:
         conn.execute(text(
-            "INSERT INTO payment_orders (id, user_id, channel, status, amount_fen, subject_type) "
+            "INSERT INTO payment_orders_v2 (id, user_id, channel, status, amount_fen, subject_type) "
             "VALUES ('o-legacy', 'u-legacy', 'unset', 'pending', 50, 'recharge')"
         ))
     tables_before = set(inspect(eng).get_table_names())
-    indexes_before = {ix["name"] for ix in inspect(eng).get_indexes("payment_orders")}
+    indexes_before = {ix["name"] for ix in inspect(eng).get_indexes("payment_orders_v2")}
 
     database.init_db()
 
-    cols = {c["name"] for c in inspect(eng).get_columns("payment_orders")}
+    cols = {c["name"] for c in inspect(eng).get_columns("payment_orders_v2")}
     assert set(TAX_COLUMNS) <= cols, sorted(set(TAX_COLUMNS) - cols)
     assert set(inspect(eng).get_table_names()) == tables_before, "表集合变了（不是补列而是重建）"
-    assert {ix["name"] for ix in inspect(eng).get_indexes("payment_orders")} == indexes_before, \
+    assert {ix["name"] for ix in inspect(eng).get_indexes("payment_orders_v2")} == indexes_before, \
         "索引集合变了"
     with eng.begin() as conn:
         row = conn.execute(text(
             "SELECT amount_fen, amount_excl_tax_fen, tax_amount_fen, tax_rate_bps "
-            "FROM payment_orders WHERE id='o-legacy'")).fetchone()
+            "FROM payment_orders_v2 WHERE id='o-legacy'")).fetchone()
     assert row[0] == 50 and row[1] is None and row[2] is None and row[3] is None, row
 
     # 幂等：二次调用不抛、列与表态一字不变，**且不能靠吞异常混过去**
     # ⚠️ 这一条钉的是「真的**跳过**了已存在的列」：若去掉 `if name in existing: continue` 的比对，
     #    第二次 ALTER 会因列已存在而报错 —— 被外层 except 吞掉 ⇒ 光是「不抛」看不出来，
     #    于是要求「补列这条路**一条 error 日志都不打**」。
-    cols_first = {c["name"] for c in inspect(eng).get_columns("payment_orders")}
+    cols_first = {c["name"] for c in inspect(eng).get_columns("payment_orders_v2")}
     with caplog.at_level(logging.ERROR, logger="app.database"):
         database.init_db()
     noisy = [r.getMessage() for r in caplog.records if "价税分离补列" in r.getMessage()]
     assert not noisy, "二次调用仍在试图补列（幂等是靠吞异常混过去的）：{}".format(noisy)
-    assert {c["name"] for c in inspect(eng).get_columns("payment_orders")} == cols_first
+    assert {c["name"] for c in inspect(eng).get_columns("payment_orders_v2")} == cols_first
     assert set(inspect(eng).get_table_names()) == tables_before
     eng.dispose()
 
@@ -1375,20 +1376,20 @@ def test_p2_init_db_self_heals_payment_tables_when_auto_ddl_false(monkeypatch):
     # 先建全量（其它 `_ensure_*` 也要摸 users 等表），再刻意把两张支付表砸掉
     Base.metadata.create_all(bind=eng)
     with eng.begin() as conn:
-        conn.execute(text("DROP TABLE payment_orders"))
+        conn.execute(text("DROP TABLE payment_orders_v2"))
         conn.execute(text("DROP TABLE ledger_entries"))
     tables = set(inspect(eng).get_table_names())
-    assert "payment_orders" not in tables and "ledger_entries" not in tables
+    assert "payment_orders_v2" not in tables and "ledger_entries" not in tables
 
     database.init_db()
 
     tables = set(inspect(eng).get_table_names())
-    assert {"payment_orders", "ledger_entries", "payment_accounts"} <= tables, sorted(tables)
+    assert {"payment_orders_v2", "ledger_entries", "payment_accounts"} <= tables, sorted(tables)
     # 幂等：二次调用不抛、库状态不变
     database.init_db()
     assert set(inspect(eng).get_table_names()) == tables
     assert "uk_ledger_idempotency" in {
         ix["name"] for ix in inspect(eng).get_indexes("ledger_entries")
     }, "自愈出来的 ledger_entries 少了唯一索引 —— 幂等最后防线没建上"
-    assert set(TAX_COLUMNS) <= {c["name"] for c in inspect(eng).get_columns("payment_orders")}
+    assert set(TAX_COLUMNS) <= {c["name"] for c in inspect(eng).get_columns("payment_orders_v2")}
     eng.dispose()

@@ -402,6 +402,9 @@ export const prepPlanZh: TranslationDict = {
     "可从上方知识点多选，也可在下方直接输入多个知识点（用顿号、逗号或换行分隔）。",
   "examGen.aiModal.kpEmpty":
     "该学科/年级暂无已配置的知识点，可直接在下方输入。",
+  "examGen.aiModal.kpMasteryTip": "掌握度 {pct}%（该知识点错题 {count} 题）",
+  "examGen.aiModal.kpMasteryHint":
+    "细条为本班掌握度（按错题占比折算），偏红即薄弱点；悬停可看错题数。",
   "examGen.aiModal.templateMode": "组卷方式",
   "examGen.aiModal.templatePlaceholder": "手动占位（按左侧题目列表）",
   "examGen.aiModal.templatePaper": "已有试卷当模板",
@@ -486,6 +489,8 @@ export const prepPlanZh: TranslationDict = {
   "printer.compatModeCompat": "兼容模式（打印优化）",
   "printer.margin": "页边距（mm）",
   "printer.copies": "打印份数",
+  "printer.printWrongNotes": "打印批注",
+  "printer.printWrongNotesHint": "打印/导出留痕时带上错因批注；关闭则只打普通留痕",
 
   // PrepMatrixPage（四维定位矩阵）
   "prepMatrix.badge": "四维定位矩阵",
@@ -527,6 +532,40 @@ export const prepPlanZh: TranslationDict = {
   "prepCatalog.expand": "展开",
   "prepCatalog.collapse": "折叠",
   "prepCatalog.jumpLesson": "跳转到教案编辑",
+
+  // QuestionBankPage（题库批量打标）
+  "questionBank.tag.batchTitle": "批量打标（{count} 题）",
+  "questionBank.tag.editTitle": "编辑标签",
+  "questionBank.tag.addTitle": "打标签",
+  "questionBank.tag.batchButton": "批量打标",
+  "questionBank.tag.apply": "应用",
+  "questionBank.tag.saving": "保存中…",
+  "questionBank.tag.unit": "单元",
+  "questionBank.tag.unitShort": "单元",
+  "questionBank.tag.unitPlaceholder": "例如：第一单元",
+  "questionBank.tag.knowledgePoints": "知识点",
+  "questionBank.tag.knowledgePointsPlaceholder": "多个用逗号分隔，如：分数,小数",
+  "questionBank.tag.knowledgePointsHint": "已识别 {count} 个知识点",
+  "questionBank.tag.difficulty": "难度",
+  "questionBank.tag.difficultyPlaceholder": "选择难度",
+  "questionBank.tag.difficulty.易": "易",
+  "questionBank.tag.difficulty.中": "中",
+  "questionBank.tag.difficulty.难": "难",
+  "questionBank.tag.questionType": "题型",
+  "questionBank.tag.questionTypePlaceholder": "例如：选择题",
+  "questionBank.tag.partialHint": "留空的字段不会修改已有标签。",
+  "questionBank.tag.keepOrClear": "不改 / 清空",
+  "questionBank.tag.selectAll": "本页全选",
+  "questionBank.tag.selectRow": "选择该题",
+  "questionBank.tag.selectedCount": "已选 {count} 题",
+  "questionBank.tag.clearSelection": "取消选择",
+  "questionBank.tag.batchApplied": "已为 {count} 题打标",
+  "questionBank.tag.saved": "标签已保存",
+  "questionBank.tag.saveFailed": "标签保存失败",
+  "questionBank.tag.filterTitle": "按标签筛选",
+  "questionBank.tag.filterClear": "清除",
+  "questionBank.tag.filterEmpty": "没有符合标签筛选的题目",
+  "questionBank.tag.allDifficulties": "全部难度",
 };
 
 export const prepPlanEn: TranslationDict = {
@@ -940,6 +979,9 @@ export const prepPlanEn: TranslationDict = {
     "Select knowledge points above, or type multiple below (separated by comma or newline).",
   "examGen.aiModal.kpEmpty":
     "No knowledge points configured for this subject/grade yet; type below instead.",
+  "examGen.aiModal.kpMasteryTip": "Mastery {pct}% ({count} wrong questions)",
+  "examGen.aiModal.kpMasteryHint":
+    "Bars show class mastery (from wrong-question share); red/orange marks weak points.",
   "examGen.aiModal.templateMode": "Generation mode",
   "examGen.aiModal.templatePlaceholder": "Placeholders (from left list)",
   "examGen.aiModal.templatePaper": "From a saved paper",
@@ -1027,6 +1069,9 @@ export const prepPlanEn: TranslationDict = {
   "printer.compatModeCompat": "Compatibility (print optimizations)",
   "printer.margin": "Margin (mm)",
   "printer.copies": "Copies",
+  "printer.printWrongNotes": "Print error notes",
+  "printer.printWrongNotesHint":
+    "Include error notes when printing/exporting mark sheets; off = plain marks only",
 
   // PrepMatrixPage（四维定位矩阵）
   "prepMatrix.badge": "4D Positioning Matrix",
@@ -1068,4 +1113,38 @@ export const prepPlanEn: TranslationDict = {
   "prepCatalog.expand": "Expand",
   "prepCatalog.collapse": "Collapse",
   "prepCatalog.jumpLesson": "Go to lesson editor",
+
+  // QuestionBankPage (batch question tagging)
+  "questionBank.tag.batchTitle": "Batch tag ({count} questions)",
+  "questionBank.tag.editTitle": "Edit tags",
+  "questionBank.tag.addTitle": "Add tags",
+  "questionBank.tag.batchButton": "Batch tag",
+  "questionBank.tag.apply": "Apply",
+  "questionBank.tag.saving": "Saving…",
+  "questionBank.tag.unit": "Unit",
+  "questionBank.tag.unitShort": "Unit",
+  "questionBank.tag.unitPlaceholder": "e.g. Unit 1",
+  "questionBank.tag.knowledgePoints": "Knowledge points",
+  "questionBank.tag.knowledgePointsPlaceholder": "Separate with commas, e.g. Fractions, Decimals",
+  "questionBank.tag.knowledgePointsHint": "{count} knowledge point(s) recognized",
+  "questionBank.tag.difficulty": "Difficulty",
+  "questionBank.tag.difficultyPlaceholder": "Select difficulty",
+  "questionBank.tag.difficulty.易": "Easy",
+  "questionBank.tag.difficulty.中": "Medium",
+  "questionBank.tag.difficulty.难": "Hard",
+  "questionBank.tag.questionType": "Question type",
+  "questionBank.tag.questionTypePlaceholder": "e.g. Multiple choice",
+  "questionBank.tag.partialHint": "Empty fields will not change existing tags.",
+  "questionBank.tag.keepOrClear": "Keep / clear",
+  "questionBank.tag.selectAll": "Select page",
+  "questionBank.tag.selectRow": "Select question",
+  "questionBank.tag.selectedCount": "{count} selected",
+  "questionBank.tag.clearSelection": "Clear selection",
+  "questionBank.tag.batchApplied": "Tagged {count} question(s)",
+  "questionBank.tag.saved": "Tags saved",
+  "questionBank.tag.saveFailed": "Failed to save tags",
+  "questionBank.tag.filterTitle": "Filter by tags",
+  "questionBank.tag.filterClear": "Clear",
+  "questionBank.tag.filterEmpty": "No questions match the tag filter",
+  "questionBank.tag.allDifficulties": "All difficulties",
 };

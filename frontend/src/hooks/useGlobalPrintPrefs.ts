@@ -33,6 +33,9 @@ export function useGlobalPrintPrefs() {
   );
   const [marginMm, setMarginMm] = useState(defaults.marginMm);
   const [copies, setCopies] = useState(defaults.copies);
+  const [printWrongNotes, setPrintWrongNotes] = useState(
+    defaults.printWrongNotes ?? true,
+  );
   const applyingExternalRef = useRef(false);
 
   const applyPrefs = useCallback((prefs: Partial<GlobalPrintPrefs>) => {
@@ -49,6 +52,8 @@ export function useGlobalPrintPrefs() {
     if (prefs.printMode) setCompatMode(prefs.printMode);
     if (typeof prefs.marginMm === "number") setMarginMm(prefs.marginMm);
     if (typeof prefs.copies === "number") setCopies(prefs.copies);
+    if (typeof prefs.printWrongNotes === "boolean")
+      setPrintWrongNotes(prefs.printWrongNotes);
     queueMicrotask(() => {
       applyingExternalRef.current = false;
     });
@@ -71,6 +76,7 @@ export function useGlobalPrintPrefs() {
       printMode: compatMode,
       marginMm,
       copies,
+      printWrongNotes,
     });
   }, [
     loaded,
@@ -83,6 +89,7 @@ export function useGlobalPrintPrefs() {
     compatMode,
     marginMm,
     copies,
+    printWrongNotes,
   ]);
 
   useEffect(() => {
@@ -129,6 +136,8 @@ export function useGlobalPrintPrefs() {
     setMarginMm,
     copies,
     setCopies,
+    printWrongNotes,
+    setPrintWrongNotes,
     resolvePrinterName: () => resolvePrinterApiName(selectedPrinter),
     getCustomPaperSetting,
   };

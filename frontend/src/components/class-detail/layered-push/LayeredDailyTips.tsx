@@ -1,17 +1,16 @@
 import { useState } from "react";
-import { useLocale } from "@/contexts/LocaleContext";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-interface TipConfig {
+/** 行内提示：text 由页面用真实数据算好传入（不再有写死的数字） */
+export interface TipConfig {
   id: string;
-  textKey: string;
+  text: string;
   borderColor: string;
   bgColor: string;
 }
 
 function Tip({ tip, onClose }: { tip: TipConfig; onClose: () => void }) {
-  const { t } = useLocale();
   return (
     <div
       className={cn(
@@ -20,7 +19,7 @@ function Tip({ tip, onClose }: { tip: TipConfig; onClose: () => void }) {
         tip.borderColor,
       )}
     >
-      <span className="flex-1 text-foreground">{t(tip.textKey)}</span>
+      <span className="flex-1 text-foreground">{tip.text}</span>
       <button
         onClick={onClose}
         className="text-muted-foreground hover:text-foreground shrink-0"
@@ -49,48 +48,3 @@ export function InlineLayeredTip({
   if (dismissed.has(tip.id)) return null;
   return <Tip tip={tip} onClose={() => onDismiss(tip.id)} />;
 }
-
-export const LAYERED_TIPS = {
-  tierImbalance: {
-    id: "lp-tier-imbalance",
-    textKey: "layeredPush.tips.tierImbalance",
-    borderColor: "border-l-warning",
-    bgColor: "bg-warning/5",
-  },
-  timeImbalance: {
-    id: "lp-time-imbalance",
-    textKey: "layeredPush.tips.timeImbalance",
-    borderColor: "border-l-warning",
-    bgColor: "bg-warning/5",
-  },
-  unsyncedStudents: {
-    id: "lp-unsynced",
-    textKey: "layeredPush.tips.unsynced",
-    borderColor: "border-l-destructive",
-    bgColor: "bg-destructive/5",
-  },
-  lowCompletion: {
-    id: "lp-low-completion",
-    textKey: "layeredPush.tips.lowCompletion",
-    borderColor: "border-l-destructive",
-    bgColor: "bg-destructive/5",
-  },
-  urgeReminder: {
-    id: "lp-urge-reminder",
-    textKey: "layeredPush.tips.urgeReminder",
-    borderColor: "border-l-warning",
-    bgColor: "bg-warning/5",
-  },
-  interactionActive: {
-    id: "lp-interaction-active",
-    textKey: "layeredPush.tips.interactionActive",
-    borderColor: "border-l-primary",
-    bgColor: "bg-primary/5",
-  },
-  weeklyReport: {
-    id: "lp-weekly-report",
-    textKey: "layeredPush.tips.weeklyReport",
-    borderColor: "border-l-primary",
-    bgColor: "bg-primary/5",
-  },
-} as const;

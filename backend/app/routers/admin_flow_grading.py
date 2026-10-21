@@ -267,6 +267,9 @@ def api_cut_batch(
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user_id),
 ):
+    # TODO(0924)：流水阅卷当前为纯人工（切图/领取/提交/仲裁，无模型调用）⇒ 不接额度闸。
+    # 若未来接入 AI 预评/自动批改，闸门落点在此「发起」处（quota_gate()）；
+    # ⛔ /cut/status、/progress 等查询端点永不接——已在跑的任务不中断。
     _check_admin_permission(db, user_id)
     batch = db.query(FlowBatch).filter(FlowBatch.id == batch_id).first()
     if not batch:

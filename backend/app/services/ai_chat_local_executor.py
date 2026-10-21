@@ -148,7 +148,7 @@ def _build_local_grading_scores(user_id: str) -> list[dict[str, Any]]:
         exam_title = _display_exam_title(exam_key)
         for suffix, grading_type in (
             ("", "智能批改"),
-            ("__manual", "答题卡（自主阅卷）"),
+            ("__manual", "自主阅卷"),
             ("__essay", "作文批改"),
         ):
             data = _read_json_file(hist_dir / f"{exam_key}{suffix}.json")

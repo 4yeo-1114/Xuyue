@@ -35,7 +35,8 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 function AuthRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
 
-  if (loading) return null;
+  // 1020：原来 loading 时 return null = 一整段纯白空窗，改走 LoadingScreen
+  if (loading) return <LoadingScreen />;
   if (user) return <Navigate to="/" replace />;
 
   return <>{children}</>;

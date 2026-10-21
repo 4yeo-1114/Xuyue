@@ -133,3 +133,23 @@ export async function createPaymentOrder(
     body: JSON.stringify({ amount_fen, channel }),
   });
 }
+
+/** 订单状态（GET /payment/orders/{order_id}，二维码弹窗轮询用） */
+export interface PaymentOrderStatus {
+  order_id: string;
+  channel: string;
+  /** pending | paid | failed | cancelled | refunded */
+  status: string;
+  amount_fen: number;
+  paid_amount_fen: number | null;
+  created_at: string | null;
+  paid_at: string | null;
+}
+
+/**
+ * 查订单状态（只能查自己的订单，404 = 不存在或不属于当前用户）。
+ * 二维码弹窗里 2s 轮询一次，`status === "paid"` 即回调已入账、面数已到账。
+ */
+export async function fetchPaymentOrder(orderId: string): Promise<PaymentOrderStatus> {
+  return request<PaymentOrderStatus>(`/payment/orders/${encodeURIComponent(orderId)}`);
+}

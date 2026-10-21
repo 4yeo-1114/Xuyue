@@ -97,6 +97,13 @@ from app.models.subscription import Subscription
 from app.models.payment_order import PaymentOrder
 from app.models.payment_invoice import PaymentInvoice
 
+# B 项修正/复核记账（correction_ledger：ai-correct / form_guard / vl_ink 的 was→new 台账）
+from app.models.correction_ledger import CorrectionLedger
+# C 项判分缓存（verdict_cache：同（题,作答）复用判分，human 最高优先）
+from app.models.verdict_cache import VerdictCache
+# 轻成绩表（grading_score_summaries：批改文件夹每生成绩汇总，批改落盘后重建）
+from app.models.grading_score_summary import GradingScoreSummary
+
 __all__ = [
     "User",
     "gen_uuid",
@@ -188,4 +195,10 @@ __all__ = [
     "Subscription",
     "PaymentOrder",
     "PaymentInvoice",
+    # B 项修正/复核记账
+    "CorrectionLedger",
+    # C 项判分缓存
+    "VerdictCache",
+    # 轻成绩表
+    "GradingScoreSummary",
 ]

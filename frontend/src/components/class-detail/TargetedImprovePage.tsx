@@ -49,6 +49,7 @@ import {
   type TargetedStudentItem,
 } from "@/services/api";
 import { TargetedImportExamDialog } from "./targeted-improve/TargetedImportExamDialog";
+import { TargetedTaskList } from "./targeted-improve/TargetedTaskList";
 import { PrivacyNoticeDialog } from "@/components/common/PrivacyNoticeDialog";
 import { AIGeneratedBadge } from "@/components/common/AIGeneratedBadge";
 import { toast } from "sonner";
@@ -1634,6 +1635,15 @@ export function TargetedImprovePage({
           studentName={selectedStudentName}
         />
       </div>
+
+      {/* 客户功能 #15：未掌握知识点 → 个性化学习任务清单（勾完成 / 进度跟踪） */}
+      <TargetedTaskList
+        classId={selectedClass}
+        subject={subject}
+        students={students}
+        selectedStudentName={selectedStudentName}
+        reportId={report?.id}
+      />
 
       <div className="flex flex-wrap gap-4">
         <ContentRecommendationList

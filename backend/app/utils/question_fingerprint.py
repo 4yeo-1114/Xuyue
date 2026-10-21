@@ -120,3 +120,13 @@ def question_fingerprint(
     ]
     joined = _SEPARATOR.join(parts)
     return f"{_FINGERPRINT_PREFIX}{hashlib.sha256(joined.encode('utf-8')).hexdigest()}"
+
+
+def text_fingerprint(text: str | None) -> str:
+    """任意文本指纹（判分缓存的作答身份哈希）：与题目指纹同套归一化。
+
+    输出 64 位 hex（无 ``fp_`` 前缀，对齐 verdict_cache.student_answer_hash 定长）。
+    ⚠️ None 与空串归一后同值——空作答不得进缓存，由 cache_key 先行拦截，
+    不依赖本函数区分。
+    """
+    return hashlib.sha256(_normalize(text).encode("utf-8")).hexdigest()

@@ -34,6 +34,31 @@ def tier_by_amount(amount_yuan: int) -> Optional[dict]:
     return next((t for t in QUOTA_TIERS if t["amount_yuan"] == amount_yuan), None)
 
 
+# 基准费率：3 面/元（所有档位 base_pages = amount_yuan * 3，赠送仅固定档位专享）。
+BASE_PAGES_PER_YUAN = 3
+
+
+def pages_for_amount(amount_yuan: int) -> Optional[dict]:
+    """按金额算「加面」方案：命中档位走档位（含赠送），否则走基准费率（无赠送）。
+
+    自定义金额（非档位）按 `BASE_PAGES_PER_YUAN` 面/元计，⛔ 无赠送 —— 赠送是固定档位的激励。
+    金额 <= 0 返回 None（非法，调用方需人工核查）。
+    """
+    amount = int(amount_yuan or 0)
+    if amount <= 0:
+        return None
+    tier = tier_by_amount(amount)
+    if tier is not None:
+        return tier
+    base = amount * BASE_PAGES_PER_YUAN
+    return {
+        "amount_yuan": amount,
+        "base_pages": base,
+        "bonus_pages": 0,
+        "total_pages": base,
+    }
+
+
 def is_locked(total_pages: int, used_pages: int) -> bool:
     """是否触发 105% 硬停。total_pages<=0 视为无限额，不锁定。"""
     if total_pages <= 0:
@@ -185,15 +210,15 @@ def credit_from_payment(
 
     幂等：`GradingQuotaRechargeLog.source_order_id` 唯一约束兜底 —— 同一订单重复回调
     只加一次面（与账本侧 `pay-confirm|{order_id}` 的幂等语义对齐，两层各自独立兜底）。
-    非档位金额：记 error 不加面（需人工核查），分账本那边仍按实收入账、不受影响。
+    档位金额走档位（含赠送）；自定义金额按基准费率 3 面/元（无赠送）。
     """
     oid = str(order_id or "").strip()
     if not oid:
         return None
-    tier = tier_by_amount(int(amount_yuan or 0))
+    tier = pages_for_amount(int(amount_yuan or 0))
     if tier is None:
         logger.error(
-            "支付确认金额非充值档位，不加面（需人工核查）：order_id=%s amount_yuan=%s",
+            "支付确认金额非正，不加面（需人工核查）：order_id=%s amount_yuan=%s",
             oid,
             amount_yuan,
         )

@@ -98,9 +98,27 @@ def init_db():
     # ⛔ 不许上移回 sync_database_schema() 的 return 之后（生产默认 AUTO_DDL=false）。
     _ensure_payment_tables()
     _ensure_payment_order_tax_columns()   # 价税分离补列（§10 Q3）：必须排在建表**之后**
+    # ⚠️ payment_invoices 的 order_id 外键仍指向旧 payment_orders（生产），未迁移到
+    #    payment_orders_v2 —— 用户 2026-09-28 决定「不改库，先跳过」⇒ 本批开票(P3-1)
+    #    对新订单会 1452，充值主流程不受影响。要开票时再补
+    #    `_ensure_payment_invoices_order_fk()`（幂等 DROP/ADD FK，挂本无条件段）。
     # 登录/注册合规：验证码表 + 手机号普通索引（幂等兜底，同 _ensure_flow_tables 模式）
     _ensure_verification_codes_table()
     _ensure_user_phone_index()
+    # 分层推送（nav/ai-layered）：student_tasks / system_config 两表幂等兜底。
+    # student_tasks 只挂在 sync_database_schema() 的 create_all 里、system_config 无任何迁移 SQL，
+    # AUTO_DDL=false 的库（本地默认/生产）两张都可能缺 → 推送轮次/设置读写会 1146。
+    # 挂**无条件段**，⛔ 不许上移回 sync_database_schema() 的 return 之后。
+    _ensure_student_tasks_table()
+    _ensure_system_config_table()
+    # 修正/复核记账台账（B 项）：AUTO_DDL=false 时靠此幂等建表（同 _ensure_response_logs_table 模式）
+    _ensure_correction_ledger_table()
+    # 判分缓存（C 项）：同上幂等建表
+    _ensure_verdict_cache_table()
+    # 靶向提升任务清单（客户 #15）：AUTO_DDL=false 时靠此幂等建表（同 _ensure_response_logs_table 模式）
+    _ensure_targeted_improvement_tasks_table()
+    # 轻成绩表（对齐批改君 exam_scores）：同上幂等建表
+    _ensure_grading_score_summaries_table()
 
 
 def sync_database_schema():
@@ -194,6 +212,12 @@ def sync_database_schema():
         payment_order,
         # P3-1 发票（payment_invoices；新表 ⇒ AUTO_DDL=false 时靠 _ensure_payment_tables）
         payment_invoice,
+        # B 项修正/复核记账（correction_ledger；新表 ⇒ AUTO_DDL=false 时靠 _ensure_correction_ledger_table）
+        correction_ledger,
+        # C 项判分缓存（verdict_cache；新表 ⇒ AUTO_DDL=false 时靠 _ensure_verdict_cache_table）
+        verdict_cache,
+        # 轻成绩表（grading_score_summaries；新表 ⇒ AUTO_DDL=false 时靠 _ensure_grading_score_summaries_table）
+        grading_score_summary,
     )
     Base.metadata.create_all(bind=engine)
     _ensure_grading_daily_stats_table()
@@ -348,6 +372,96 @@ def _ensure_response_logs_table():
         from app.models.response_log import ResponseLog  # noqa: F401
 
         Base.metadata.create_all(bind=engine, tables=[ResponseLog.__table__])
+    except Exception:
+        pass
+
+
+def _ensure_correction_ledger_table():
+    """B 项修正/复核记账台账幂等建表（correction_ledger，按模型 metadata 建表）。
+
+    AUTO_DDL=true 时 create_all 已建；此处显式 ensure，失败不阻断启动。
+    """
+    try:
+        from app.models.correction_ledger import CorrectionLedger  # noqa: F401
+
+        Base.metadata.create_all(bind=engine, tables=[CorrectionLedger.__table__])
+    except Exception:
+        pass
+
+
+def _ensure_verdict_cache_table():
+    """C 项判分缓存幂等建表（verdict_cache，按模型 metadata 建表）。
+
+    AUTO_DDL=true 时 create_all 已建；此处显式 ensure，失败不阻断启动。
+    """
+    try:
+        from app.models.verdict_cache import VerdictCache  # noqa: F401
+
+        Base.metadata.create_all(bind=engine, tables=[VerdictCache.__table__])
+    except Exception:
+        pass
+
+
+def _ensure_grading_score_summaries_table():
+    """轻成绩表幂等建表（grading_score_summaries，对齐批改君 exam_scores）。
+
+    AUTO_DDL=true 时 create_all 已建；此处显式 ensure，失败不阻断启动。
+    模型 __table_args__ 带 mysql_collate=utf8mb4_0900_ai_ci（DDL 漂移口径）。
+    """
+    try:
+        from app.models.grading_score_summary import GradingScoreSummary  # noqa: F401
+
+        Base.metadata.create_all(bind=engine, tables=[GradingScoreSummary.__table__])
+    except Exception:
+        pass
+
+
+def _ensure_targeted_improvement_tasks_table():
+    """靶向提升任务清单幂等建表（targeted_improvement_tasks，客户功能 #15）。
+
+    AUTO_DDL=true 时 create_all 已建；此处显式 ensure，失败不阻断启动。
+    模型 __table_args__ 带 mysql_collate=utf8mb4_0900_ai_ci（DDL 漂移口径）。
+    依赖父表 targeted_improvement_reports / classes / students，故一并 create_all 保序。
+    """
+    try:
+        from app.models.targeted_improvement import (  # noqa: F401
+            TargetedImprovementReport,
+            TargetedImprovementTask,
+        )
+
+        Base.metadata.create_all(
+            bind=engine,
+            tables=[
+                TargetedImprovementReport.__table__,
+                TargetedImprovementTask.__table__,
+            ],
+        )
+    except Exception:
+        pass
+
+
+def _ensure_student_tasks_table():
+    """学生任务/分层推送轮次表幂等建表（student_tasks，按模型 metadata 建表）。
+
+    AUTO_DDL=true 时 create_all 已建；此处显式 ensure，失败不阻断启动。
+    """
+    try:
+        from app.models.student_task import StudentTask  # noqa: F401
+
+        Base.metadata.create_all(bind=engine, tables=[StudentTask.__table__])
+    except Exception:
+        pass
+
+
+def _ensure_system_config_table():
+    """通用 KV 配置表幂等建表（system_config，分层推送设置存储）。
+
+    该表无任何迁移 SQL，仅模型存在；此处显式 ensure，失败不阻断启动。
+    """
+    try:
+        from app.models.system_config import SystemConfig  # noqa: F401
+
+        Base.metadata.create_all(bind=engine, tables=[SystemConfig.__table__])
     except Exception:
         pass
 

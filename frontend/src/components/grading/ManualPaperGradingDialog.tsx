@@ -8,9 +8,14 @@ import { cn } from "@/lib/utils";
 import { useLocale } from "@/contexts/LocaleContext";
 import {
   gradingImageUrl,
+  type DeductionItem,
+  type DeductionItemsMap,
   type ManualSlotDecision,
   type ManualSlotStatus,
+  type WrongAnnotation,
+  type WrongAnnotationsMap,
 } from "@/services/gradingApi";
+import { WrongAnnotationCard } from "./WrongAnnotationCard";
 
 type ManualBlock = {
   slot_id: string;
@@ -18,6 +23,7 @@ type ManualBlock = {
   label?: string;
   index?: number;
   sub_index?: number;
+  is_sub?: boolean;
   bbox: [number, number, number, number];
   max_score: number;
   status?: ManualSlotStatus;
@@ -27,6 +33,10 @@ type ManualBlock = {
 export type ManualAnnotations = {
   questionNotes: Record<string, string>;
   paperNote: string;
+  /** 判错原因批注（questionKey → 批注），随批改一起整体覆盖保存 */
+  wrongAnnotations: WrongAnnotationsMap;
+  /** 结构化扣分项（统分键 → 分项列表），随批改一起整体覆盖保存 */
+  deductionItems: DeductionItemsMap;
 };
 
 export type ManualPaperDirection = "save" | "prev" | "next";
@@ -44,6 +54,12 @@ type Props = {
   printing?: boolean;
   initialQuestionNotes?: Record<string, string>;
   initialPaperNote?: string;
+  initialWrongAnnotations?: WrongAnnotationsMap;
+  initialDeductionItems?: DeductionItemsMap;
+  /** 单题重新生成 AI 批注；返回完整映射（null = 失败/未配置），不传则不显示「重新生成」 */
+  regenerateWrongAnnotation?: (
+    questionKey: string,
+  ) => Promise<WrongAnnotationsMap | null>;
   onOpenChange: (open: boolean) => void;
   onSave: (decisions: Record<string, ManualSlotDecision>, direction: ManualPaperDirection, annotations: ManualAnnotations) => Promise<void> | void;
   onAutoSave?: (decisions: Record<string, ManualSlotDecision>, annotations: ManualAnnotations) => Promise<void> | void;
@@ -129,6 +145,40 @@ function scoreSteps(maxScore: number): number[] {
   return steps.length > 12 ? [0, max] : steps;
 }
 
+/** 扣分项合计（正数扣分求和）；空列表/缺省 → 0。 */
+export function deductionTotal(items: DeductionItem[] | undefined): number {
+  if (!items?.length) return 0;
+  return items.reduce((sum, it) => sum + (Number(it?.points) || 0), 0);
+}
+
+/** 已录扣分 vs 应扣（满分−得分）差值：gap>0 可补录，<0 已超额（仅提示不拦截）。
+ *  score=null（未批）时 expected=0，不误导「应扣满分」。 */
+export function deductionGap(
+  maxScore: number,
+  score: number | null | undefined,
+  items: DeductionItem[] | undefined,
+): { deducted: number; expected: number; gap: number } {
+  const deducted = deductionTotal(items);
+  if (score == null || !Number.isFinite(Number(score))) {
+    return { deducted, expected: 0, gap: -deducted };
+  }
+  const expected = Math.max(0, (Number(maxScore) || 0) - Number(score));
+  return { deducted, expected, gap: expected - deducted };
+}
+
+/** 统分/扣分项键：与统分一致「第N题」「第N题-作答区M」；title 已是该格式时直接用。 */
+function scoreKeyOf(block: ManualBlock): string {
+  const title = (block.title || "").trim();
+  if (/^第.+题(?:-作答区.+)?$/.test(title)) return title;
+  if (block.index != null) {
+    const isSub = Boolean(block.is_sub) && block.sub_index != null;
+    return isSub
+      ? `第${block.index}题-作答区${block.sub_index}`
+      : `第${block.index}题`;
+  }
+  return title || block.slot_id;
+}
+
 export function ManualPaperGradingDialog({
   open,
   filename,
@@ -142,6 +192,9 @@ export function ManualPaperGradingDialog({
   printing = false,
   initialQuestionNotes,
   initialPaperNote,
+  initialWrongAnnotations,
+  initialDeductionItems,
+  regenerateWrongAnnotation,
   onOpenChange,
   onSave,
   onAutoSave,
@@ -157,9 +210,14 @@ export function ManualPaperGradingDialog({
   const [preparingPrintPreview, setPreparingPrintPreview] = useState(false);
   const [questionNotes, setQuestionNotes] = useState<Record<string, string>>({});
   const [paperNote, setPaperNote] = useState("");
+  const [wrongAnnotations, setWrongAnnotations] = useState<WrongAnnotationsMap>({});
+  const [wrongAnnoRegenerating, setWrongAnnoRegenerating] = useState<string | null>(null);
+  const [deductionItems, setDeductionItems] = useState<DeductionItemsMap>({});
   const decisionsRef = useRef<Record<string, ManualSlotDecision>>({});
   const questionNotesRef = useRef<Record<string, string>>({});
   const paperNoteRef = useRef("");
+  const wrongAnnotationsRef = useRef<WrongAnnotationsMap>({});
+  const deductionItemsRef = useRef<DeductionItemsMap>({});
   const wasOpenRef = useRef(false);
   const initializedFilenameRef = useRef<string | null>(null);
   const onAutoSaveRef = useRef(onAutoSave);
@@ -176,6 +234,8 @@ export function ManualPaperGradingDialog({
       annotations: {
         questionNotes: questionNotesRef.current,
         paperNote: paperNoteRef.current,
+        wrongAnnotations: wrongAnnotationsRef.current,
+        deductionItems: deductionItemsRef.current,
       },
     }),
     [],
@@ -225,6 +285,24 @@ export function ManualPaperGradingDialog({
     scheduleAutoSave();
   }, [scheduleAutoSave]);
 
+  /** 整体替换一条错因批注；null = 删除该题批注 */
+  const updateWrongAnnotation = useCallback((key: string, entry: WrongAnnotation | null) => {
+    const next = { ...wrongAnnotationsRef.current };
+    if (entry === null) delete next[key];
+    else next[key] = entry;
+    wrongAnnotationsRef.current = next;
+    setWrongAnnotations(next);
+    scheduleAutoSave();
+  }, [scheduleAutoSave]);
+
+  /** 整体替换某题的扣分项列表（含清空） */
+  const updateDeductionItems = useCallback((key: string, items: DeductionItem[]) => {
+    const next = { ...deductionItemsRef.current, [key]: items };
+    deductionItemsRef.current = next;
+    setDeductionItems(next);
+    scheduleAutoSave();
+  }, [scheduleAutoSave]);
+
   useEffect(() => {
     const shouldInitialize = open && (!wasOpenRef.current || initializedFilenameRef.current !== filename);
     if (shouldInitialize) {
@@ -242,6 +320,12 @@ export function ManualPaperGradingDialog({
       setQuestionNotes(notes);
       paperNoteRef.current = initialPaperNote ?? "";
       setPaperNote(initialPaperNote ?? "");
+      const wrong: WrongAnnotationsMap = initialWrongAnnotations ?? {};
+      wrongAnnotationsRef.current = wrong;
+      setWrongAnnotations(wrong);
+      const deductions: DeductionItemsMap = initialDeductionItems ?? {};
+      deductionItemsRef.current = deductions;
+      setDeductionItems(deductions);
       setSelectedSlotId(null);
       setPaperZoom(1);
       setPrintPreviewUrl(null);
@@ -249,7 +333,7 @@ export function ManualPaperGradingDialog({
     }
     if (!open) initializedFilenameRef.current = null;
     wasOpenRef.current = open;
-  }, [filename, initialPaperNote, initialQuestionNotes, open, payload]);
+  }, [filename, initialPaperNote, initialQuestionNotes, initialWrongAnnotations, initialDeductionItems, open, payload]);
 
   const selectedBlock = payload.blocks.find((block) => block.slot_id === selectedSlotId) || null;
   const selectedDecision = selectedBlock ? decisions[selectedBlock.slot_id] : null;
@@ -263,6 +347,11 @@ export function ManualPaperGradingDialog({
   const selectedIsUnanswered = selectedDecision?.status === "unanswered";
   const selectedReference = selectedBlock ? answerKeyFor(selectedBlock, answerKey) : undefined;
   const selectedSteps = selectedBlock ? scoreSteps(selectedBlock.max_score) : [];
+  const selectedScoreKey = selectedBlock ? scoreKeyOf(selectedBlock) : "";
+  const selectedDeductions = selectedBlock ? (deductionItems[selectedScoreKey] ?? []) : [];
+  const selectedDeductionStats = selectedBlock
+    ? deductionGap(selectedBlock.max_score, selectedDecision?.status === "ungraded" ? null : selectedScore, selectedDeductions)
+    : null;
   const basePaperWidth = useMemo(
     () => clamp(payload.imageSize[0], 1280, 1500),
     [payload.imageSize],
@@ -690,6 +779,10 @@ export function ManualPaperGradingDialog({
                           const raw = event.target.value;
                           if (raw === "") {
                             setStatus(selectedBlock, "ungraded");
+                            // 清空分数 → 该题扣分项一并清空（客户清单 #9 步骤 4）
+                            if (selectedDeductions.length > 0) {
+                              updateDeductionItems(selectedScoreKey, []);
+                            }
                             return;
                           }
                           const value = Number(raw);
@@ -697,6 +790,107 @@ export function ManualPaperGradingDialog({
                           applyScore(selectedBlock, value);
                         }}
                       />
+                    </div>
+                    {/* 结构化扣分项：与分数同级录入，随 autosave 整体覆盖保存 */}
+                    <div className="space-y-1.5 rounded-md border border-amber-200 bg-amber-50/60 px-2.5 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-amber-900">
+                          {t("grading.manual.deductionTitle")}
+                          {selectedDeductions.length > 0 && (
+                            <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                              {t("grading.manual.deductionBadge", {
+                                count: String(selectedDeductions.length),
+                                total: String(deductionTotal(selectedDeductions)),
+                              })}
+                            </span>
+                          )}
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 gap-1 px-2 text-xs"
+                          onClick={() => {
+                            updateDeductionItems(selectedScoreKey, [
+                              ...selectedDeductions,
+                              { label: "", points: 0.5 },
+                            ]);
+                          }}
+                        >
+                          <Plus className="h-3 w-3" />
+                          {t("grading.manual.deductionAdd")}
+                        </Button>
+                      </div>
+                      {selectedDeductions.length === 0 ? (
+                        <div className="text-[11px] text-amber-800/80">
+                          {t("grading.manual.deductionEmpty")}
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {selectedDeductions.map((row, rowIdx) => (
+                            <div key={rowIdx} className="flex items-center gap-1">
+                              <Input
+                                className="h-7 flex-1 text-xs"
+                                placeholder={t("grading.manual.deductionLabelPlaceholder")}
+                                value={row.label}
+                                onChange={(event) => {
+                                  const next = selectedDeductions.map((it, i) =>
+                                    i === rowIdx ? { ...it, label: event.target.value } : it,
+                                  );
+                                  updateDeductionItems(selectedScoreKey, next);
+                                }}
+                              />
+                              <Input
+                                type="number"
+                                min="0"
+                                step="0.5"
+                                className="h-7 w-16 text-xs tabular-nums"
+                                value={row.points}
+                                onChange={(event) => {
+                                  const raw = event.target.value;
+                                  const value = raw === "" ? 0 : Number(raw);
+                                  if (!Number.isFinite(value)) return;
+                                  const next = selectedDeductions.map((it, i) =>
+                                    i === rowIdx ? { ...it, points: Math.max(0, value) } : it,
+                                  );
+                                  updateDeductionItems(selectedScoreKey, next);
+                                }}
+                              />
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 w-7 shrink-0 p-0 text-slate-500 hover:text-red-600"
+                                onClick={() => {
+                                  updateDeductionItems(
+                                    selectedScoreKey,
+                                    selectedDeductions.filter((_, i) => i !== rowIdx),
+                                  );
+                                }}
+                              >
+                                <Minus className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {selectedDeductionStats && (
+                        <div className="text-[11px] leading-4 text-amber-900/90">
+                          {selectedDeductionStats.gap > 0
+                            ? t("grading.manual.deductionGapHint", {
+                                deducted: String(selectedDeductionStats.deducted),
+                                expected: String(selectedDeductionStats.expected),
+                              })
+                            : selectedDeductionStats.gap < 0
+                              ? t("grading.manual.deductionOverHint", {
+                                  deducted: String(selectedDeductionStats.deducted),
+                                  expected: String(selectedDeductionStats.expected),
+                                })
+                              : t("grading.manual.deductionMatchHint", {
+                                  deducted: String(selectedDeductionStats.deducted),
+                                })}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -716,6 +910,64 @@ export function ManualPaperGradingDialog({
                         onChange={(e) => updateQuestionNote(group.key, e.target.value)}
                         placeholder="该题批注…"
                         className="h-8 text-sm"
+                      />
+                      <WrongAnnotationCard
+                        questionKey={group.key}
+                        annotation={wrongAnnotations[group.key]}
+                        wrong={group.blocks.some((block) => {
+                          const status = decisions[block.slot_id]?.status;
+                          return status === "wrong" || status === "partial";
+                        })}
+                        regenerating={wrongAnnoRegenerating === group.key}
+                        onEditText={(text) => {
+                          const before = wrongAnnotations[group.key];
+                          const trimmed = (text || "").trim();
+                          if (!trimmed) {
+                            updateWrongAnnotation(group.key, null);
+                            return;
+                          }
+                          updateWrongAnnotation(group.key, {
+                            text: trimmed,
+                            source: before?.source === "ai" ? "ai" : "manual",
+                            edited: true,
+                            ...(before?.generated_at
+                              ? { generated_at: before.generated_at }
+                              : {}),
+                          });
+                        }}
+                        onRegenerate={
+                          regenerateWrongAnnotation
+                            ? () => {
+                                if (wrongAnnoRegenerating) return;
+                                setWrongAnnoRegenerating(group.key);
+                                void (async () => {
+                                  try {
+                                    const map = await regenerateWrongAnnotation(group.key);
+                                    if (map) {
+                                      wrongAnnotationsRef.current = map;
+                                      setWrongAnnotations(map);
+                                      scheduleAutoSave();
+                                    }
+                                  } finally {
+                                    setWrongAnnoRegenerating(null);
+                                  }
+                                })();
+                              }
+                            : undefined
+                        }
+                        onMarkManual={() => {
+                          const before = wrongAnnotations[group.key];
+                          if (!before) return;
+                          updateWrongAnnotation(group.key, {
+                            text: before.text || "",
+                            source: "manual",
+                            edited: true,
+                            ...(before.generated_at
+                              ? { generated_at: before.generated_at }
+                              : {}),
+                          });
+                        }}
+                        onDelete={() => updateWrongAnnotation(group.key, null)}
                       />
                     </div>
                   ))}

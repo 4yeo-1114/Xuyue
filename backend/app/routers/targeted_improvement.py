@@ -24,7 +24,11 @@ from app.grading.router import (
 from app.grading import wrong_question_db
 from app.models.knowledge_point import KnowledgePoint
 from app.models.student import Student
-from app.models.targeted_improvement import TargetedImprovementReport, TargetedRecommendation
+from app.models.targeted_improvement import (
+    TargetedImprovementReport,
+    TargetedImprovementTask,
+    TargetedRecommendation,
+)
 from app.models.teaching_resource import TeachingResource
 from app.schemas.common import ApiResponse
 from app.services.redline_filter import filter_text
@@ -58,6 +62,19 @@ class ImportExamsRequest(BaseModel):
     class_id: str
     subject: str
     exam_folder_names: list[str]
+
+
+class TaskSyncRequest(BaseModel):
+    """从报告生成/同步任务清单：二选一 report_id，或 class_id+subject(+student_id/student_name)。"""
+    report_id: Optional[str] = None
+    class_id: Optional[str] = None
+    student_id: Optional[str] = None
+    student_name: Optional[str] = None
+    subject: Optional[str] = None
+
+
+class TaskUpdateRequest(BaseModel):
+    is_done: bool
 
 
 def _json_dumps(data: Any) -> str:
@@ -1283,3 +1300,254 @@ def re_evaluate_diagnosis(
         "before": before,
         "after": result.data,
     })
+
+
+# ── 个性化学习任务清单（客户功能 #15 闭环：勾完成 / 进度跟踪）────────────────
+# 从报告 plan_json 抽 dailyTasks / student_tasks → TargetedImprovementTask 持久化；
+# sync 幂等（同一 report 重复 sync 不重复建行），PATCH 勾/取消，列表带 total/done 计数。
+
+
+def _normalize_task_text(value: Any) -> str:
+    s = str(value or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _task_rows_from_text_list(items: Any, stage_label: Optional[str], start_order: int) -> list[dict]:
+    rows: list[dict] = []
+    order = start_order
+    for item in items if isinstance(items, list) else []:
+        text = _normalize_task_text(item)
+        if not text:
+            continue
+        rows.append({"task_text": text, "stage_label": stage_label or "", "sort_order": order})
+        order += 1
+    return rows
+
+
+def _extract_tasks_from_plan(plan: Any) -> list[dict]:
+    """plan_json → 任务行候选（task_text / stage_label / sort_order）。
+
+    兼容真实 AI 输出（phases[].student_tasks）与前端 demo 结构（stages[].dailyTasks），
+    以及 plan.daily_routine 日常执行建议；同文去重，保持出现顺序。
+    """
+    if not isinstance(plan, dict):
+        return []
+    collected: list[dict] = []
+    seen: set[str] = set()
+
+    def _push(rows: list[dict]) -> None:
+        for row in rows:
+            key = row["task_text"]
+            if key in seen:
+                continue
+            seen.add(key)
+            row["sort_order"] = len(collected)
+            collected.append(row)
+
+    # AI 方案分阶段：phases[].student_tasks（prompt 契约）+ 兼容 dailyTasks/daily_tasks
+    for idx, phase in enumerate(plan.get("phases") or []):
+        if not isinstance(phase, dict):
+            continue
+        stage_label = _normalize_task_text(phase.get("title") or phase.get("name") or f"阶段{idx + 1}")
+        tasks_src = (
+            phase.get("student_tasks")
+            or phase.get("studentTasks")
+            or phase.get("dailyTasks")
+            or phase.get("daily_tasks")
+            or []
+        )
+        _push(_task_rows_from_text_list(tasks_src, stage_label, len(collected)))
+
+    # 前端 demo / 旧结构：stages[].dailyTasks
+    for idx, stage in enumerate(plan.get("stages") or []):
+        if not isinstance(stage, dict):
+            continue
+        stage_label = _normalize_task_text(stage.get("name") or stage.get("title") or f"阶段{idx + 1}")
+        tasks_src = stage.get("dailyTasks") or stage.get("daily_tasks") or stage.get("student_tasks") or []
+        _push(_task_rows_from_text_list(tasks_src, stage_label, len(collected)))
+
+    # 日常执行建议一并入清单（阶段标签「日常」）
+    daily_routine = plan.get("daily_routine") or plan.get("dailyRoutine") or []
+    _push(_task_rows_from_text_list(daily_routine, "日常", len(collected)))
+    return collected
+
+
+def _task_to_dict(task: TargetedImprovementTask) -> dict:
+    return {
+        "id": task.id,
+        "class_id": task.class_id,
+        "student_id": task.student_id,
+        "student_name": task.student_name,
+        "subject": task.subject,
+        "report_id": task.report_id,
+        "task_text": task.task_text or "",
+        "stage_label": task.stage_label or "",
+        "sort_order": task.sort_order or 0,
+        "is_done": bool(task.is_done),
+        "done_at": task.done_at.isoformat() if task.done_at else None,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+    }
+
+
+def _resolve_sync_report(db: Session, body: TaskSyncRequest) -> TargetedImprovementReport:
+    if body.report_id:
+        report = db.query(TargetedImprovementReport).filter(
+            TargetedImprovementReport.id == body.report_id
+        ).first()
+        if not report:
+            raise HTTPException(status_code=404, detail="报告不存在")
+        return report
+    if not body.class_id or not body.subject:
+        raise HTTPException(status_code=400, detail="请提供 report_id 或 class_id+subject")
+    query = db.query(TargetedImprovementReport).filter(
+        TargetedImprovementReport.class_id == body.class_id,
+        TargetedImprovementReport.subject == body.subject,
+    )
+    if body.student_id:
+        query = query.filter(TargetedImprovementReport.student_id == body.student_id)
+    if body.student_name:
+        query = query.filter(TargetedImprovementReport.student_name == body.student_name)
+    report = query.order_by(TargetedImprovementReport.generated_at.desc()).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="未找到可导入的靶向报告")
+    return report
+
+
+@router.post("/tasks/sync", response_model=ApiResponse[dict])
+def sync_improvement_tasks(
+    body: TaskSyncRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """从报告 plan_json 同步任务清单（幂等：同一 report+task_text 不重复建行）。"""
+    report = _resolve_sync_report(db, body)
+    _assert_class_access(db, user_id, report.class_id)
+    plan = _json_loads(report.plan_json, {})
+    candidates = _extract_tasks_from_plan(plan)
+
+    existing = db.query(TargetedImprovementTask).filter(
+        TargetedImprovementTask.class_id == report.class_id,
+        TargetedImprovementTask.student_name == report.student_name,
+        TargetedImprovementTask.subject == report.subject,
+    ).all()
+    # 幂等键：优先按 report_id+task_text；历史行 report_id 为空时退化为同学生同科 task_text
+    existing_keys = set()
+    for row in existing:
+        existing_keys.add((row.report_id or "", _normalize_task_text(row.task_text)))
+        if not row.report_id:
+            existing_keys.add(("", _normalize_task_text(row.task_text)))
+
+    created = 0
+    skipped = 0
+    for item in candidates:
+        key = (report.id or "", item["task_text"])
+        fallback_key = ("", item["task_text"])
+        if key in existing_keys or fallback_key in existing_keys:
+            skipped += 1
+            continue
+        task = TargetedImprovementTask(
+            class_id=report.class_id,
+            student_id=report.student_id,
+            student_name=report.student_name,
+            subject=report.subject,
+            report_id=report.id,
+            task_text=item["task_text"],
+            stage_label=item.get("stage_label") or "",
+            sort_order=item.get("sort_order") or 0,
+            is_done=False,
+        )
+        db.add(task)
+        existing_keys.add(key)
+        created += 1
+
+    if created:
+        try:
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"保存任务清单失败: {e}") from e
+
+    rows = (
+        db.query(TargetedImprovementTask)
+        .filter(
+            TargetedImprovementTask.class_id == report.class_id,
+            TargetedImprovementTask.student_name == report.student_name,
+            TargetedImprovementTask.subject == report.subject,
+        )
+        .order_by(TargetedImprovementTask.sort_order.asc(), TargetedImprovementTask.created_at.asc())
+        .all()
+    )
+    done_count = sum(1 for r in rows if r.is_done)
+    return ApiResponse(data={
+        "ok": True,
+        "report_id": report.id,
+        "created_count": created,
+        "skipped_count": skipped,
+        "total": len(rows),
+        "done": done_count,
+        "tasks": [_task_to_dict(r) for r in rows],
+    })
+
+
+@router.get("/tasks", response_model=ApiResponse[dict])
+def list_improvement_tasks(
+    class_id: str = Query(...),
+    subject: str = Query(...),
+    student_id: Optional[str] = None,
+    student_name: Optional[str] = None,
+    include_done: bool = True,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """列任务：按班级/科目/学生筛选，响应带 total/done 进度计数（全量计数，不受 include_done 影响）。"""
+    _assert_class_access(db, user_id, class_id)
+    base = db.query(TargetedImprovementTask).filter(
+        TargetedImprovementTask.class_id == class_id,
+        TargetedImprovementTask.subject == subject,
+    )
+    if student_id:
+        base = base.filter(TargetedImprovementTask.student_id == student_id)
+    if student_name:
+        base = base.filter(TargetedImprovementTask.student_name == student_name)
+
+    all_rows = base.order_by(
+        TargetedImprovementTask.sort_order.asc(),
+        TargetedImprovementTask.created_at.asc(),
+    ).all()
+    total = len(all_rows)
+    done_count = sum(1 for r in all_rows if r.is_done)
+    if include_done is False:
+        rows = [r for r in all_rows if not r.is_done]
+    else:
+        rows = all_rows
+    return ApiResponse(data={
+        "tasks": [_task_to_dict(r) for r in rows],
+        "total": total,
+        "done": done_count,
+    })
+
+
+@router.patch("/tasks/{task_id}", response_model=ApiResponse[dict])
+def update_improvement_task(
+    task_id: str,
+    body: TaskUpdateRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """勾/取消任务完成状态；勾选时写 done_at，取消时清空。"""
+    task = db.query(TargetedImprovementTask).filter(
+        TargetedImprovementTask.id == task_id
+    ).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    _assert_class_access(db, user_id, task.class_id)
+    task.is_done = bool(body.is_done)
+    task.done_at = datetime.now(timezone.utc) if task.is_done else None
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"更新任务状态失败: {e}") from e
+    return ApiResponse(data=_task_to_dict(task))

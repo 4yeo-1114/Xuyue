@@ -44,6 +44,8 @@ import { cn } from "@/lib/utils";
 import {
   LineChart,
   Line,
+  BarChart,
+  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -190,6 +192,10 @@ export function StudentProfilePanel({
     count: number;
   }>({ open: false, category: "", subPoint: null, count: 0 });
   const [manageHistoryOpen, setManageHistoryOpen] = useState(false);
+  // 成绩图形态：折线看趋势，柱状看每次批阅单次成绩对比
+  const [scoreChartView, setScoreChartView] = useState<"trend" | "bars">(
+    "trend",
+  );
 
   /* ── Score history (Up to 9 entries from DB) ── */
   const {
@@ -370,6 +376,27 @@ export function StudentProfilePanel({
   const belowAvg = radarDims.filter((d) => d.student < d.class).length;
   const aboveAvg = radarDims.filter((d) => d.student > d.class).length;
 
+  /* ── 知识点掌握度雷达（错题归类口径）：错题最多的前 8 个知识点，学生 vs 班级 ── */
+  const kpRadarData = useMemo(() => {
+    const studentItems = studentMasteryQuery.data ?? [];
+    if (studentItems.length === 0) return [];
+    const classByKp = new Map(
+      (classMasteryQuery.data ?? []).map((i) => [
+        i.name,
+        Math.round(i.mastery * 100),
+      ]),
+    );
+    return studentItems
+      .filter((i) => i.name && i.name !== "未标注知识点")
+      .slice(0, 8)
+      .map((i) => ({
+        name: i.name,
+        student: Math.round(i.mastery * 100),
+        class: classByKp.get(i.name) ?? 0,
+        wrong: i.wrong_count,
+      }));
+  }, [studentMasteryQuery.data, classMasteryQuery.data]);
+
   /* ── Sub-dimension mastery ── */
   const getSubDimMastery = (dim: string) => {
     const dimData = radarDims.find((d) => d.dim === dim);
@@ -534,15 +561,33 @@ export function StudentProfilePanel({
             <TrendingUp className="w-4 h-4 text-primary" />{" "}
             {t("studentAnalysis.profile.scoreHistory")}
           </h3>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => setManageHistoryOpen(true)}
-          >
-            <Settings2 className="w-3.5 h-3.5 mr-1" />{" "}
-            {t("studentAnalysis.profile.manage")}
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              variant={scoreChartView === "trend" ? "secondary" : "ghost"}
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() => setScoreChartView("trend")}
+            >
+              {t("studentAnalysis.profile.viewTrend")}
+            </Button>
+            <Button
+              variant={scoreChartView === "bars" ? "secondary" : "ghost"}
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() => setScoreChartView("bars")}
+            >
+              {t("studentAnalysis.profile.viewBars")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => setManageHistoryOpen(true)}
+            >
+              <Settings2 className="w-3.5 h-3.5 mr-1" />{" "}
+              {t("studentAnalysis.profile.manage")}
+            </Button>
+          </div>
         </div>
 
         {scoreHistoryError && (
@@ -596,10 +641,93 @@ export function StudentProfilePanel({
 
         <div className="h-[180px]">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart
-              data={scoreHistory}
-              margin={{ top: 15, right: 30, left: -20, bottom: 0 }}
-            >
+            {scoreChartView === "bars" ? (
+              /* 每批一柱：一次批阅一根柱，班级均分为浅色对照柱 */
+              <BarChart
+                data={scoreHistory}
+                margin={{ top: 15, right: 30, left: -20, bottom: 0 }}
+                barCategoryGap="24%"
+              >
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="hsl(var(--border))"
+                  opacity={0.6}
+                  vertical={false}
+                />
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                  stroke="hsl(var(--border))"
+                  padding={{ left: 10, right: 10 }}
+                  type="category"
+                  allowDuplicatedCategory={false}
+                  axisLine={false}
+                  tickLine={false}
+                  dy={10}
+                />
+                <YAxis
+                  domain={[0, 120]}
+                  ticks={[0, 20, 40, 60, 80, 100, 120]}
+                  tickCount={7}
+                  interval={0}
+                  tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                  stroke="hsl(var(--border))"
+                  axisLine={false}
+                  tickLine={false}
+                  dx={-10}
+                />
+                <Tooltip
+                  contentStyle={{
+                    fontSize: 12,
+                    borderRadius: 8,
+                    border: "none",
+                    boxShadow:
+                      "0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)",
+                  }}
+                  formatter={(v: number, name: string) => [
+                    t("studentAnalysis.profile.points", { value: v }),
+                    name === "score"
+                      ? t("studentAnalysis.profile.studentScore")
+                      : t("studentAnalysis.profile.classAverage"),
+                  ]}
+                  labelFormatter={(label) => String(label).trim()}
+                  cursor={{
+                    fill: "hsl(var(--primary))",
+                    opacity: 0.08,
+                  }}
+                />
+                <ReferenceLine
+                  y={60}
+                  stroke="hsl(var(--destructive))"
+                  strokeDasharray="4 4"
+                  strokeWidth={1}
+                  opacity={0.6}
+                />
+                <Bar
+                  dataKey="classAvg"
+                  fill="hsl(var(--muted-foreground))"
+                  fillOpacity={0.25}
+                  radius={[3, 3, 0, 0]}
+                  name={t("studentAnalysis.profile.classAverage")}
+                />
+                <Bar
+                  dataKey="score"
+                  fill="hsl(var(--primary))"
+                  radius={[3, 3, 0, 0]}
+                  name="score"
+                  label={{
+                    position: "top",
+                    fill: "hsl(var(--primary))",
+                    fontSize: 11,
+                    fontWeight: 600,
+                  }}
+                />
+              </BarChart>
+            ) : (
+              <LineChart
+                data={scoreHistory}
+                margin={{ top: 15, right: 30, left: -20, bottom: 0 }}
+              >
               <CartesianGrid
                 strokeDasharray="3 3"
                 stroke="hsl(var(--border))"
@@ -687,6 +815,7 @@ export function StudentProfilePanel({
                 }}
               />
             </LineChart>
+            )}
           </ResponsiveContainer>
         </div>
       </div>
@@ -1001,6 +1130,96 @@ export function StudentProfilePanel({
             {t("studentAnalysis.profile.rediagnose")}
           </Button>
         </div>
+      </div>
+
+      {/* ═══ Module 3.5: Knowledge Point Mastery Radar (错题归类口径) ═══ */}
+      <div
+        data-tour="sp-kp-radar"
+        className="rounded-xl bg-card border border-border/50 p-5"
+      >
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <Target className="w-4 h-4 text-primary" />{" "}
+            {t("studentAnalysis.profile.kpRadar")}
+          </h3>
+          <span className="text-[11px] text-muted-foreground">
+            {t("studentAnalysis.profile.kpRadarSubtitle")}
+          </span>
+        </div>
+        {kpRadarData.length === 0 ? (
+          <div className="py-8 text-center text-muted-foreground text-sm bg-muted/20 rounded-lg border border-dashed">
+            <CheckCircle2 className="w-8 h-8 mx-auto opacity-20 mb-2" />
+            {t("studentAnalysis.profile.kpRadarEmpty")}
+          </div>
+        ) : (
+          <>
+            <div className="h-[220px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <RadarChart
+                  data={kpRadarData}
+                  cx="50%"
+                  cy="50%"
+                  outerRadius="70%"
+                >
+                  <PolarGrid stroke="hsl(var(--border))" />
+                  <PolarAngleAxis
+                    dataKey="name"
+                    tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                  />
+                  <Radar
+                    name={t("studentAnalysis.profile.classAverage")}
+                    dataKey="class"
+                    stroke="hsl(var(--muted-foreground))"
+                    fill="hsl(var(--muted-foreground))"
+                    fillOpacity={0.1}
+                    strokeDasharray="4 4"
+                  />
+                  <Radar
+                    name={t("studentAnalysis.profile.personal")}
+                    dataKey="student"
+                    stroke="hsl(var(--primary))"
+                    fill="hsl(var(--primary))"
+                    fillOpacity={0.2}
+                    strokeWidth={2}
+                  />
+                </RadarChart>
+              </ResponsiveContainer>
+            </div>
+            {/* 归类清单：知识点 → 掌握度条 + 错题数，替代树状图的逐级展开 */}
+            <div className="space-y-1 mt-3">
+              {kpRadarData.map((d) => (
+                <div
+                  key={d.name}
+                  className="flex items-center gap-2 py-1.5 px-1 rounded hover:bg-muted/50 transition-colors"
+                >
+                  <span
+                    className="text-xs text-foreground w-24 truncate text-left"
+                    title={d.name}
+                  >
+                    {d.name}
+                  </span>
+                  <Progress
+                    value={d.student}
+                    className={cn("h-1.5 flex-1", masteryBarColor(d.student))}
+                  />
+                  <span
+                    className={cn(
+                      "text-xs font-medium w-10 text-right",
+                      masteryColor(d.student),
+                    )}
+                  >
+                    {d.student}%
+                  </span>
+                  <span className="text-[11px] text-muted-foreground w-16 text-right">
+                    {t("studentAnalysis.profile.kpWrongCount", {
+                      count: d.wrong,
+                    })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
       {/* ═══ Module 4: Wrong Questions (Smart Classification) ═══ */}

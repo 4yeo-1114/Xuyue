@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocale } from "@/contexts/LocaleContext";
 import {
@@ -8,9 +8,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Radar as RadarIcon, TrendingUp } from "lucide-react";
 import {
+  Bar,
+  BarChart,
   CartesianGrid,
   Legend,
   Line,
@@ -24,6 +27,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { cn } from "@/lib/utils";
 import { getClassAnalysisReport, getGradeSummary } from "@/services/api";
 
 /* ── 稳定度三色（状态色，语义固定） ── */
@@ -45,6 +49,7 @@ interface ClassScoreTrendProps {
 /**
  * P4 成绩趋势增强：历次大考班级均分折线（grade-summary trendSeries）基础上，
  * 叠加排名/波动模块——年级百分位 + 稳定度三色（数据用现有 trend 接口）。
+ * 图型可切换：折线（默认）/ 多场考试柱状对比（X=场次，Y=均分）。
  */
 export function ClassScoreTrend({
   grade,
@@ -53,6 +58,8 @@ export function ClassScoreTrend({
   subject,
 }: ClassScoreTrendProps) {
   const { t } = useLocale();
+  /** 图型：line=均分折线（默认）；bar=多场考试均分柱状对比 */
+  const [chartMode, setChartMode] = useState<"line" | "bar">("line");
 
   const { data, isLoading } = useQuery({
     queryKey: ["class-score-trend", grade, subject],
@@ -122,13 +129,56 @@ export function ClassScoreTrend({
   return (
     <Card data-tour="cw-trend" className="card-elevated">
       <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-sm font-semibold">
-          <TrendingUp className="h-4 w-4 text-primary" />
-          {t("classDetail.weeklyReport.trendTitle")}
-        </CardTitle>
-        <CardDescription className="text-xs">
-          {t("classDetail.weeklyReport.trendDesc")}
-        </CardDescription>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+              <TrendingUp className="h-4 w-4 text-primary" />
+              {t("classDetail.weeklyReport.trendTitle")}
+            </CardTitle>
+            <CardDescription className="text-xs">
+              {chartMode === "bar"
+                ? t("classDetail.examBars.desc")
+                : t("classDetail.weeklyReport.trendDesc")}
+            </CardDescription>
+          </div>
+          {/* 折线 / 柱状切换：仅在有多场成绩时露出 */}
+          {chartData.length > 1 && (
+            <div
+              className="flex shrink-0 rounded-md border border-border/50 p-0.5"
+              role="group"
+              aria-label={t("classDetail.examBars.toggleAria")}
+            >
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className={cn(
+                  "h-6 px-2 text-[10px]",
+                  chartMode === "line" &&
+                    "bg-primary/10 text-primary hover:bg-primary/15",
+                )}
+                aria-pressed={chartMode === "line"}
+                onClick={() => setChartMode("line")}
+              >
+                {t("classDetail.examBars.modeLine")}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className={cn(
+                  "h-6 px-2 text-[10px]",
+                  chartMode === "bar" &&
+                    "bg-primary/10 text-primary hover:bg-primary/15",
+                )}
+                aria-pressed={chartMode === "bar"}
+                onClick={() => setChartMode("bar")}
+              >
+                {t("classDetail.examBars.modeBar")}
+              </Button>
+            </div>
+          )}
+        </div>
       </CardHeader>
       <CardContent>
         {isLoading ? (
@@ -184,41 +234,71 @@ export function ClassScoreTrend({
               </div>
             </div>
 
-            {/* 历次大考均分折线 */}
+            {/* 历次大考均分：折线 / 多场考试柱状对比 */}
             {chartData.length > 0 && (
               <div className="mt-3 h-[180px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart
-                    data={chartData}
-                    margin={{ top: 5, right: 10, bottom: 5, left: -10 }}
-                  >
-                    <CartesianGrid
-                      strokeDasharray="3 3"
-                      stroke="hsl(var(--border))"
-                    />
-                    <XAxis dataKey="exam" tick={{ fontSize: 10 }} />
-                    <YAxis
-                      tick={{ fontSize: 10 }}
-                      domain={["dataMin - 3", "dataMax + 3"]}
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        fontSize: 11,
-                        borderRadius: 8,
-                        border: "1px solid hsl(var(--border))",
-                      }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="averageScore"
-                      name={t("classDetail.weeklyReport.trendAvg")}
-                      stroke="hsl(var(--primary))"
-                      strokeWidth={2.5}
-                      dot={{ r: 3.5 }}
-                      activeDot={{ r: 5 }}
-                      connectNulls
-                    />
-                  </LineChart>
+                  {chartMode === "bar" ? (
+                    <BarChart
+                      data={chartData}
+                      margin={{ top: 5, right: 10, bottom: 5, left: -10 }}
+                    >
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        stroke="hsl(var(--border))"
+                      />
+                      <XAxis dataKey="exam" tick={{ fontSize: 10 }} />
+                      <YAxis
+                        tick={{ fontSize: 10 }}
+                        domain={["dataMin - 3", "dataMax + 3"]}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          fontSize: 11,
+                          borderRadius: 8,
+                          border: "1px solid hsl(var(--border))",
+                        }}
+                      />
+                      <Bar
+                        dataKey="averageScore"
+                        name={t("classDetail.examBars.avg")}
+                        fill="hsl(var(--primary))"
+                        radius={[4, 4, 0, 0]}
+                      />
+                    </BarChart>
+                  ) : (
+                    <LineChart
+                      data={chartData}
+                      margin={{ top: 5, right: 10, bottom: 5, left: -10 }}
+                    >
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        stroke="hsl(var(--border))"
+                      />
+                      <XAxis dataKey="exam" tick={{ fontSize: 10 }} />
+                      <YAxis
+                        tick={{ fontSize: 10 }}
+                        domain={["dataMin - 3", "dataMax + 3"]}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          fontSize: 11,
+                          borderRadius: 8,
+                          border: "1px solid hsl(var(--border))",
+                        }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="averageScore"
+                        name={t("classDetail.weeklyReport.trendAvg")}
+                        stroke="hsl(var(--primary))"
+                        strokeWidth={2.5}
+                        dot={{ r: 3.5 }}
+                        activeDot={{ r: 5 }}
+                        connectNulls
+                      />
+                    </LineChart>
+                  )}
                 </ResponsiveContainer>
               </div>
             )}

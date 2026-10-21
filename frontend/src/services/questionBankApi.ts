@@ -120,3 +120,56 @@ export function stripHtmlText(html: string): string {
     .replace(/&quot;/g, '"')
     .trim();
 }
+
+// ── 题库批量打标（标签覆盖层，JSON 文件存储；后端 routers/question_tags.py）──
+// 响应是 ApiResponse { code, message, data } 信封，与 layout-templates 同款。
+
+/** 标签覆盖层记录 */
+export interface QuestionTag {
+  unit?: string | null;
+  knowledge_points?: string[] | null;
+  difficulty?: string | null;
+  question_type?: string | null;
+  source?: string | null;
+  updated_at?: string | null;
+}
+
+/** 部分更新补丁：字段缺省 = 本次不改 */
+export interface QuestionTagPatch {
+  unit?: string;
+  knowledge_points?: string[];
+  difficulty?: string;
+  question_type?: string;
+  source?: string;
+}
+
+type TagApiResponse<T> = { code?: number; message?: string; data: T };
+
+/** 批量取标签（列表徽章）：GET /question-tags?keys=a,b,c */
+export async function fetchQuestionTags(keys: string[]): Promise<Record<string, QuestionTag>> {
+  const cleaned = keys.map((k) => k.trim()).filter(Boolean);
+  if (cleaned.length === 0) return {};
+  const qs = new URLSearchParams({ keys: cleaned.join(",") });
+  const res = await gradingFetch<TagApiResponse<Record<string, QuestionTag>>>(
+    `/question-tags?${qs.toString()}`,
+  );
+  return res?.data ?? {};
+}
+
+/** 全量标签（筛选侧拉）：GET /question-tags */
+export async function fetchAllQuestionTags(): Promise<Record<string, QuestionTag>> {
+  const res = await gradingFetch<TagApiResponse<Record<string, QuestionTag>>>("/question-tags");
+  return res?.data ?? {};
+}
+
+/** 批量写标签（部分更新、幂等）：PUT /question-tags/batch */
+export async function batchUpdateQuestionTags(
+  keys: string[],
+  tags: QuestionTagPatch,
+): Promise<{ updated: number; tags: Record<string, QuestionTag> }> {
+  const res = await gradingFetch<TagApiResponse<{ updated: number; tags: Record<string, QuestionTag> }>>(
+    "/question-tags/batch",
+    { method: "PUT", body: { keys, tags } },
+  );
+  return res?.data ?? { updated: 0, tags: {} };
+}

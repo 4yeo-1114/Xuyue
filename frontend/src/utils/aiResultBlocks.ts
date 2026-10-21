@@ -11,12 +11,20 @@
 import { normalizeChatMathText } from "./chatMathFormat";
 
 export type AiBlockStatus = "correct" | "wrong" | "blank" | "partial" | "unknown";
-export type SubItem = { content: string; status: AiBlockStatus; partial_ratio?: number };
+export type SubItem = {
+  content: string;
+  status: AiBlockStatus;
+  partial_ratio?: number;
+  /** 题号 key（与后端 wrong_annotations / question_notes 的键一致） */
+  key?: string;
+};
 export type AiResultBlock = {
   title: string;
   content: string;
   status: AiBlockStatus;
   partial_ratio?: number;
+  /** 大题块对应的题号 key（取首个子项） */
+  key?: string;
   subItems?: SubItem[];
 };
 
@@ -33,13 +41,15 @@ export function inferAiBlockStatus(content: string): AiBlockStatus {
   // 1. 提取最前面的判定结果（最准确，避免被后面的解析文字干扰）
   // 匹配：第X题-作答区Y：状态 或者 第X题：状态
   const statusMatch = t.match(
-    /^第[0-9A-Za-z\(\)（）一二三四五六七八九十百千两]+题(?:[-—]作答区[0-9]+)?[:：]\s*(对|错|正确|错误|半对|未答|未作答|空白)/,
+    /^第[0-9A-Za-z\(\)（）一二三四五六七八九十百千两]+题(?:[-—]作答区[0-9]+)?[:：]\s*(对|错|正确|错误|半对|待确认|未答|未作答|空白)/,
   );
   if (statusMatch) {
     const s = statusMatch[1];
     if (s === "对" || s === "正确") return "correct";
     if (s === "错" || s === "错误") return "wrong";
     if (s === "半对") return "partial";
+    // 待确认 = AI 读不清手写、未判对错，交老师确认（不能落进 wrong/blank 统计）
+    if (s === "待确认") return "unknown";
     if (s === "未答" || s === "未作答" || s === "空白") return "blank";
   }
 
@@ -59,6 +69,7 @@ export function inferAiBlockStatus(content: string): AiBlockStatus {
   )
     return "wrong";
   if (t.includes("：半对") || t.includes(": 半对")) return "partial";
+  if (t.includes("：待确认") || t.includes(": 待确认")) return "unknown";
   if (t.includes("：未作答") || t.includes(": 未作答") || t.includes("：空白"))
     return "blank";
 
@@ -131,6 +142,7 @@ export function parseAiResultBlocks(
   const qStart = /^第([0-9A-Za-z\(\)（）一二三四五六七八九十百千两]+)题/;
   const blocks: AiResultBlock[] = [];
   let currentTitle = "";
+  let currentKey = "";
   let buffer: string[] = [];
   let summary: string[] = [];
 
@@ -149,6 +161,7 @@ export function parseAiResultBlocks(
           content,
           status: itemStatus,
           partial_ratio: itemPartialRatio,
+          key: currentKey,
         });
         // 为了兼容旧字段
         existingBlock.content += "\n\n" + content;
@@ -164,11 +177,15 @@ export function parseAiResultBlocks(
           content,
           status: itemStatus,
           partial_ratio: itemPartialRatio,
-          subItems: [{ content, status: itemStatus, partial_ratio: itemPartialRatio }],
+          key: currentKey,
+          subItems: [
+            { content, status: itemStatus, partial_ratio: itemPartialRatio, key: currentKey },
+          ],
         });
       }
     }
     currentTitle = "";
+    currentKey = "";
     buffer = [];
   };
 
@@ -181,6 +198,7 @@ export function parseAiResultBlocks(
       currentTitle = t
         ? t("grading.ai.questionTitle", { n: m[1] })
         : `第${m[1]}题`;
+      currentKey = m[1];
       buffer.push(line);
     } else if (currentTitle) {
       buffer.push(line);

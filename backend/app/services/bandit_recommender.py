@@ -346,6 +346,48 @@ def aggregate_kp_from_bridge(db, student_id: str, subject: str, min_conf: float 
     return agg
 
 
+def aggregate_kp_from_wrong_questions(db, student_id: str, subject: str) -> Dict[str, dict]:
+    """桥表未命中时的兜底：错题题干当伪知识点（同 aggregate_weak_points 语义）。
+
+    R6a 桥表未回填时（knowledge_point_id 全空、桥表 0 行），退化为「这道错题本身」
+    为出题锚点，让 AI 变式推荐不依赖桥表/题库也能出题。返回形状同 aggregate_kp_from_bridge，
+    另带 titles（原题干全文，供 LLM 作原题参照）、pseudo 标记。
+    """
+    from app.models.student import Student
+    from app.models.student_analysis import StudentWrongQuestion
+
+    if db is None:
+        return {}
+    student = db.query(Student).filter(Student.id == student_id).first()
+    if not student:
+        return {}
+    rows = db.query(StudentWrongQuestion.question_title).filter(
+        StudentWrongQuestion.student_name == student.name,
+        StudentWrongQuestion.class_id == student.class_id,
+        StudentWrongQuestion.subject == subject,
+    ).all()
+    agg: Dict[str, dict] = {}
+    for (title,) in rows:
+        t = str(title or "").strip()
+        if not t:
+            continue
+        a = agg.setdefault(t, {
+            "kp_name": t,
+            "kp_id": None,
+            "wrong_count": 0,
+            "conf_sum": 0.0,
+            "methods": Counter(),
+            "titles": [],
+            "pseudo": True,
+        })
+        a["wrong_count"] += 1
+        a["conf_sum"] += 1.0
+        if t not in a["titles"]:
+            a["titles"].append(t)
+    # 高频错题优先（该生同题重错 > 单次）
+    return dict(sorted(agg.items(), key=lambda kv: (-kv[1]["wrong_count"], kv[0])))
+
+
 def read_reward_from_logs(db, student_id: str, subject: str) -> Optional[float]:
     """reward = response_logs 该生该科答对率；无记录返回 None（→ explore）。
 
@@ -582,3 +624,128 @@ def recommend_for_student(
     # 落统计（非关键路径）：exploit 时把更新后的 A/b 状态写回，跨请求收敛
     persist_recommendation(db, student_id, subject, result, arm_states=result.get("arm_states"))
     return result
+
+
+def recommend_for_student_ai(
+    db,
+    student_id: str,
+    subject: str,
+    limit: int = 5,
+    types: Optional[list] = None,
+    topics: Optional[list] = None,
+    hint: Optional[str] = None,
+    min_conf: float = MIN_CONFIDENCE,
+) -> dict:
+    """AI 题源变式推荐：薄弱 kp → LLM 变式题（不依赖 PG 题库）。
+
+    - hint 显式给出单题题干/知识点（不拆逗号）时最高优先——单题「举一反三」入口。
+    - topics 显式给出时优先用给定知识点（不查桥表）；否则取桥表薄弱 kp。
+    - 桥表未命中（未回填）→ 错题题干作伪 kp 兜底，仍能出题。
+    - 返回 shape 对齐 recommend_for_student（mode="ai"，items 同 question/reason 结构）。
+    - 无薄弱点 → 200 mode=ai + 空 items（诚实降级，不报错）。
+    """
+    topic_list = [str(t).strip() for t in (topics or []) if str(t).strip()]
+    hint_text = str(hint or "").strip()
+    if hint_text:
+        kp_rows = {
+            "hint-0": {
+                "kp_name": hint_text,
+                "kp_id": None,
+                "wrong_count": 0,
+                "conf_sum": 1.0,
+                "methods": None,
+                "titles": [hint_text],
+                "hint": True,
+            }
+        }
+    elif topic_list:
+        kp_rows = {
+            f"manual-{i}": {
+                "kp_name": t,
+                "kp_id": None,
+                "wrong_count": 0,
+                "conf_sum": 1.0,
+                "methods": None,
+                "titles": [t],
+            }
+            for i, t in enumerate(topic_list)
+        }
+    else:
+        kp_rows = aggregate_kp_from_bridge(db, student_id, subject, min_conf=min_conf)
+        if not kp_rows:
+            # 桥表未回填（R6a 未跑/知识库未接）→ 题干伪 kp 兜底，别让面板永远空
+            kp_rows = aggregate_kp_from_wrong_questions(db, student_id, subject)
+    if not kp_rows:
+        return {
+            "mode": "ai",
+            "reason": "无薄弱知识点（无错题或桥接未命中）",
+            "items": [],
+            "student_id": student_id,
+            "subject": subject,
+        }
+
+    from app.services.auto_variant import _llm_generate_variants
+
+    items: List[dict] = []
+    kp_items = list(kp_rows.items())[:MAX_ARMS]
+    for kp_key, agg in kp_items:
+        if len(items) >= limit:
+            break
+        kp_name = agg.get("kp_name") or kp_key
+        wrong_count = int(agg.get("wrong_count") or 0)
+        conf_sum = float(agg.get("conf_sum") or 0.0)
+        avg_conf = round(conf_sum / wrong_count, 2) if wrong_count > 0 else 1.0
+        methods = agg.get("methods") or {}
+        try:
+            error_labels = [str(m) for m in (methods.keys() if hasattr(methods, "keys") else methods) if str(m)]
+        except Exception:
+            error_labels = []
+        gen = _llm_generate_variants(
+            db,
+            subject,
+            kp_name,
+            list(agg.get("titles") or []),
+            # 单 kp（hint/指定考点）一次要满额度；多 kp 仍 2/轮均衡覆盖
+            max(1, min(limit - len(items), limit if len(kp_items) == 1 else 2)),
+            types=types,
+            extra_topics=topic_list or None,
+        )
+        for g in gen:
+            if len(items) >= limit:
+                break
+            err_part = "、".join(error_labels) if error_labels else "知识点匹配"
+            manual = wrong_count == 0
+            if agg.get("hint"):
+                reason_text = "AI 围绕本错题生成同类变式题，供举一反三。"
+            elif manual:
+                reason_text = f"由你指定的考点「{kp_name}」AI 生成变式题，供针对性巩固。"
+            else:
+                reason_text = (
+                    f"「{kp_name}」累计错 {wrong_count} 次"
+                    f"（错因：{err_part}，匹配置信度 {round(avg_conf * 100)}%），"
+                    f"判定为薄弱知识点。AI 生成该知识点的变式题供巩固。"
+                )
+            items.append({
+                "question": {
+                    "id": g.get("id") or f"llm-{kp_name}-{len(items)}",
+                    "question": g.get("question", ""),
+                    "answer": g.get("answer", ""),
+                    "analysis": g.get("analysis", ""),
+                    "difficulty": g.get("difficulty") or 3,
+                },
+                "reason": {
+                    "kp_name": kp_name,
+                    "error_types": error_labels,
+                    "error_count": wrong_count,
+                    "confidence": avg_conf,
+                    "mode": "ai",
+                    "reason_text": reason_text,
+                },
+            })
+    return {
+        "mode": "ai",
+        "items": items,
+        "student_id": student_id,
+        "subject": subject,
+        "arm_count": len(kp_rows),
+    }

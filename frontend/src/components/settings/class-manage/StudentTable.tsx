@@ -12,7 +12,6 @@ import {
 import {
   Search,
   Plus,
-  Upload,
   RefreshCw,
   Download,
   Pencil,
@@ -57,7 +56,6 @@ interface StudentTableProps {
   className: string;
   selectedStudentId: string | null;
   onSelectStudent: (id: string) => void;
-  onBatchImport?: () => void;
 }
 
 const PAGE_SIZE = 9;
@@ -83,7 +81,6 @@ export function StudentTable({
   className,
   selectedStudentId,
   onSelectStudent,
-  onBatchImport,
 }: StudentTableProps) {
   const { t, locale } = useLocale();
   const [search, setSearch] = useState("");
@@ -234,15 +231,6 @@ export function StudentTable({
           >
             <Plus className="w-4 h-4" />
             {t("settingsClass.table.add")}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-9 text-sm gap-1.5"
-            onClick={onBatchImport}
-          >
-            <Upload className="w-4 h-4" />
-            {t("settingsClass.table.import")}
           </Button>
           {deleteMode ? (
             <>

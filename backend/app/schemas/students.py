@@ -11,6 +11,7 @@ class StudentRecord(BaseModel):
     student_number: str
     gender: Optional[str] = None
     tier: Optional[str] = None
+    dingtalk_userid: Optional[str] = None
     status: Optional[str] = None
     birthday: Optional[str] = None
     phone: Optional[str] = None

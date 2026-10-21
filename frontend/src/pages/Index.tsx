@@ -40,6 +40,7 @@ import { QuestionBankPage } from "@/components/question-bank/QuestionBankPage";
 import { ResourceUploadDialog } from "@/components/resource-lib/ResourceUploadDialog";
 import { GradingHistoryPage } from "@/components/grading/GradingHistoryPage";
 import { ErrorBookPage } from "@/components/grading/ErrorBookPage";
+import { CorrectionLedgerPage } from "@/components/grading/CorrectionLedgerPage";
 import { FlowTeacherTasksPage } from "@/components/grading/flow/FlowTeacherTasksPage";
 import { WuyuProfilePage } from "@/components/wuyu-profile/WuyuProfilePage";
 import { AssessmentPage } from "@/components/assessment/AssessmentPage";
@@ -149,11 +150,6 @@ const ScanConsumptionPage = lazy(() =>
 const UsageSummaryPage = lazy(() =>
   import("@/components/scan-billing/UsageSummaryPage").then((m) => ({
     default: m.UsageSummaryPage,
-  })),
-);
-const MyQuotaPage = lazy(() =>
-  import("@/components/quota/MyQuotaPage").then((m) => ({
-    default: m.MyQuotaPage,
   })),
 );
 /* 独立老师个人账本（口径 B，与 scan-billing 口径 A 物理分离、并列不合并） */
@@ -382,6 +378,8 @@ export default function Index() {
   const [pendingResourceId, setPendingResourceId] = useState<
     string | undefined
   >();
+  // 讲评/班级分析「按薄弱点出卷」：带知识点跳组卷页，由 ExamGenPage 消费后清空
+  const [pendingExamTopics, setPendingExamTopics] = useState<string[] | undefined>();
 
   const handleNavChange = (id: string, tab?: string) => {
     // 仅 class-students 保留 pendingStudent；ai-targeted 统一走 navigateToTargeted 携带学生，
@@ -407,6 +405,14 @@ export default function Index() {
     navigate(`${navPrefix}/prep-exam`);
   };
 
+  // 讲评/班级分析「按薄弱点出卷」：预填知识点主题并自动打开 AI 出题弹窗
+  const navigateToExamWithTopics = (topics: string[]) => {
+    const cleaned = topics.map((s) => s.trim()).filter(Boolean);
+    if (cleaned.length === 0) return;
+    setPendingExamTopics(cleaned);
+    navigate(`${navPrefix}/prep-exam`);
+  };
+
   const navigateToGradingFolder = (folderName: string) => {
     navigate(`${navPrefix}/grading-start?folder=${encodeURIComponent(folderName)}`);
   };
@@ -418,8 +424,20 @@ export default function Index() {
   const [photoDialogOpen, setPhotoDialogOpen] = useState(false);
   const [managingClass, setManagingClass] = useState<ClassRecord | null>(null);
 
-  const { data: classes = [] } = useClasses(selectedSchoolLevel, selectedGrade);
+  const { data: classes = [], isPending: classesLoading } = useClasses(
+    selectedSchoolLevel,
+    selectedGrade,
+  );
   const selectedClassInfo = classes.find((c) => c.id === selectedClass);
+
+  // 跨账号/过期残留的 selectedClass：localStorage 不随登录态清空，换账号后仍可能指向上一个账号的 class_id。
+  // 班级列表加载完成后，若当前账号的班级里已找不到该 id，清空回退到「请先选班」，避免拿着旧 class_id 打接口 → 403 无班级访问权限。
+  useEffect(() => {
+    if (classesLoading) return;
+    if (selectedClass && !classes.some((c) => c.id === selectedClass)) {
+      setSelectedClass("");
+    }
+  }, [classes, selectedClass, classesLoading, setSelectedClass]);
 
   const gradingRef = useRef<HTMLDivElement>(null);
 
@@ -434,8 +452,9 @@ export default function Index() {
       );
     }
 
-    // Pages that need a class selected
-    if (CLASS_REQUIRED_IDS.has(activeNavId) && !selectedClass) {
+    // Pages that need a class selected — 用 selectedClassInfo（当前账号班级里能解析到的记录）做门槛，
+    // 避免 localStorage 里残留的旧 class_id 在班级列表加载完成前就带着去打接口。
+    if (CLASS_REQUIRED_IDS.has(activeNavId) && !selectedClassInfo) {
       return <NeedsClassPlaceholder />;
     }
 
@@ -557,6 +576,7 @@ export default function Index() {
             selectedSubject={selectedSubject}
             selectedClass={selectedClass!}
             onNavigateToStudent={navigateToStudent}
+            onGenerateFromWeakPoints={navigateToExamWithTopics}
           />
         );
       case "analytics-compare":
@@ -600,6 +620,7 @@ export default function Index() {
               setSelectedClass(classId);
               setSelectedSubject(subject);
             }}
+            onGenerateFromWeakPoints={navigateToExamWithTopics}
           />
         );
       case "ai-targeted":
@@ -617,6 +638,7 @@ export default function Index() {
           <LayeredPushPage
             selectedSubject={selectedSubject}
             selectedClass={selectedClass!}
+            selectedClassName={selectedClassInfo?.name || ""}
             schoolLevel={selectedSchoolLevel}
             onNavChange={handleNavChange}
           />
@@ -663,6 +685,8 @@ export default function Index() {
             onNavChange={handleNavChange}
             loadResourceId={pendingResourceId}
             onResourceLoaded={() => setPendingResourceId(undefined)}
+            initialTopics={pendingExamTopics}
+            onTopicsConsumed={() => setPendingExamTopics(undefined)}
           />
         );
       case "prep-video":
@@ -684,6 +708,8 @@ export default function Index() {
         );
       case "grading-errors":
         return <ErrorBookPage selectedClass={selectedClass || ""} />;
+      case "grading-ledger":
+        return <CorrectionLedgerPage />;
       case "flow-tasks":
         return <FlowTeacherTasksPage />;
 
@@ -725,8 +751,6 @@ export default function Index() {
       /* ── 设置 ── */
       case "settings-personal":
         return <PersonalSettingsPage />;
-      case "my-quota":
-        return <MyQuotaPage />;
       case "settings-subject":
         return (
           <SubjectConfigPage

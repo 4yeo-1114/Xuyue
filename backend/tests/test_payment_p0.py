@@ -103,7 +103,7 @@ def test_p0_1_six_payment_models_registered():
 
     expected = {
         "payment_accounts", "usage_events", "ledger_entries",
-        "payment_plans", "subscriptions", "payment_orders",
+        "payment_plans", "subscriptions", "payment_orders_v2",
     }
     assert expected <= set(Base.metadata.tables.keys()), (
         f"未注册的表: {sorted(expected - set(Base.metadata.tables.keys()))}"
@@ -682,6 +682,7 @@ def test_p0_6_payment_router_endpoint_whitelist():
         "/payment/ledger",                   # P0-6 只读
         "/payment/usage",                    # P0-6 只读
         "/payment/orders",                   # P2-1 下单
+        "/payment/orders/{order_id}",        # 订单状态轮询（只读，2026-09-28 二维码 UI 批）
         "/payment/callback/{channel}",       # P2-3 回调
         "/payment/invoices",                 # P3-1 提交/查询开票申请（POST/GET 同路径）
         "/payment/admin/reconciliation",     # §6.2 E1/E2 只读对账巡检（只读，非写）

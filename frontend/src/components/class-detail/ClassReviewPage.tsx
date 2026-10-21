@@ -19,10 +19,12 @@ import {
   MessageSquareText,
   PenLine,
   Presentation,
+  Printer,
   RefreshCw,
   Route,
   Sparkles,
   Target,
+  X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -54,6 +56,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { translateSubjectName } from "@/i18n";
 import { gradingImageUrl } from "@/services/gradingApi";
@@ -70,12 +73,26 @@ import {
   type TargetedExamOption,
 } from "@/services/api";
 import { toast } from "sonner";
+import { useClasses } from "@/hooks/useClasses";
 import {
   exportClassReviewPdf,
   hasConsolidationContent,
   hasReviewPlanContent,
+  readClassReviewExportPrefs,
+  writeClassReviewExportPrefs,
   type ClassReviewPdfKind,
 } from "@/utils/classReviewPdfExport";
+import {
+  WRONG_SHEET_EMPTY_SELECTION,
+  assembleWrongSheetItems,
+  exportWrongQuestionSheetPdf,
+  printWrongQuestionSheet,
+  selectTopWrongKeys,
+  sendToOneClickPrinter,
+  buildWrongSheetPdfBlob,
+  wrongSheetFileName,
+  type WrongSheetItem,
+} from "@/utils/wrongQuestionSheetExport";
 
 interface ClassReviewPageProps {
   selectedSubject: string;
@@ -84,6 +101,8 @@ interface ClassReviewPageProps {
   onNavChange: (id: string) => void;
   /** 讲评历史：点击某条历史记录时，切换到对应班级+科目并加载该讲评 */
   onOpenSession?: (classId: string, subject: string) => void;
+  /** 「按薄弱点出卷」：把薄弱知识点带去组卷页出卷 */
+  onGenerateFromWeakPoints?: (topics: string[]) => void;
 }
 
 const FALLBACK_SUBJECTS = [
@@ -174,11 +193,14 @@ function InsightPanel({
   items,
   icon: Icon,
   tone,
+  action,
 }: {
   title: string;
   items?: unknown;
   icon: any;
   tone: "rose" | "green" | "blue";
+  /** 标题右侧可选操作区（如「按薄弱点出卷」） */
+  action?: React.ReactNode;
 }) {
   const { t } = useLocale();
   const list = asArray(items);
@@ -209,6 +231,7 @@ function InsightPanel({
           <Icon className="h-4 w-4" />
         </span>
         <p className="text-sm font-bold">{title}</p>
+        {action ? <div className="ml-auto">{action}</div> : null}
       </div>
       <div className="space-y-2">
         {list.length ? (
@@ -741,7 +764,9 @@ function PostClassDialog({
 export function ClassReviewPage({
   selectedSubject,
   selectedClass,
+  schoolLevel,
   onOpenSession,
+  onGenerateFromWeakPoints,
 }: ClassReviewPageProps) {
   const { t, locale } = useLocale();
 
@@ -820,6 +845,10 @@ export function ClassReviewPage({
   });
 
   const report = data?.report || null;
+  // 班级名（错题卷卷头用；查不到时回退班级 ID）
+  const { data: classRecords = [] } = useClasses(schoolLevel);
+  const selectedClassName =
+    classRecords.find((c) => c.id === selectedClass)?.name || selectedClass;
   const preClass = report?.pre_class || {};
   const overview = preClass.overview || {};
   const plan = preClass.review_plan || {};
@@ -853,13 +882,142 @@ export function ClassReviewPage({
   const [expandedAccuracyKeys, setExpandedAccuracyKeys] = useState<Set<string>>(
     new Set(),
   );
-  /** 仅用户主动查看「错题关联」时才加载图片，避免影响 PDF 导出 */
+  /** 仅用户主动查看「错题关联」时才加载预览图；PDF 导出走离屏 DOM 自取 all_wrong_images */
   const [wrongImagesActive, setWrongImagesActive] = useState(false);
   /** 生成讲评 PPT 的加载态（PPT 生成较慢，独立于 PDF 导出） */
   const [pptGenerating, setPptGenerating] = useState(false);
+  /** 「导出含错题原卷」开关：默认开，持久化到 localStorage（对齐打印偏好惯例） */
+  const [includeWrongPaper, setIncludeWrongPaper] = useState<boolean>(() => {
+    try {
+      return readClassReviewExportPrefs().includeWrongPaper;
+    } catch {
+      return true;
+    }
+  });
+
+  // ── 错题巩固卷：挑题多选 → 生成 PDF → 下发打印 ──
+  /** 已勾选的 question_key 集合 */
+  const [wrongSheetKeys, setWrongSheetKeys] = useState<Set<string>>(new Set());
+  /** 轻量学生过滤：非空时只装配这些学生的错题 */
+  const [wrongSheetStudents, setWrongSheetStudents] = useState<Set<string>>(
+    new Set(),
+  );
+  const [wrongSheetDialogOpen, setWrongSheetDialogOpen] = useState(false);
+  const [wrongSheetIncludeAnswers, setWrongSheetIncludeAnswers] = useState(true);
+  const [wrongSheetBusy, setWrongSheetBusy] = useState<
+    null | "pdf" | "print" | "oneClick"
+  >(null);
 
   const reviewPlanExportable = hasReviewPlanContent(report);
   const consolidationExportable = hasConsolidationContent(report);
+
+  const handleIncludeWrongPaperChange = (checked: boolean) => {
+    setIncludeWrongPaper(checked);
+    try {
+      writeClassReviewExportPrefs({ includeWrongPaper: checked });
+    } catch {
+      // ignore
+    }
+  };
+
+  /** 错题卷可过滤的学生名单：来自错答名单与错题裁图，轻量去重 */
+  const wrongSheetStudentOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const q of questionAccuracy) {
+      const students = questionStudents[q.question_key];
+      for (const name of students?.wrong_students || []) {
+        if (name) set.add(String(name));
+      }
+    }
+    for (const name of studentNames) {
+      if (name) set.add(name);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "zh-CN"));
+  }, [questionAccuracy, questionStudents, studentNames]);
+
+  const toggleWrongSheetKey = (key: string) => {
+    setWrongSheetKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const handleSelectTopWrong = (n: number) => {
+    const keys = selectTopWrongKeys(questionAccuracy, n);
+    setWrongSheetKeys(new Set(keys));
+    if (keys.length) toast.success(t("classReview.wrongSheet.selectedTop", { count: keys.length }));
+  };
+
+  const toggleWrongSheetStudent = (name: string) => {
+    setWrongSheetStudents((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const handleWrongSheetExport = async (mode: "pdf" | "print" | "oneClick") => {
+    if (wrongSheetBusy) return;
+    let items: WrongSheetItem[] = [];
+    try {
+      items = assembleWrongSheetItems({
+        selectedKeys: [...wrongSheetKeys],
+        questionAccuracy,
+        allWrongImages,
+        questionStudents,
+        studentFilter: wrongSheetStudents.size
+          ? [...wrongSheetStudents]
+          : undefined,
+      });
+    } catch {
+      items = [];
+    }
+    if (!items.length) {
+      toast.error(t("classReview.wrongSheet.emptySelection"));
+      return;
+    }
+    setWrongSheetBusy(mode);
+    try {
+      const params = {
+        items,
+        className: selectedClassName,
+        subject,
+        includeAnswers: wrongSheetIncludeAnswers,
+      };
+      if (mode === "pdf") {
+        await exportWrongQuestionSheetPdf(params);
+        toast.success(t("classReview.wrongSheet.exportSuccess"));
+      } else if (mode === "print") {
+        await printWrongQuestionSheet(params);
+        toast.success(t("classReview.wrongSheet.printOpened"));
+      } else {
+        const { blob, plan } = await buildWrongSheetPdfBlob(params);
+        await sendToOneClickPrinter({
+          pdfBlob: blob,
+          fileName: wrongSheetFileName(plan.meta),
+          meta: plan.meta,
+        });
+      }
+    } catch (err: any) {
+      const msg = String(err?.message || "");
+      if (mode === "oneClick" || msg.includes("一体机")) {
+        toast.error(t("classReview.wrongSheet.oneClickNotConfigured"), {
+          description: t("classReview.wrongSheet.oneClickHint"),
+        });
+      } else if (msg === WRONG_SHEET_EMPTY_SELECTION) {
+        toast.error(t("classReview.wrongSheet.emptySelection"));
+      } else {
+        toast.error(t("classReview.wrongSheet.exportFailed"), {
+          description: msg || t("classReview.retry"),
+        });
+      }
+    } finally {
+      setWrongSheetBusy(null);
+    }
+  };
 
   const handleExportPdf = async (kind: ClassReviewPdfKind) => {
     if (!report || exportingKind) return;
@@ -867,7 +1025,15 @@ export function ClassReviewPage({
     if (kind === "consolidation" && !consolidationExportable) return;
     setExportingKind(kind);
     try {
-      await exportClassReviewPdf(kind, report, subject);
+      // 错题图直链是 10 分钟短时票；导出前重取报告换新票，隔太久再导附录才不会空白
+      let reportForExport = report;
+      if (kind === "review_plan" && includeWrongPaper) {
+        const fresh = await refetch();
+        if (fresh.data?.report) reportForExport = fresh.data.report;
+      }
+      await exportClassReviewPdf(kind, reportForExport, subject, {
+        includeWrongPaper,
+      });
       toast.success(
         kind === "review_plan"
           ? t("classReview.export.reviewSuccess")
@@ -1149,9 +1315,38 @@ export function ClassReviewPage({
                     {t("classReview.accuracy.subtitle")}
                   </p>
                 </div>
-                <Badge variant="secondary" className="shrink-0">
-                  {questionAccuracy.length}
-                </Badge>
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1 px-2 text-xs"
+                    onClick={() => handleSelectTopWrong(5)}
+                    disabled={!questionAccuracy.length}
+                  >
+                    {t("classReview.wrongSheet.selectTopN", { count: 5 })}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1 px-2 text-xs"
+                    onClick={() => handleSelectTopWrong(10)}
+                    disabled={!questionAccuracy.length}
+                  >
+                    {t("classReview.wrongSheet.selectTopN", { count: 10 })}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1 px-2 text-xs"
+                    onClick={() => setWrongSheetKeys(new Set())}
+                    disabled={!wrongSheetKeys.size}
+                  >
+                    {t("classReview.wrongSheet.clearSelection")}
+                  </Button>
+                  <Badge variant="secondary" className="shrink-0">
+                    {questionAccuracy.length}
+                  </Badge>
+                </div>
               </div>
             </CardHeader>
             <CardContent>
@@ -1205,11 +1400,22 @@ export function ClassReviewPage({
                         title={t("classReview.accuracy.viewStudents")}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span
-                            className="min-w-0 truncate text-sm font-medium"
-                            title={title}
-                          >
-                            {title}
+                          <span className="flex min-w-0 items-center gap-2">
+                            <Checkbox
+                              checked={wrongSheetKeys.has(qKey)}
+                              onCheckedChange={() => toggleWrongSheetKey(qKey)}
+                              onClick={(e) => e.stopPropagation()}
+                              aria-label={t("classReview.wrongSheet.selectQuestion", {
+                                title,
+                              })}
+                              className="shrink-0"
+                            />
+                            <span
+                              className="min-w-0 truncate text-sm font-medium"
+                              title={title}
+                            >
+                              {title}
+                            </span>
                           </span>
                           <span
                             className={cn(
@@ -1404,6 +1610,24 @@ export function ClassReviewPage({
                   items={overview.weak_points}
                   icon={AlertTriangle}
                   tone="rose"
+                  action={
+                    onGenerateFromWeakPoints &&
+                    asArray(overview.weak_points).length > 0 ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 gap-1 px-2 text-xs"
+                        onClick={() =>
+                          onGenerateFromWeakPoints(
+                            asArray(overview.weak_points),
+                          )
+                        }
+                      >
+                        <Sparkles className="h-3.5 w-3.5" />
+                        {t("classReview.generateFromWeak")}
+                      </Button>
+                    ) : undefined
+                  }
                 />
                 <InsightPanel
                   title={t("classReview.classStrengths")}
@@ -1462,12 +1686,29 @@ export function ClassReviewPage({
             onMouseEnter={() => setWrongImagesActive(true)}
           >
             <CardHeader>
-              <CardTitle className="text-base">
-                {t("classReview.wrongImages.title")}
-              </CardTitle>
-              <p className="text-sm text-muted-foreground mt-1">
-                {t("classReview.wrongImages.description")}
-              </p>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <CardTitle className="text-base">
+                    {t("classReview.wrongImages.title")}
+                  </CardTitle>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {t("classReview.wrongImages.description")}
+                  </p>
+                </div>
+                <label className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground">
+                  <span>{t("classReview.export.includeWrongPaper")}</span>
+                  <Switch
+                    checked={includeWrongPaper}
+                    onCheckedChange={handleIncludeWrongPaperChange}
+                    aria-label={t("classReview.export.includeWrongPaper")}
+                  />
+                </label>
+              </div>
+              {includeWrongPaper ? (
+                <p className="text-xs text-muted-foreground mt-2">
+                  {t("classReview.export.includeWrongPaperHint")}
+                </p>
+              ) : null}
             </CardHeader>
             <CardContent>
               {studentNames.length > 0 ? (
@@ -1867,6 +2108,137 @@ export function ClassReviewPage({
                 ))}
               </div>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 错题卷浮出操作条：勾选题目后出现 */}
+      {wrongSheetKeys.size > 0 && (
+        <div className="fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-4 pointer-events-none">
+          <div className="pointer-events-auto flex max-w-3xl flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-background/95 px-4 py-3 shadow-lg">
+            <span className="text-sm font-medium text-foreground">
+              {t("classReview.wrongSheet.selectedCount", {
+                count: wrongSheetKeys.size,
+              })}
+            </span>
+            <div className="mx-1 h-4 w-px bg-border" />
+            <Button
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setWrongSheetDialogOpen(true)}
+            >
+              <FileText className="h-4 w-4" />
+              {t("classReview.wrongSheet.generate")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1"
+              onClick={() => setWrongSheetKeys(new Set())}
+            >
+              <X className="h-4 w-4" />
+              {t("classReview.wrongSheet.clearSelection")}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* 生成错题巩固卷对话框：答案页开关 + 下载/打印/一体机 */}
+      <Dialog open={wrongSheetDialogOpen} onOpenChange={setWrongSheetDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5 text-primary" />
+              {t("classReview.wrongSheet.dialogTitle")}
+            </DialogTitle>
+            <DialogDescription>
+              {t("classReview.wrongSheet.dialogDesc", {
+                count: wrongSheetKeys.size,
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {wrongSheetStudentOptions.length > 0 ? (
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">
+                  {t("classReview.wrongSheet.studentFilter")}
+                </Label>
+                <div className="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto rounded-md border border-border/60 p-2">
+                  {wrongSheetStudentOptions.map((name) => (
+                    <Badge
+                      key={name}
+                      variant={
+                        wrongSheetStudents.has(name) ? "default" : "outline"
+                      }
+                      className="cursor-pointer"
+                      onClick={() => toggleWrongSheetStudent(name)}
+                    >
+                      {name}
+                    </Badge>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {wrongSheetStudents.size
+                    ? t("classReview.wrongSheet.studentFilterActive", {
+                        count: wrongSheetStudents.size,
+                      })
+                    : t("classReview.wrongSheet.studentFilterHint")}
+                </p>
+              </div>
+            ) : null}
+            <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2">
+              <span className="text-sm">
+                {t("classReview.wrongSheet.includeAnswers")}
+              </span>
+              <Switch
+                checked={wrongSheetIncludeAnswers}
+                onCheckedChange={setWrongSheetIncludeAnswers}
+                aria-label={t("classReview.wrongSheet.includeAnswers")}
+              />
+            </label>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <Button
+                className="gap-1.5"
+                disabled={!!wrongSheetBusy}
+                onClick={() => handleWrongSheetExport("pdf")}
+              >
+                {wrongSheetBusy === "pdf" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+                {t("classReview.wrongSheet.downloadPdf")}
+              </Button>
+              <Button
+                variant="outline"
+                className="gap-1.5"
+                disabled={!!wrongSheetBusy}
+                onClick={() => handleWrongSheetExport("print")}
+              >
+                {wrongSheetBusy === "print" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Printer className="h-4 w-4" />
+                )}
+                {t("classReview.wrongSheet.print")}
+              </Button>
+              <Button
+                variant="outline"
+                className="gap-1.5"
+                disabled={!!wrongSheetBusy}
+                onClick={() => handleWrongSheetExport("oneClick")}
+              >
+                {wrongSheetBusy === "oneClick" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Printer className="h-4 w-4" />
+                )}
+                {t("classReview.wrongSheet.oneClick")}
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              {t("classReview.wrongSheet.oneClickHint")}
+            </p>
           </div>
         </DialogContent>
       </Dialog>

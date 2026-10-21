@@ -20,6 +20,8 @@ from typing import Optional
 
 import requests
 
+from app.utils.qwen_settings import get_vl_model
+
 try:
     from PIL import Image
 except ImportError:  # pragma: no cover
@@ -34,7 +36,7 @@ _CN_MAJOR_RE = r"[一二三四五六七八九十]+"
 
 def _call_qwen(api_key: str, messages: list, max_tokens: int = 6000, temperature: float = 0.1):
     payload = {
-        "model": "qwen-vl-max",
+        "model": get_vl_model(),
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,

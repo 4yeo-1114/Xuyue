@@ -9,8 +9,11 @@ import { useStudents } from "@/hooks/useStudents";
 import {
   getBanditWrongQuestions,
   reportBanditWrongQuestionClick,
+  pickSessionFolder,
 } from "@/services/banditApi";
-import type { BanditRecommendItem } from "@/services/banditApi";
+import type { BanditRecommendItem, QuestionSource } from "@/services/banditApi";
+import { AutoVariantsCard } from "./AutoVariantsCard";
+import { QUESTION_TYPE_OPTIONS, splitTopics } from "@/lib/aiQuestionTypes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +35,7 @@ import {
   ChevronDown,
   Check,
   Info,
+  Settings2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -52,21 +56,47 @@ interface WrongQuestionsTabProps {
   classId: string;
 }
 
-/** bandit 变式推荐面板：按（学生, 学科）拉取 LinUCB 推荐，点击变式上报 reward=1 */
+/** bandit 变式推荐面板：按（学生, 学科, 错题题干）取变式题推荐，点击变式上报 reward=1。
+ *  题源可选：ai=AI 生成（默认，可选题型/知识点）| bank=题库。
+ *  hint=该错题题干原文——AI 围绕这道错题举一反三（不传则退化为按薄弱点出题）。 */
 function VariantRecommendPanel({
   studentId,
   subject,
+  hint,
 }: {
   studentId: string;
   subject: string;
+  hint?: string;
 }) {
   const { t } = useLocale();
   const queryClient = useQueryClient();
   const [clickedIds, setClickedIds] = useState<Set<string>>(new Set());
+  // 题源：ai=AI 生成（默认）；bank=题库（没接题库时给明确提示）
+  const [source, setSource] = useState<QuestionSource>("ai");
+  const [showOpts, setShowOpts] = useState(false);
+  const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
+  const [topicText, setTopicText] = useState("");
+  const [appliedTopics, setAppliedTopics] = useState<string[]>([]);
 
-  const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ["bandit-recommend", studentId, subject],
-    queryFn: () => getBanditWrongQuestions(studentId, subject, 5),
+  const applyOpts = () => setAppliedTopics(splitTopics(topicText));
+
+  const { data, isLoading, isFetching, isError, refetch } = useQuery({
+    queryKey: [
+      "bandit-recommend",
+      studentId,
+      subject,
+      source,
+      selectedTypes.join(","),
+      appliedTopics.join(","),
+      hint || "",
+    ],
+    queryFn: () =>
+      getBanditWrongQuestions(studentId, subject, 5, {
+        source,
+        types: selectedTypes,
+        topics: appliedTopics,
+        hint: hint || undefined,
+      }),
   });
 
   const clickMutation = useMutation({
@@ -97,125 +127,224 @@ function VariantRecommendPanel({
         ? t("classDetail.recommendMode.exploit")
         : m === "fallback"
           ? t("classDetail.recommendMode.fallback")
-          : m;
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
-        <Loader2 className="w-4 h-4 animate-spin text-primary/60" />
-        {t("common.loading")}
-      </div>
-    );
-  }
-  if (isError) {
-    return (
-      <div className="flex flex-col items-center gap-2 py-4 text-center">
-        <p className="text-sm text-muted-foreground">
-          {t("classDetail.变式推荐加载失败")}
-        </p>
-        <Button
-          size="sm"
-          variant="outline"
-          className="gap-1.5"
-          onClick={() => refetch()}
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          {t("wuyu.retry")}
-        </Button>
-      </div>
-    );
-  }
-  if (items.length === 0) {
-    return (
-      <p className="py-4 text-center text-sm text-muted-foreground">
-        {t("classDetail.暂无变式推荐")}
-      </p>
-    );
-  }
+          : m === "ai"
+            ? t("classDetail.recommendMode.ai")
+            : m;
 
   return (
     <div className="mt-2 rounded-lg border border-border/60 bg-muted/20 p-3 space-y-2">
-      <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-        <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-        {t("classDetail.变式推荐")}
-        {mode && (
-          <Badge variant="outline" className="text-[10px]">
-            {modeLabel(mode)}
-          </Badge>
-        )}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+          <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+          {t("classDetail.变式推荐")}
+          {mode && (
+            <Badge variant="outline" className="text-[10px]">
+              {modeLabel(mode)}
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Select
+            value={source}
+            onValueChange={(v) => setSource(v as QuestionSource)}
+          >
+            <SelectTrigger className="h-7 w-[100px] text-xs">
+              <SelectValue placeholder={t("smartGen.aiSource.label")} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ai">{t("smartGen.aiSource.ai")}</SelectItem>
+              <SelectItem value="bank">{t("smartGen.aiSource.bank")}</SelectItem>
+            </SelectContent>
+          </Select>
+          {source === "ai" && (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1 px-2 text-xs"
+                onClick={() => setShowOpts((v) => !v)}
+              >
+                <Settings2 className="w-3 h-3" />
+                {t("smartGen.aiSource.settings")}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1 px-2 text-xs"
+                disabled={isFetching || clickMutation.isPending}
+                onClick={() => refetch()}
+              >
+                {isFetching ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3 h-3" />
+                )}
+                {t("smartGen.aiSource.regenerate")}
+              </Button>
+            </>
+          )}
+        </div>
       </div>
-      <div className="space-y-2">
-        {items.map((item) => {
-          const isClicked = clickedIds.has(item.question.id);
-          return (
-            <button
-              key={item.question.id}
-              type="button"
-              disabled={clickMutation.isPending}
-              onClick={() => clickMutation.mutate(item)}
-              className={cn(
-                "w-full text-left rounded-md border border-border/50 bg-card p-2.5 hover:bg-primary/5 transition-colors",
-                isClicked && "opacity-70",
-              )}
+
+      {source === "ai" && showOpts && (
+        <div className="rounded-md border border-border/50 bg-card/60 p-2 space-y-1.5">
+          <div className="flex items-center gap-2">
+            <span className="w-14 shrink-0 text-xs font-medium">
+              {t("smartGen.aiSource.topicsLabel")}
+            </span>
+            <Input
+              className="h-7 text-xs"
+              placeholder={t("smartGen.aiSource.topicsPlaceholder")}
+              value={topicText}
+              onChange={(e) => setTopicText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") applyOpts();
+              }}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2 text-xs"
+              onClick={applyOpts}
             >
-              <div className="flex items-start justify-between gap-2">
-                <p className="text-sm leading-relaxed">
-                  {item.question.question}
-                </p>
-                <Check
-                  className={cn(
-                    "w-4 h-4 shrink-0 mt-0.5",
-                    isClicked ? "text-primary" : "text-transparent",
-                  )}
-                />
-              </div>
-              <div className="mt-1.5 flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
-                <Badge variant="secondary" className="text-[10px]">
-                  {item.reason.kp_name}
-                </Badge>
-                <span>
-                  {t("classDetail.推荐置信度", {
-                    value: Math.round(item.reason.confidence * 100),
-                  })}
-                </span>
-                {item.reason.error_count > 0 && (
+              {t("smartGen.aiSource.apply")}
+            </Button>
+          </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="w-14 shrink-0 text-xs font-medium">
+              {t("smartGen.aiSource.typesLabel")}
+            </span>
+            {QUESTION_TYPE_OPTIONS.map((o) => {
+              const active = selectedTypes.includes(o.value);
+              return (
+                <Button
+                  key={o.value}
+                  size="sm"
+                  variant={active ? "default" : "outline"}
+                  className="h-6 px-2 text-xs"
+                  onClick={() =>
+                    setSelectedTypes((prev) =>
+                      active
+                        ? prev.filter((v) => v !== o.value)
+                        : [...prev, o.value],
+                    )
+                  }
+                >
+                  {o.label}
+                </Button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {source === "bank" ? (
+        <div className="rounded-md border border-dashed border-amber-500/50 bg-amber-500/5 px-3 py-5 text-center text-xs text-amber-600">
+          {t("smartGen.aiSource.bankUnavailable")}
+          <div className="mt-1 text-muted-foreground">
+            {t("smartGen.aiSource.bankHint")}
+          </div>
+        </div>
+      ) : isLoading || isFetching ? (
+        <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
+          <Loader2 className="w-4 h-4 animate-spin text-primary/60" />
+          {isFetching && !isLoading
+            ? t("classDetail.变式推荐生成中")
+            : t("common.loading")}
+        </div>
+      ) : isError ? (
+        <div className="flex flex-col items-center gap-2 py-4 text-center">
+          <p className="text-sm text-muted-foreground">
+            {t("classDetail.变式推荐加载失败")}
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            onClick={() => refetch()}
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            {t("wuyu.retry")}
+          </Button>
+        </div>
+      ) : items.length === 0 ? (
+        <p className="py-4 text-center text-sm text-muted-foreground">
+          {t("classDetail.暂无变式推荐")}
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {items.map((item) => {
+            const isClicked = clickedIds.has(item.question.id);
+            return (
+              <button
+                key={item.question.id}
+                type="button"
+                disabled={clickMutation.isPending}
+                onClick={() => clickMutation.mutate(item)}
+                className={cn(
+                  "w-full text-left rounded-md border border-border/50 bg-card p-2.5 hover:bg-primary/5 transition-colors",
+                  isClicked && "opacity-70",
+                )}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-sm leading-relaxed whitespace-pre-line">
+                    {item.question.question}
+                  </p>
+                  <Check
+                    className={cn(
+                      "w-4 h-4 shrink-0 mt-0.5",
+                      isClicked ? "text-primary" : "text-transparent",
+                    )}
+                  />
+                </div>
+                <div className="mt-1.5 flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                  <Badge variant="secondary" className="text-[10px]">
+                    {item.reason.kp_name}
+                  </Badge>
                   <span>
-                    {t("classDetail.错题次数", {
-                      count: item.reason.error_count,
+                    {t("classDetail.推荐置信度", {
+                      value: Math.round(item.reason.confidence * 100),
                     })}
                   </span>
-                )}
-              </div>
-              <div className="mt-2 rounded-md border border-primary/20 bg-primary/5 p-2">
-                <div className="flex items-center gap-1 text-[11px] font-medium text-primary">
-                  <Info className="w-3.5 h-3.5" />
-                  {t("classDetail.推荐依据")}
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                  {item.reason.reason_text || t("classDetail.暂无变式推荐")}
-                </p>
-                {item.reason.error_types &&
-                  item.reason.error_types.length > 0 && (
-                    <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[11px] text-muted-foreground">
-                        {t("classDetail.错因")}：
-                      </span>
-                      {item.reason.error_types.map((et) => (
-                        <Badge
-                          key={et}
-                          variant="secondary"
-                          className="text-[10px]"
-                        >
-                          {et}
-                        </Badge>
-                      ))}
-                    </div>
+                  {item.reason.error_count > 0 && (
+                    <span>
+                      {t("classDetail.错题次数", {
+                        count: item.reason.error_count,
+                      })}
+                    </span>
                   )}
-              </div>
-            </button>
-          );
-        })}
-      </div>
+                </div>
+                <div className="mt-2 rounded-md border border-primary/20 bg-primary/5 p-2">
+                  <div className="flex items-center gap-1 text-[11px] font-medium text-primary">
+                    <Info className="w-3.5 h-3.5" />
+                    {t("classDetail.推荐依据")}
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                    {item.reason.reason_text || t("classDetail.暂无变式推荐")}
+                  </p>
+                  {item.reason.error_types &&
+                    item.reason.error_types.length > 0 && (
+                      <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[11px] text-muted-foreground">
+                          {t("classDetail.错因")}：
+                        </span>
+                        {item.reason.error_types.map((et) => (
+                          <Badge
+                            key={et}
+                            variant="secondary"
+                            className="text-[10px]"
+                          >
+                            {et}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -275,8 +404,15 @@ export function WrongQuestionsTab({ classId }: WrongQuestionsTabProps) {
       q.subject.includes(search),
   );
 
+  // 本场自动配套练习：classId + 错题列表里的考试名 → folder_safe
+  const sessionFolder = useMemo(
+    () => pickSessionFolder(classId, items),
+    [classId, items],
+  );
+
   return (
     <div className="space-y-4">
+      <AutoVariantsCard folder={sessionFolder} />
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative w-64">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -419,6 +555,7 @@ export function WrongQuestionsTab({ classId }: WrongQuestionsTabProps) {
                   <VariantRecommendPanel
                     studentId={q.student_id}
                     subject={q.subject}
+                    hint={q.title || ""}
                   />
                 )}
               </div>

@@ -93,23 +93,31 @@ def _resolve_dingtalk_userid(user_id: str) -> Optional[str]:
         db.close()
 
 
-def send_work_notice(userid: str, title: str, body_markdown: str, link_url: str) -> bool:
-    """工作通知 asyncsend_v2，action_card（底部可点按钮跳转报告链接）。"""
+def send_work_notice_ex(userid: str, title: str, body_markdown: str, link_url: str) -> dict:
+    """工作通知 asyncsend_v2，返回 {ok, task_id, errcode, errmsg}。
+
+    task_id 供调用方留痕（分层推送已读查询/发送结果记录）。
+    有报告链接 → action_card（底部可点按钮跳转）；
+    无链接（DINGTALK_FRONTEND_BASE_URL 未配置） → 纯 markdown 消息。
+    注意：action_card 缺 single_url 会被钉钉拒收（errcode=400002），
+    所以没链接时绝不能继续走 action_card。
+    """
+    result = {"ok": False, "task_id": None, "errcode": None, "errmsg": ""}
     agent_id_str = (settings.DINGTALK_AGENT_ID or "").strip()
     if not agent_id_str:
         print("[dingtalk_notify] DINGTALK_AGENT_ID 为空，跳过")
-        return False
+        result["errmsg"] = "DINGTALK_AGENT_ID 为空"
+        return result
     try:
         agent_id = int(agent_id_str)
     except (TypeError, ValueError):
         print(f"[dingtalk_notify] DINGTALK_AGENT_ID 非法={agent_id_str!r}")
-        return False
+        result["errmsg"] = "DINGTALK_AGENT_ID 非法"
+        return result
 
     url = f"{_DING_BASE}/topapi/message/corpconversation/asyncsend_v2?access_token={_ding_token()}"
-    msg = {
-        "agent_id": agent_id,
-        "userid_list": userid,
-        "msg": {
+    if link_url:
+        inner_msg = {
             "msgtype": "action_card",
             "action_card": {
                 "title": title,
@@ -117,21 +125,39 @@ def send_work_notice(userid: str, title: str, body_markdown: str, link_url: str)
                 "single_title": "查看成绩报告",
                 "single_url": link_url,
             },
-        },
+        }
+    else:
+        inner_msg = {
+            "msgtype": "markdown",
+            "markdown": {"title": title, "text": f"### {title}\n\n{body_markdown}"},
+        }
+    msg = {
+        "agent_id": agent_id,
+        "userid_list": userid,
+        "msg": inner_msg,
     }
     try:
         resp = requests.post(url, json=msg, timeout=_TIMEOUT)
         data = resp.json()
     except Exception as e:
         print(f"[dingtalk_notify] asyncsend_v2 请求失败 userid={userid}: {e}")
-        return False
-    ok = data.get("errcode") == 0
-    if not ok:
+        result["errmsg"] = f"请求失败: {e}"
+        return result
+    result["errcode"] = data.get("errcode")
+    result["errmsg"] = str(data.get("errmsg") or "")
+    result["ok"] = data.get("errcode") == 0
+    result["task_id"] = data.get("task_id") or None
+    if not result["ok"]:
         print(
             f"[dingtalk_notify] asyncsend_v2 失败 userid={userid} "
             f"errcode={data.get('errcode')} errmsg={data.get('errmsg')}"
         )
-    return ok
+    return result
+
+
+def send_work_notice(userid: str, title: str, body_markdown: str, link_url: str) -> bool:
+    """send_work_notice_ex 的布尔便捷封装（老调用方不改）。"""
+    return bool(send_work_notice_ex(userid, title, body_markdown, link_url)["ok"])
 
 
 def _fmt_num(v) -> str:
@@ -182,20 +208,33 @@ def _build_notify_content(payload: dict, report_kind: str = "smart_scoring") -> 
         ]
     ranking = ranking or []
 
-    head_verb = {"essay": "作文批改完成", "manual": "自主阅卷完成"}.get(report_kind, "统分完成")
+    head_verb = {
+        "essay": "作文批改完成",
+        "manual": "自主阅卷完成",
+        "grading_done": "批改完成",
+    }.get(report_kind, "统分完成")
     head = class_name or "班级"
-    lines = [
-        f"### {head} · {exam_name} {head_verb}",
-        f"已完成 **{count}** 人 ｜ 平均 **{_fmt_score(avg)}** ｜ 最高 **{_fmt_score(mx)}** ｜ 最低 **{_fmt_score(mn)}**",
+    lines = [f"### {head} · {exam_name} {head_verb}"]
+    if avg is None and mx is None and mn is None:
+        # 未统分（批改刚完成）：不显示一排「—」的成绩统计
+        lines.append(f"已完成 **{count}** 人")
+    else:
+        lines.append(
+            f"已完成 **{count}** 人 ｜ 平均 **{_fmt_score(avg)}** ｜ "
+            f"最高 **{_fmt_score(mx)}** ｜ 最低 **{_fmt_score(mn)}**"
+        )
+    has_scores = any(r.get("score_total") is not None for r in ranking)
+    lines += [
         "",
-        "**成绩单（按分数降序）**",
+        "**成绩单（按分数降序）**" if has_scores else "**完成情况（按错题数排序）**",
     ]
     for r in ranking[:_MAX_RANKING_ROWS]:
         box = r.get("student_box") or "?"
-        score = _fmt_num(r.get("score_total"))
+        score_val = r.get("score_total")
         wrong = r.get("wrong_count")
+        score_part = "未统分" if score_val is None else f"{_fmt_num(score_val)} 分"
         suffix = f"（错 {wrong} 题）" if wrong is not None else ""
-        lines.append(f"{r.get('rank')}. {box}：{score} 分{suffix}")
+        lines.append(f"{r.get('rank')}. {box}：{score_part}{suffix}")
     if len(ranking) > _MAX_RANKING_ROWS:
         lines.append(f"…（共 {len(ranking)} 人，完整名单点下方按钮查看）")
 
@@ -216,15 +255,19 @@ def _build_report_link(folder_safe: str) -> str:
     return f"{base}/dingtalk/entry?corpId={corp_id}&redirect={redirect}"
 
 
-def _notify_impl(user_id: str, safe: str, report_kind: str = "smart_scoring") -> None:
-    """线程内真正干活（已处于 grading 用户上下文，collector 依赖 correct_docs_dir() 走 contextvar）。"""
+def _do_notify(user_id: str, safe: str, report_kind: str = "smart_scoring") -> tuple[bool, str]:
+    """真正干活：解析身份 → 取聚合 → 拼消息 → 发送。返回 (是否成功, 结果说明)。
+
+    调用方须已处于 grading 用户上下文（collector 依赖 correct_docs_dir() 走 contextvar）。
+    """
     try:
         userid = _resolve_dingtalk_userid(user_id)
         if not userid:
-            return
+            return False, "该账号未绑定钉钉（无手机号且无 dingtalk_userid），无法推送"
 
         from app.services.ai_auto_report.collector import (
             collect_essay_payload,
+            collect_grading_done_payload,
             collect_manual_payload,
             collect_smart_scoring_payload,
         )
@@ -233,18 +276,39 @@ def _notify_impl(user_id: str, safe: str, report_kind: str = "smart_scoring") ->
             payload = collect_essay_payload(safe)
         elif report_kind == "manual":
             payload = collect_manual_payload(safe)
+        elif report_kind == "grading_done":
+            payload = collect_grading_done_payload(safe)
         else:
             payload = collect_smart_scoring_payload(safe)
 
         title, body = _build_notify_content(payload, report_kind)
         link = _build_report_link(safe)
-        if link:
-            send_work_notice(userid, title, body, link)
-        else:
-            print("[dingtalk_notify] DINGTALK_FRONTEND_BASE_URL 为空，无法生成报告链接，改发纯文本")
-            send_work_notice(userid, title, body + "\n\n（未配置前端公网地址，无法生成报告链接）", "")
+        if not link:
+            # 无报告链接：send_work_notice 内部会降级为 markdown 消息（不能发无链接的 action_card）
+            print("[dingtalk_notify] DINGTALK_FRONTEND_BASE_URL 为空，发无链接的 markdown 通知")
+        ok = send_work_notice(userid, title, body, link)
+        if not ok:
+            return False, "钉钉接口返回失败，请检查应用配置"
+        # 文字通知已送达，再追加成绩报告 PDF（自动/手动共用本路径）。
+        # PDF 失败只降级说明文字，绝不把已成功的文字通知算作失败。
+        pdf_note = ""
+        try:
+            from app.services.dingtalk_pdf import send_report_pdf
+
+            pdf_ok, pdf_msg = send_report_pdf(userid, payload, report_kind)
+            pdf_note = ("，" + pdf_msg) if pdf_ok else f"（{pdf_msg}，不影响文字通知）"
+        except Exception as e:
+            print(f"[dingtalk_notify] PDF 附加发送异常 user={user_id!r}: {e}")
+            pdf_note = "（PDF 发送异常，不影响文字通知）"
+        return True, "已发送钉钉工作通知" + pdf_note
     except Exception as e:
         print(f"[dingtalk_notify] 推送失败 user={user_id!r} safe={safe!r} kind={report_kind!r}: {e}")
+        return False, f"推送失败：{e}"
+
+
+def _notify_impl(user_id: str, safe: str, report_kind: str = "smart_scoring") -> None:
+    """线程内真正干活（兼容旧签名；结果只打日志）。"""
+    _do_notify(user_id, safe, report_kind)
 
 
 def notify_grading_done(user_id: str, safe: str, report_kind: str = "smart_scoring") -> None:
@@ -266,3 +330,22 @@ def notify_grading_done(user_id: str, safe: str, report_kind: str = "smart_scori
         target=lambda: run_with_grading_user(uid, _notify_impl, uid, s, report_kind),
         daemon=True,
     ).start()
+
+
+def push_dingtalk_now(user_id: str, safe: str, report_kind: str = "grading_done") -> tuple[bool, str]:
+    """手动推送：在当前（请求）线程内同步执行，把成败结果返回给调用方。
+
+    调用方须已处于 grading 用户上下文（HTTP 路由由中间件绑定）。
+    """
+    uid = str(user_id or "").strip()
+    s = str(safe or "").strip()
+    if not uid or uid == "unknown" or not s:
+        return False, "无效的用户或文件夹"
+    if not (
+        settings.DINGTALK_CORP_ID
+        and settings.DINGTALK_APP_KEY
+        and settings.DINGTALK_APP_SECRET
+        and settings.DINGTALK_AGENT_ID
+    ):
+        return False, "钉钉配置不完整，无法推送"
+    return _do_notify(uid, s, report_kind)

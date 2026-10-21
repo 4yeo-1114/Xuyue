@@ -42,6 +42,12 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   PenTool,
   FolderOpen,
   Upload,
@@ -74,6 +80,7 @@ import {
   Plus,
   Maximize2,
   ExternalLink,
+  Send,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -92,9 +99,13 @@ import {
   backfillBlocks,
   referenceGradeStatus,
   cancelReferenceGrade,
+  pushDingtalkNotify,
   saveAnswerKey,
   getAnswerKey,
   uploadOriginalPaper,
+  uploadAnswerSheet,
+  getAnswerSheetRows,
+  saveAnswerSheetRows,
   recognizePaperScores,
   applyPaperScores,
   gradeByAnswerKey,
@@ -134,7 +145,12 @@ import {
   prepareReferenceLayout,
   getReferenceLayout,
   confirmReferenceLayout,
+  getReferenceAnswerTable,
+  saveReferenceAnswerTable,
+  rebuildReferenceAnswerTable,
+  type ReferenceAnswerTablePage,
   prepareManualLayout,
+  manualHistoryEngine,
   getManualLayout,
   confirmManualLayout,
   saveManualSlotDecisions,
@@ -143,6 +159,10 @@ import {
   correctAiBlocks,
   aiPaperSummary,
   saveEssayNote,
+  generateWrongAnnotation,
+  saveWrongAnnotations,
+  type WrongAnnotationsMap,
+  type DeductionItemsMap,
   type EssayRubric,
   type EssayDimension,
   type EssayScorePayload,
@@ -155,6 +175,7 @@ import {
   type ReferenceLayoutStatus,
   type ManualSlotDecision,
   type ClassDataImportResult,
+  type AnswerSheetRow,
 } from "@/services/gradingApi";
 import { saveBlob } from "@/services/complianceApi";
 import { notifyAutoReportCheck } from "@/services/aiAutoReportApi";
@@ -179,6 +200,7 @@ import { importClassReviewExams, listStudentsByClass } from "@/services/api";
 import type { StudentInfo } from "@/types/api";
 import { useGlobalPrintPrefs } from "@/hooks/useGlobalPrintPrefs";
 import { useGlobalFilters } from "@/hooks/useGlobalFilters";
+import { getSubjectsBySchoolLevel } from "@/components/SubjectTabs";
 import { usePrinters } from "@/hooks/usePrinters";
 import { useLocale } from "@/contexts/LocaleContext";
 import { PrinterSettingsPanel } from "@/components/shared/PrinterSettingsPanel";
@@ -188,8 +210,24 @@ import {
   type AiResultBlock,
 } from "@/utils/aiResultBlocks";
 import { ReferenceLayoutCorrectionDialog } from "./ReferenceLayoutCorrectionDialog";
+import {
+  LayoutTemplateDialog,
+  saveLayoutTemplate,
+  type LayoutTemplateDetail,
+} from "./LayoutTemplateDialog";
+import {
+  applyTemplateToPages,
+  packLayoutForTemplate,
+  templateLayoutPages,
+} from "./layoutTemplateUtils";
+import {
+  StandardAnswerTableDialog,
+  type AnswerTableEdit,
+} from "./StandardAnswerTableDialog";
+import { AnswerSheetDialog } from "./AnswerSheetDialog";
 import { PaperScoreConfirmDialog, type PaperScoreItem } from "./PaperScoreConfirmDialog";
 import { ManualPaperGradingDialog, type ManualAnnotations, type ManualPaperDirection } from "./ManualPaperGradingDialog";
+import { WrongAnnotationCard } from "./WrongAnnotationCard";
 import {
   EssayDimensionConfigEditor,
   EssayDimensionScoreCard,
@@ -251,8 +289,12 @@ type RefCompleted = {
   result: string;
   image_annotated?: string;
   image_marks_only?: string;
+  image_marks_with_wrong_notes?: string;
+  image_annotated_with_wrong_notes?: string;
   image_original?: string;
   marks_only_filename?: string;
+  marks_with_wrong_notes_filename?: string;
+  annotated_with_wrong_notes_filename?: string;
   ocr_title?: string;
   ocr_content?: string;
   score_total?: number | null;
@@ -264,6 +306,8 @@ type RefCompleted = {
   blocks?: AiBlock[];
   question_notes?: Record<string, string>;
   paper_note?: string;
+  wrong_annotations?: WrongAnnotationsMap;
+  deduction_items?: DeductionItemsMap;
 };
 
 /** 智能批改 block → 统分键（与后端 _ai_block_score_key 口径一致） */
@@ -308,9 +352,14 @@ function markClassReviewPushed(folder: string, subject: string): void {
   }
 }
 
-/** 答题卡（自主阅卷）与答题卡（参照批改）共用同一套作答区切题与留痕管线。 */
+/** 自主阅卷（答题卡）与自主阅卷（试卷）共用同一套作答区切题与留痕管线，
+ * 只是框线来源不同（答题卡框线检测 vs 标准答题区）；参照批改同管线、按标准答案判分。 */
 function isManualEngine(engine: GradingEngine): boolean {
-  return engine === "manual" || engine === "manual_reference";
+  return (
+    engine === "manual" ||
+    engine === "manual_reference" ||
+    engine === "manual_paper"
+  );
 }
 
 function readAutoPushPreference(): boolean {
@@ -324,6 +373,27 @@ function readAutoPushPreference(): boolean {
 function writeAutoPushPreference(enabled: boolean): void {
   try {
     localStorage.setItem(CLASS_REVIEW_AUTO_PUSH_KEY, enabled ? "1" : "0");
+  } catch {
+    // 隐私模式/存储满时静默降级
+  }
+}
+
+/** 钉钉推送模式：auto=批改完自动推 / manual=手动点按钮推（默认自动） */
+const DINGTALK_PUSH_MODE_KEY = "grade_buddy_dingtalk_push_mode";
+
+function readDingtalkPushMode(): "auto" | "manual" {
+  try {
+    return localStorage.getItem(DINGTALK_PUSH_MODE_KEY) === "manual"
+      ? "manual"
+      : "auto";
+  } catch {
+    return "auto";
+  }
+}
+
+function writeDingtalkPushMode(mode: "auto" | "manual"): void {
+  try {
+    localStorage.setItem(DINGTALK_PUSH_MODE_KEY, mode);
   } catch {
     // 隐私模式/存储满时静默降级
   }
@@ -367,7 +437,8 @@ function structureNumberOnly(
   title: string,
 ): string {
   const s = structure?.[title];
-  const num = (s?.sub || s?.major || "").trim();
+  // 印刷题号（标准答题区路径带回）优先——那就是老师卷面上认得的题号
+  const num = (s?.printed_no || s?.sub || s?.major || "").trim();
   if (num) return num;
   const m = (title || "").match(/^第(.+?)题$/);
   return m ? m[1] : title;
@@ -518,6 +589,27 @@ function mergeCompletedLists(
   return Object.values(map);
 }
 
+/** 从文件名取试卷框页码（`名_2.jpg` → 2）；无 `_\d+` 后缀视为第 1 页。 */
+function paperBoxPageNumberOfName(filename?: string | null): number {
+  const stem = String(filename || "").trim().replace(/\.[^.]+$/, "");
+  const m = stem.match(/_(\d+)$/);
+  return m ? Math.max(1, parseInt(m[1], 10)) : 1;
+}
+
+/** 同 base 分组里，completed 条目 entryName 是否覆盖 fileName 这一页。
+ *  作文批改是整卷语义（多页重复同一总分）→ 同 base 即覆盖；
+ *  智能/参照/自主阅卷每页独立计分 → 只有同页条目才覆盖，不能拿别的页的结果顶替。 */
+function completedEntryCoversFile(
+  entryName: string,
+  fileName: string,
+  engine: GradingEngine,
+): boolean {
+  if (engine === "essay") return true;
+  return (
+    paperBoxPageNumberOfName(entryName) === paperBoxPageNumberOfName(fileName)
+  );
+}
+
 function findCompletedEntryForFile(
   filename: string,
   merged: Record<string, RefCompleted>,
@@ -531,6 +623,7 @@ function findCompletedEntryForFile(
   for (const item of Object.values(merged)) {
     if (!item?.name) continue;
     if (getEssayGroupBaseName(item.name) !== base) continue;
+    if (!completedEntryCoversFile(item.name, filename, engine)) continue;
     if (!isPaperGraded(item, engine)) continue;
     const score = getCompletedItemRichness(item);
     if (score > bestScore) {
@@ -580,6 +673,38 @@ function computeBoxScoreGrade(
   }
   if (score != null) score = Math.round(score * 100) / 100;
   return { score, grade };
+}
+
+/** 正反面合并拆分展示：多页且各页有分时返回「正40+反60=100分」（第1页=正面、第2页=反面、3起=页N）。
+ *  作文整卷计分不拆分（多页重复同一总分）；单页不展示拆分。 */
+function computeBoxPageBreakdown(
+  box: PaperBox,
+  merged: Record<string, RefCompleted>,
+  engine: GradingEngine,
+): string {
+  if (engine === "essay") return "";
+  const parts: string[] = [];
+  let sum = 0;
+  const seen = new Set<string>();
+  for (const f of box.files) {
+    const item = findCompletedEntryForFile(f.name, merged, engine);
+    if (!item || !item.name || seen.has(item.name)) continue;
+    seen.add(item.name);
+    const v =
+      typeof item.score_total === "number" && Number.isFinite(item.score_total)
+        ? item.score_total
+        : null;
+    if (v == null) continue;
+    sum += v;
+    const m = String(f.name).replace(/\.[^.]+$/, "").match(/_(\d+)$/);
+    const page = m ? Math.max(1, parseInt(m[1], 10)) : 1;
+    const label = page <= 1 ? "正" : page === 2 ? "反" : `页${page}`;
+    const vs = Math.round(v * 100) / 100;
+    parts.push(`${label}${vs}`);
+  }
+  if (parts.length < 2) return "";
+  const total = Math.round(sum * 100) / 100;
+  return `${parts.join("+")}=${total}分`;
 }
 
 function extractAiScoringTitlesFromBlocks(blocks: AiResultBlock[]): string[] {
@@ -813,7 +938,7 @@ function ZoomableImage({ src, alt }: { src: string; alt: string }) {
 
 export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
   const { t } = useLocale();
-  const { selectedSubject, grade } = useGlobalFilters();
+  const { selectedSubject, grade, schoolLevel } = useGlobalFilters();
   const navigate = useNavigate();
   const displayFolderName = useCallback((name: string) => {
     const s = String(name || "");
@@ -850,6 +975,16 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     writeAutoPushPreference(autoPushClassReview);
   }, [autoPushClassReview]);
 
+  /** 钉钉推送模式：auto=批改完自动推 / manual=手动推（持久化到本地） */
+  const [dingtalkPushMode, setDingtalkPushMode] = useState(
+    readDingtalkPushMode,
+  );
+  useEffect(() => {
+    writeDingtalkPushMode(dingtalkPushMode);
+  }, [dingtalkPushMode]);
+  /** 手动推送进行中标记，避免连点并发 */
+  const [dingtalkPushing, setDingtalkPushing] = useState(false);
+
   /** 批改完成自动推送到「课堂讲评」的弹窗状态 */
   const [classReviewPushOpen, setClassReviewPushOpen] = useState(false);
   const [classReviewPushState, setClassReviewPushState] = useState<{
@@ -880,6 +1015,27 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     useState(false);
   const [referenceLayoutOpening, setReferenceLayoutOpening] = useState(false);
   const [referenceLayoutSaving, setReferenceLayoutSaving] = useState(false);
+  // 布局模板（跨考试复用框选）：存为模板 / 从模板应用
+  const [layoutTemplateOpen, setLayoutTemplateOpen] = useState(false);
+  const [layoutTemplateMode, setLayoutTemplateMode] = useState<"save" | "apply">(
+    "save",
+  );
+  const [layoutTemplateSaving, setLayoutTemplateSaving] = useState(false);
+  const [answerTableOpen, setAnswerTableOpen] = useState(false);
+  const [answerTableLoading, setAnswerTableLoading] = useState(false);
+  const [answerTableSaving, setAnswerTableSaving] = useState(false);
+  const [answerTablePages, setAnswerTablePages] = useState<
+    ReferenceAnswerTablePage[]
+  >([]);
+  // 答案纸专窗：只看「题号+答案」，确认后与答题区按题号合并
+  const [answerSheetOpen, setAnswerSheetOpen] = useState(false);
+  const [answerSheetLoading, setAnswerSheetLoading] = useState(false);
+  const [answerSheetSaving, setAnswerSheetSaving] = useState(false);
+  const [answerSheetRows, setAnswerSheetRows] = useState<AnswerSheetRow[]>([]);
+  const [answerSheetError, setAnswerSheetError] = useState("");
+  // 识别列表「答题区框」→切题审查同款框编辑器：标记来源（确认保存后自动回识别列表）+ 落点页
+  const boxEditReturnRef = useRef(false);
+  const [boxEditTargetPage, setBoxEditTargetPage] = useState(0);
   const [manualLayoutStatus, setManualLayoutStatus] =
     useState<ReferenceLayoutStatus>({
       confirmed: false,
@@ -979,6 +1135,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  const [newFolderSubject, setNewFolderSubject] = useState("");
   const [newFolderHomeworkType, setNewFolderHomeworkType] = useState(
     HOMEWORK_TYPES[0],
   );
@@ -1027,6 +1184,8 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
   const [manualPaperSaving, setManualPaperSaving] = useState(false);
   const [manualPaperPrinting, setManualPaperPrinting] = useState(false);
   const [detailShowOriginal, setDetailShowOriginal] = useState(false);
+  // 屏幕预览「显示批注」开关（默认开）：开时优先显示带错因批注的卷面变体图
+  const [previewWrongNotes, setPreviewWrongNotes] = useState(true);
   const [aiCorrectOpen, setAiCorrectOpen] = useState(false);
   const [aiCorrectSaving, setAiCorrectSaving] = useState(false);
   const [aiCorrections, setAiCorrections] = useState<
@@ -1038,6 +1197,13 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
   const [aiPaperNote, setAiPaperNote] = useState("");
   const [aiPaperNoteSource, setAiPaperNoteSource] = useState<"ai" | "manual">("manual");
   const [aiSummaryLoading, setAiSummaryLoading] = useState(false);
+  // 判错批注：questionKey → 批注；随 detailItem 同步，编辑/重生成走 wrong-annotation 接口
+  const [wrongAnnotations, setWrongAnnotations] = useState<WrongAnnotationsMap>({});
+  // 结构化扣分项：随 detailItem 同步；清分联动时本地清掉并在下次保存整体覆盖回写
+  const [manualDeductions, setManualDeductions] = useState<DeductionItemsMap>({});
+  const manualDeductionsRef = useRef<DeductionItemsMap>({});
+  const manualDeductionsDirtyRef = useRef(false);
+  const [wrongAnnoRegenerating, setWrongAnnoRegenerating] = useState<string | null>(null);
   const [essayResultEditOpen, setEssayResultEditOpen] = useState(false);
   const [essayResultDraft, setEssayResultDraft] = useState("");
   const [essayResultSaving, setEssayResultSaving] = useState(false);
@@ -1071,9 +1237,6 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
   const [exportPdfOneLoading, setExportPdfOneLoading] = useState(false);
   const [browserPrintLoading, setBrowserPrintLoading] = useState(false);
   const [browserPrintOneLoading, setBrowserPrintOneLoading] = useState(false);
-  const [rotateOneLoading, setRotateOneLoading] = useState<
-    "left" | "right" | null
-  >(null);
   const [rotatingFileName, setRotatingFileName] = useState<string | null>(null);
   const [testPrintLoading, setTestPrintLoading] = useState(false);
   const [testPrintOpen, setTestPrintOpen] = useState(false);
@@ -1099,6 +1262,12 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
   const [standardBoxOpen, setStandardBoxOpen] = useState(false);
   const [standardBoxPageNo, setStandardBoxPageNo] = useState(1);
   const [standardBoxUploading, setStandardBoxUploading] = useState(false);
+  // 「上传学生试卷」批量上传进度（此前无任何进行中提示，多张大图时像没反应）
+  const [studentUploading, setStudentUploading] = useState(false);
+  const [studentUploadProgress, setStudentUploadProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
   const [standardBoxDeleteOpen, setStandardBoxDeleteOpen] = useState(false);
   const [standardBoxDeleting, setStandardBoxDeleting] = useState(false);
   const standardBoxUploadTargetPageRef = useRef(1);
@@ -1116,6 +1285,8 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     setPaperSourceId,
     printMode,
     setPrintMode,
+    printWrongNotes,
+    setPrintWrongNotes,
     resolvePrinterName,
     getCustomPaperSetting,
   } = useGlobalPrintPrefs();
@@ -1126,6 +1297,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
   } = usePrinters();
 
   const stdInputRef = useRef<HTMLInputElement>(null);
+  const answerSheetInputRef = useRef<HTMLInputElement>(null);
   const standardBoxUploadInputRef = useRef<HTMLInputElement>(null);
   const studentInputRef = useRef<HTMLInputElement>(null);
   const paperBoxUploadInputRef = useRef<HTMLInputElement>(null);
@@ -1281,7 +1453,8 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
         j?.engine === "essay" ||
         j?.engine === "smart_ref" ||
         j?.engine === "manual" ||
-        j?.engine === "manual_reference"
+        j?.engine === "manual_reference" ||
+        j?.engine === "manual_paper"
           ? (j.engine as GradingEngine)
           : undefined;
       const active_rubric_id =
@@ -1746,8 +1919,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
       const requestId = ++loadFolderFilesReqIdRef.current;
       try {
         const currentEngine = engine || gradingEngine;
-        const historyEngine =
-          currentEngine === "manual_reference" ? "manual" : currentEngine;
+        const historyEngine = manualHistoryEngine(currentEngine);
         const [res, hist] = await Promise.all([
           listFolderFiles(name),
           currentEngine === "essay"
@@ -2526,14 +2698,20 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
         ...(gradingsPersisted?.completed || []),
         ...(refProgress?.completed || []),
       ] as RefCompleted[];
-      const currentBase = getEssayGroupBaseName(
-        slot?.name || `${sanitizePaperBoxName(box.student.name)}_${pageNo}.jpg`,
-      );
+      const targetName =
+        slot?.name || `${sanitizePaperBoxName(box.student.name)}_${pageNo}.jpg`;
+      const currentBase = getEssayGroupBaseName(targetName);
       const currentCompleted = slot
         ? allCompleted.find((c) => c.name === slot.name)
         : undefined;
+      // 借整卷/同页结果兜底时必须先确认该条目覆盖当前页：
+      // 作文整卷语义可跨页借（多页重复同一总分）；参照/智能/自主每页独立，
+      // 不能把 P1 的批改结果顶到 P2 头上（未批改就显示未批改）。
       const groupCompleted = allCompleted
         .filter((c) => getEssayGroupBaseName(c.name) === currentBase)
+        .filter((c) =>
+          completedEntryCoversFile(c.name, targetName, gradingEngine),
+        )
         .sort(
           (a, b) => getCompletedItemRichness(b) - getCompletedItemRichness(a),
         )[0];
@@ -2569,7 +2747,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
       }
       setDetailShowOriginal(false);
     },
-    [paperBoxes, gradingsPersisted, refProgress, sanitizePaperBoxName],
+    [paperBoxes, gradingsPersisted, refProgress, sanitizePaperBoxName, gradingEngine],
   );
 
   const openManualPaper = useCallback(
@@ -2598,13 +2776,14 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
   );
 
   const openPaperBoxDialog = useCallback(
-    (studentId: string) => {
+    (studentId: string, options?: { previewOnly?: boolean }) => {
       const box = paperBoxes.find((b) => b.student.id === studentId);
       if (!box) return;
       const firstIdx = box.slots.findIndex(Boolean);
       const page = firstIdx >= 0 ? firstIdx + 1 : 1;
       const firstFile = box.slots[firstIdx >= 0 ? firstIdx : 0];
-      if (isManualEngine(gradingEngine) && firstFile) {
+      // 卡片点按：手动系进打分弹窗；放大镜（previewOnly）：统分/批改详情
+      if (!options?.previewOnly && isManualEngine(gradingEngine) && firstFile) {
         openManualPaper(firstFile.name);
         return;
       }
@@ -2920,7 +3099,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     setCreateLoading(true);
     try {
       const res = await createFolder(name, selectedClass || undefined, {
-        subject: selectedSubject || undefined,
+        subject: newFolderSubject || selectedSubject || undefined,
         grade: grade || undefined,
         homeworkType: newFolderHomeworkType || undefined,
       });
@@ -3151,6 +3330,186 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     setDetailItem(item);
   }, []);
 
+  // 判错批注地图随详情卷同步（换卷/批注落盘后刷新）
+  useEffect(() => {
+    setWrongAnnotations(detailItem?.wrong_annotations ?? {});
+  }, [detailItem?.name, detailItem?.wrong_annotations]);
+
+  // 扣分项地图随详情卷同步（换卷/落盘后刷新）
+  useEffect(() => {
+    const next = detailItem?.deduction_items ?? {};
+    manualDeductionsRef.current = next;
+    manualDeductionsDirtyRef.current = false;
+    setManualDeductions(next);
+  }, [detailItem?.name, detailItem?.deduction_items]);
+
+  /** 批注存储引擎：manual/manual_reference → manual；作文不参与批注 */
+  const wrongAnnoEngine = useMemo(() => {
+    if (isManualEngine(gradingEngine)) return "manual" as const;
+    if (
+      gradingEngine === "baidu" ||
+      gradingEngine === "smart_ref" ||
+      gradingEngine === "aliyun"
+    )
+      return gradingEngine;
+    return null;
+  }, [gradingEngine]);
+
+  /** 整体覆盖保存批注（轻量端点，不重画留痕，变体图后端自刷） */
+  const persistWrongAnnotations = useCallback(
+    async (next: WrongAnnotationsMap): Promise<boolean> => {
+      if (!selectedFolder || !detailItem?.name || !wrongAnnoEngine) return false;
+      try {
+        const res = await saveWrongAnnotations(
+          selectedFolder,
+          detailItem.name,
+          wrongAnnoEngine,
+          next,
+        );
+        if (!res.ok) return false;
+        const saved = res.wrong_annotations ?? next;
+        setWrongAnnotations(saved);
+        const bust = (url?: string | null) =>
+          url ? `${url}${url.includes("?") ? "&" : "?"}v=${Date.now()}` : url;
+        setDetailItem((prev) =>
+          prev && prev.name === detailItem.name
+            ? {
+                ...prev,
+                wrong_annotations: saved,
+                image_annotated_with_wrong_notes: bust(
+                  res.image_annotated_with_wrong_notes,
+                ),
+                annotated_with_wrong_notes_filename:
+                  res.annotated_with_wrong_notes_filename,
+                image_marks_with_wrong_notes: bust(res.image_marks_with_wrong_notes),
+                marks_with_wrong_notes_filename: res.marks_with_wrong_notes_filename,
+              }
+            : prev,
+        );
+        return true;
+      } catch (e: any) {
+        toast.error(e?.message || "批注保存失败");
+        return false;
+      }
+    },
+    [selectedFolder, detailItem?.name, wrongAnnoEngine],
+  );
+
+  /** 编辑/手写批注（空文本 = 删除）；AI 稿被改后标 edited，不再被自动覆盖 */
+  const handleWrongAnnoEdit = useCallback(
+    (questionKey: string, text: string) => {
+      const before = wrongAnnotations[questionKey];
+      const trimmed = (text || "").trim();
+      let next: WrongAnnotationsMap;
+      if (!trimmed) {
+        const { [questionKey]: _removed, ...rest } = wrongAnnotations;
+        next = rest;
+      } else {
+        next = {
+          ...wrongAnnotations,
+          [questionKey]: {
+            text: trimmed,
+            source: before?.source === "ai" ? "ai" : "manual",
+            edited: true,
+            ...(before?.generated_at
+              ? { generated_at: before.generated_at }
+              : {}),
+          },
+        };
+      }
+      setWrongAnnotations(next);
+      void persistWrongAnnotations(next);
+    },
+    [wrongAnnotations, persistWrongAnnotations],
+  );
+
+  /** 重新生成单题 AI 批注（老师明确要求，覆盖旧稿） */
+  const handleWrongAnnoRegenerate = useCallback(
+    async (questionKey: string) => {
+      if (
+        !selectedFolder ||
+        !detailItem?.name ||
+        !wrongAnnoEngine ||
+        wrongAnnoRegenerating
+      )
+        return;
+      setWrongAnnoRegenerating(questionKey);
+      try {
+        const res = await generateWrongAnnotation(
+          selectedFolder,
+          detailItem.name,
+          wrongAnnoEngine,
+          questionKey,
+        );
+        if (res.ok) {
+          const saved = res.wrong_annotations ?? wrongAnnotations;
+          setWrongAnnotations(saved);
+          const bust = (url?: string | null) =>
+            url ? `${url}${url.includes("?") ? "&" : "?"}v=${Date.now()}` : url;
+          setDetailItem((prev) =>
+            prev && prev.name === detailItem.name
+              ? {
+                  ...prev,
+                  wrong_annotations: saved,
+                  image_annotated_with_wrong_notes: bust(
+                    res.image_annotated_with_wrong_notes,
+                  ),
+                  annotated_with_wrong_notes_filename:
+                    res.annotated_with_wrong_notes_filename,
+                  image_marks_with_wrong_notes: bust(res.image_marks_with_wrong_notes),
+                  marks_with_wrong_notes_filename: res.marks_with_wrong_notes_filename,
+                }
+              : prev,
+          );
+          if (!res.generated || !Object.keys(res.generated).length) {
+            toast.error("生成失败，请稍后重试或手动编写");
+          }
+        }
+      } catch (e: any) {
+        toast.error(e?.message || "批注生成失败");
+      } finally {
+        setWrongAnnoRegenerating(null);
+      }
+    },
+    [
+      selectedFolder,
+      detailItem?.name,
+      wrongAnnoEngine,
+      wrongAnnoRegenerating,
+      wrongAnnotations,
+    ],
+  );
+
+  /** 改为手动：来源置 manual，保留文本 */
+  const handleWrongAnnoMarkManual = useCallback(
+    (questionKey: string) => {
+      const before = wrongAnnotations[questionKey];
+      if (!before) return;
+      const next: WrongAnnotationsMap = {
+        ...wrongAnnotations,
+        [questionKey]: {
+          text: before.text || "",
+          source: "manual",
+          edited: true,
+          ...(before.generated_at ? { generated_at: before.generated_at } : {}),
+        },
+      };
+      setWrongAnnotations(next);
+      void persistWrongAnnotations(next);
+    },
+    [wrongAnnotations, persistWrongAnnotations],
+  );
+
+  /** 删除批注 */
+  const handleWrongAnnoDelete = useCallback(
+    (questionKey: string) => {
+      const { [questionKey]: _removed, ...rest } = wrongAnnotations;
+      setWrongAnnotations(rest);
+      void persistWrongAnnotations(rest);
+    },
+    [wrongAnnotations, persistWrongAnnotations],
+  );
+
   const openAiCorrectDialog = useCallback(() => {
     if (!detailItem?.blocks?.length) return;
     const map: Record<string, "对" | "错" | "未作答" | "半对"> = {};
@@ -3205,6 +3564,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
         blocks,
         aiQuestionNotes,
         aiPaperNote.trim(),
+        wrongAnnotations,
       );
       if (res.ok && res.item) {
         // 留痕图同名覆盖，给 URL 追加缓存破坏参数，强制浏览器重新拉取新图
@@ -3214,6 +3574,8 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
           ...res.item,
           image_annotated: bust(res.item.image_annotated),
           image_marks_only: bust(res.item.image_marks_only),
+          image_marks_with_wrong_notes: bust(res.item.image_marks_with_wrong_notes),
+          image_annotated_with_wrong_notes: bust(res.item.image_annotated_with_wrong_notes),
           image_original: bust(res.item.image_original),
         } as RefCompleted);
         setAiCorrectOpen(false);
@@ -3279,14 +3641,25 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
         detailItem.name,
         scores,
         generateMarks,
+        undefined,
+        undefined,
+        dingtalkPushMode === "auto",
+        // 清分联动动过扣分项才整体覆盖回写；否则省略 = 本次不改（后端 None 语义）
+        manualDeductionsDirtyRef.current ? manualDeductionsRef.current : undefined,
       );
       if (res.ok && res.item) {
+        manualDeductionsDirtyRef.current = false;
         updateManualCompletedItem(res.item as RefCompleted);
         return res.item as RefCompleted;
       }
       return null;
     },
-    [detailItem?.name, selectedFolder, updateManualCompletedItem],
+    [
+      detailItem?.name,
+      selectedFolder,
+      updateManualCompletedItem,
+      dingtalkPushMode,
+    ],
   );
 
   const openManualSibling = useCallback(
@@ -3415,6 +3788,9 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
           true,
           annotations.questionNotes,
           annotations.paperNote,
+          dingtalkPushMode === "auto",
+          annotations.wrongAnnotations,
+          annotations.deductionItems,
         );
         if (!response.ok || !response.item) {
           throw new Error(response.message || t("grading.toast.saveFailed"));
@@ -3441,7 +3817,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
         throw error;
       }
     },
-    [manualGradingItem?.name, selectedFolder, t],
+    [manualGradingItem?.name, selectedFolder, t, dingtalkPushMode],
   );
 
   const persistManualPaperDecisions = useCallback(
@@ -3460,6 +3836,9 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
         true,
         annotations.questionNotes,
         annotations.paperNote,
+        dingtalkPushMode === "auto",
+        annotations.wrongAnnotations,
+        annotations.deductionItems,
       );
       if (!response.ok || !response.item) {
         throw new Error(response.message || t("grading.toast.saveFailed"));
@@ -3479,7 +3858,31 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
       );
       return saved;
     },
-    [manualGradingItem?.name, selectedFolder, t],
+    [manualGradingItem?.name, selectedFolder, t, dingtalkPushMode],
+  );
+
+  /** 手动批改对话框里单题重新生成 AI 批注（覆盖旧稿），返回完整映射 */
+  const handleManualWrongAnnoRegenerate = useCallback(
+    async (questionKey: string): Promise<WrongAnnotationsMap | null> => {
+      if (!selectedFolder || !manualGradingItem?.name) return null;
+      try {
+        const res = await generateWrongAnnotation(
+          selectedFolder,
+          manualGradingItem.name,
+          "manual",
+          questionKey,
+        );
+        if (!res.ok) return null;
+        if (!res.generated || !Object.keys(res.generated).length) {
+          toast.error("生成失败，请稍后重试或手动编写");
+        }
+        return res.wrong_annotations ?? null;
+      } catch (e: any) {
+        toast.error(e?.message || "批注生成失败");
+        return null;
+      }
+    },
+    [selectedFolder, manualGradingItem?.name],
   );
 
   const handleManualPrintPreview = useCallback(
@@ -3510,7 +3913,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
       setManualPaperPrinting(true);
       try {
         const saved = await persistManualPaperDecisions(decisions, annotations);
-        const filename = marksOnlyFilenameFromUrl(saved.image_marks_only);
+        const filename = marksFilenameForPrint(saved);
         if (!filename) {
           throw new Error(t("grading.toast.noMarkFilename"));
         }
@@ -3574,6 +3977,9 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
           true,
           annotations.questionNotes,
           annotations.paperNote,
+          dingtalkPushMode === "auto",
+          annotations.wrongAnnotations,
+          annotations.deductionItems,
         );
         if (!response.ok || !response.item) return;
         const saved = response.item as RefCompleted;
@@ -3640,6 +4046,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
       refProgress?.completed,
       selectedFolder,
       t,
+      dingtalkPushMode,
     ],
   );
 
@@ -3714,6 +4121,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
         majorOrder,
         majorTitles,
         paperSubs,
+        dingtalkPushMode === "auto",
       );
       if (res.ok) {
         toast.success(res.message || t("grading.toast.autoScoreDone"));
@@ -3757,7 +4165,8 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
         if (res.major_titles && Object.keys(res.major_titles).length) {
           setMajorTitles(res.major_titles);
         }
-        if (res.paper_subs && Object.keys(res.paper_subs).length) {
+        if (res.paper_subs) {
+          // 含空对象：标准答题区路径用逐题行（paper_subs=空），要把旧的纸面折叠小题行清掉
           setPaperSubs(res.paper_subs);
         }
         toast.success(t("grading.toast.autoAssignDone"));
@@ -3822,6 +4231,8 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
       );
       await loadFolderFiles(selectedFolder);
       setStandardBoxPageNo(1);
+      // 上传完标准答案 → 自动识别每道题答案并列出
+      void handleOpenAnswerTable({ auto: true });
     } catch (err: any) {
       toast.error(err?.message || t("grading.uploadFailed"));
     } finally {
@@ -3855,6 +4266,9 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
       await loadFolderFiles(selectedFolder, gradingEngine);
       setStandardBoxPageNo(pageNo);
       toast.success(t("grading.standardBox.pageUploaded", { page: pageNo }));
+      // 试卷框里逐页上传：先关掉页槽对话框，自动识别并列出每道题答案
+      setStandardBoxOpen(false);
+      void handleOpenAnswerTable({ auto: true });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error(msg || t("grading.uploadFailed"));
@@ -3896,6 +4310,9 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
   ) => {
     const files = e.target.files;
     if (!files?.length || !selectedFolder) return;
+    if (studentUploading) return;
+    setStudentUploading(true);
+    setStudentUploadProgress({ done: 0, total: files.length });
     try {
       const occupied = new Set(studentFiles.map((f) => f.name));
       let uploaded = 0;
@@ -3946,6 +4363,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
         await uploadToFolder(selectedFolder, uploadFile, false);
         occupied.add(targetName);
         uploaded += 1;
+        setStudentUploadProgress({ done: uploaded, total: files.length });
       }
       if (uploaded > 0) {
         const namedHint =
@@ -3959,6 +4377,9 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
       }
     } catch (err: any) {
       toast.error(err?.message || t("grading.uploadFailed"));
+    } finally {
+      setStudentUploading(false);
+      setStudentUploadProgress(null);
     }
     e.target.value = "";
   };
@@ -4040,12 +4461,311 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
       setReferenceLayoutOpen(false);
       toast.success(t("grading.layout.saved"));
       await loadFolderFiles(selectedFolder, gradingEngine);
+      // 从识别列表「答题区框」进来的：改完框自动回识别列表（答案表按新框重建，手改保留）
+      if (boxEditReturnRef.current) {
+        boxEditReturnRef.current = false;
+        await handleOpenAnswerTable({ auto: true });
+      }
     } catch (error: unknown) {
       toast.error(
         error instanceof Error ? error.message : t("grading.layout.saveFailed"),
       );
     } finally {
       setReferenceLayoutSaving(false);
+    }
+  };
+
+  // 布局模板：把当前布局（编辑会话页，或磁盘上已确认布局）存成命名模板
+  const handleSaveLayoutTemplate = async (payload: {
+    name: string;
+    subject: string;
+    class_id: string;
+  }) => {
+    if (!selectedFolder || layoutTemplateSaving) return;
+    setLayoutTemplateSaving(true);
+    try {
+      let pages = referenceLayoutPages;
+      if (!pages?.length) {
+        const result = await getReferenceLayout(selectedFolder);
+        pages = result.pages || [];
+      }
+      if (!pages?.length) {
+        toast.error(t("layoutTemplate.noLayout"));
+        return;
+      }
+      await saveLayoutTemplate({
+        name: payload.name,
+        layout: packLayoutForTemplate(pages),
+        source_folder: selectedFolder,
+        class_id: payload.class_id || selectedClass || "",
+        subject: payload.subject || selectedSubject || "",
+      });
+      toast.success(t("layoutTemplate.saveSuccess"));
+      setLayoutTemplateOpen(false);
+    } catch (error: unknown) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("layoutTemplate.saveFailed"),
+      );
+    } finally {
+      setLayoutTemplateSaving(false);
+    }
+  };
+
+  // 布局模板：套到当前考试文件夹，开切题审查编辑器供核对，确认仍走 confirm_reference_layout
+  const handleApplyLayoutTemplate = async (template: LayoutTemplateDetail) => {
+    if (
+      !selectedFolder ||
+      referenceLayoutOpening ||
+      referenceLayoutPreparing ||
+      refLoading
+    ) {
+      return;
+    }
+    try {
+      const result = referenceLayoutStatus.confirmed
+        ? await getReferenceLayout(selectedFolder)
+        : await prepareReferenceLayout(selectedFolder);
+      const applied = applyTemplateToPages(
+        result.pages || [],
+        templateLayoutPages(template),
+      );
+      if (!applied.length) {
+        toast.error(t("layoutTemplate.noLayout"));
+        return;
+      }
+      setReferenceLayoutPages(applied);
+      setReferenceLayoutPrepareId(result.prepare_id || null);
+      setLayoutTemplateOpen(false);
+      setStandardBoxOpen(false);
+      setReferenceLayoutOpen(true);
+      toast.success(t("layoutTemplate.applied"));
+    } catch (error: unknown) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("grading.layout.loadFailed"),
+      );
+    }
+  };
+
+  // 上传完标准答案自动识别每道题答案，列出来供老师核对/手动修改
+  const handleOpenAnswerTable = async (options?: {
+    auto?: boolean;
+  }) => {
+    if (!selectedFolder || answerTableLoading) return;
+    // auto=刚上传完，state 可能未刷新，不看 standardAnswers 直接识别
+    if (!options?.auto && standardAnswers.length === 0) {
+      toast.error(t("grading.preview.uploadStdFirst"));
+      return;
+    }
+    setAnswerTableLoading(true);
+    setAnswerTableOpen(true);
+    try {
+      const result = await getReferenceAnswerTable(selectedFolder, true);
+      setAnswerTablePages(result.pages || []);
+    } catch (error: unknown) {
+      if (!options?.auto) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : t("grading.answerTable.loadFailed"),
+        );
+      }
+    } finally {
+      setAnswerTableLoading(false);
+    }
+  };
+
+  // 识别列表「答题区框」/缩略图：关列表进切题审查同款框编辑器改框（识别错了拖框即可）。
+  // 框的唯一持久化路径是 confirm_reference_layout（批改只读 question.answer_bboxes），
+  // 所以不做列表内改框；确认保存后 handleConfirmReferenceLayout 会自动带回本表。
+  const handleEditAnswerBoxes = async (pageNo: number) => {
+    if (
+      !selectedFolder ||
+      gradingEngine !== "aliyun" ||
+      referenceLayoutOpening ||
+      referenceLayoutPreparing
+    )
+      return;
+    boxEditReturnRef.current = true;
+    setBoxEditTargetPage(pageNo);
+    setAnswerTableOpen(false);
+    try {
+      if (referenceLayoutStatus.confirmed) {
+        // 已有确认过的切题审查：直接开编辑器（不动 OCR，旧布局就在磁盘上）
+        const result = await getReferenceLayout(selectedFolder);
+        setReferenceLayoutPages(result.pages || []);
+        setReferenceLayoutPrepareId(result.prepare_id || null);
+      } else {
+        // 还没确认过切题审查：现场准备一份再开（每页一次新鲜 OCR）
+        setReferenceLayoutPreparing(true);
+        const result = await prepareReferenceLayout(selectedFolder);
+        setReferenceLayoutPages(result.pages || []);
+        setReferenceLayoutPrepareId(result.prepare_id || null);
+      }
+      setReferenceLayoutOpen(true);
+    } catch (error: unknown) {
+      boxEditReturnRef.current = false;
+      toast.error(
+        error instanceof Error ? error.message : t("grading.layout.loadFailed"),
+      );
+      // 编辑器打不开就退回识别列表，别把老师丢在空白处
+      void handleOpenAnswerTable({ auto: true });
+    } finally {
+      setReferenceLayoutPreparing(false);
+    }
+  };
+
+  const handleSaveAnswerTable = async (
+    pageNo: number,
+    questions: AnswerTableEdit[],
+  ) => {
+    if (!selectedFolder) return;
+    setAnswerTableSaving(true);
+    try {
+      const result = await saveReferenceAnswerTable(
+        selectedFolder,
+        pageNo,
+        questions,
+      );
+      setAnswerTablePages((prev) =>
+        prev.map((page) =>
+          page.page_no === pageNo
+            ? {
+                ...page,
+                questions: result.questions || page.questions,
+                updated_at: result.updated_at ?? page.updated_at,
+              }
+            : page,
+        ),
+      );
+      toast.success(t("grading.answerTable.saved"));
+    } catch (error: unknown) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("grading.answerTable.saveFailed"),
+      );
+      throw error;
+    } finally {
+      setAnswerTableSaving(false);
+    }
+  };
+
+  const handleRebuildAnswerTable = async (resetEdits: boolean) => {
+    if (!selectedFolder || answerTableLoading) return;
+    setAnswerTableLoading(true);
+    try {
+      const result = await rebuildReferenceAnswerTable(
+        selectedFolder,
+        0,
+        resetEdits,
+      );
+      setAnswerTablePages(result.pages || []);
+    } catch (error: unknown) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("grading.answerTable.loadFailed"),
+      );
+    } finally {
+      setAnswerTableLoading(false);
+    }
+  };
+
+  // 空白卷模式第二上传：答案单独放在一张纸上——多页答案纸按页序 1、2、3… 传。
+  // 传完「另开专窗」只识别答案（题号+答案），老师核对后与答题区按题号合并。
+  const handleUploadAnswerSheets = async (files: File[]) => {
+    if (!selectedFolder || !files.length) return;
+    try {
+      let pageNo = 1;
+      for (const file of files) {
+        await uploadAnswerSheet(selectedFolder, file, pageNo++);
+      }
+      toast.success(t("grading.answerSheet.uploaded"));
+      await handleOpenAnswerSheet({ auto: true });
+    } catch (error: unknown) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("grading.answerSheet.uploadFailed"),
+      );
+    }
+  };
+
+  // 工具栏「上传答案」隐藏文件框的 onChange 包装（顺手清空 value，同一文件可重选）
+  const handleAnswerSheetFileChange = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    // 先快照再清 value：Chrome 的 input.files 是活列表，先清 value 会把刚选的
+    // 文件也清空 → 上传静默消失（点上传答案没反应的根因）
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!files.length) return;
+    await handleUploadAnswerSheets(files);
+  };
+
+  const handleOpenAnswerSheet = async (options?: { auto?: boolean }) => {
+    if (!selectedFolder || answerSheetLoading) return;
+    setAnswerSheetLoading(true);
+    setAnswerSheetOpen(true);
+    setAnswerSheetError("");
+    try {
+      const result = await getAnswerSheetRows(selectedFolder, true);
+      setAnswerSheetRows(result.rows || []);
+      if (result.error) setAnswerSheetError(result.error);
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : t("grading.answerSheet.loadFailed");
+      setAnswerSheetError(message);
+      if (!options?.auto) toast.error(message);
+    } finally {
+      setAnswerSheetLoading(false);
+    }
+  };
+
+  // 专窗点「合并进答案表」：答案落盘后按题号合进答题区（每道题一行）
+  const handleConfirmAnswerSheet = async (rows: AnswerSheetRow[]) => {
+    if (!selectedFolder || answerSheetSaving) return;
+    setAnswerSheetSaving(true);
+    try {
+      const result = await saveAnswerSheetRows(selectedFolder, { rows });
+      setAnswerSheetRows(result.rows || []);
+      setAnswerSheetOpen(false);
+      toast.success(t("grading.answerSheet.merged"));
+      void handleOpenAnswerTable({ auto: true });
+    } catch (error: unknown) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("grading.answerSheet.mergeFailed"),
+      );
+    } finally {
+      setAnswerSheetSaving(false);
+    }
+  };
+
+  const handleRescanAnswerSheet = async () => {
+    if (!selectedFolder || answerSheetLoading) return;
+    setAnswerSheetLoading(true);
+    setAnswerSheetError("");
+    try {
+      const result = await saveAnswerSheetRows(selectedFolder, {
+        rescan: true,
+      });
+      setAnswerSheetRows(result.rows || []);
+    } catch (error: unknown) {
+      setAnswerSheetError(
+        error instanceof Error
+          ? error.message
+          : t("grading.answerSheet.loadFailed"),
+      );
+    } finally {
+      setAnswerSheetLoading(false);
     }
   };
 
@@ -4063,7 +4783,11 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     }
     setManualLayoutPreparing(true);
     try {
-      const result = await prepareManualLayout(selectedFolder);
+      // 自主阅卷（答题卡）走印刷框线检测；自主阅卷（试卷）取标准答题区做框线来源。
+      const result = await prepareManualLayout(
+        selectedFolder,
+        gradingEngine === "manual_paper" ? "reference" : "answer_card",
+      );
       setManualLayoutPages(result.pages || []);
       setManualLayoutPrepareId(result.prepare_id || null);
       setManualLayoutOpen(true);
@@ -4445,12 +5169,14 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
               singleFilename,
               selectedFilenames,
               essayPrompts,
+              dingtalkPushMode === "auto",
             )
           : await startReferenceGrade(
               selectedFolder,
               gradingEngine,
               singleFilename,
               selectedFilenames,
+              dingtalkPushMode === "auto",
             );
       if (res.ok && res.job_id) {
         if (gradingEngine === "essay")
@@ -4538,7 +5264,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
         if (gradingEngine !== "essay") {
           const h = await fetchGradingHistory(
             selectedFolder,
-            gradingEngine === "manual_reference" ? "manual" : gradingEngine,
+            manualHistoryEngine(gradingEngine),
           );
           if (h.ok) {
             setGradingsPersisted({
@@ -4586,6 +5312,25 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     const nameWithQuery = url.split("/").pop() || "";
     const name = nameWithQuery.split("?")[0]; // 去除查询参数（如 ?t=时间戳）
     return name.startsWith("marks_only_") ? name : null;
+  };
+
+  /** 打印/导出用留痕文件名：「打印批注」开且带批注变体存在时用变体，否则普通留痕 */
+  const marksFilenameForPrint = (
+    item: {
+      marks_only_filename?: string;
+      marks_with_wrong_notes_filename?: string;
+      image_marks_only?: string;
+      image_marks_with_wrong_notes?: string;
+    } | null | undefined,
+  ): string | null => {
+    if (!item) return null;
+    const plain =
+      item.marks_only_filename ||
+      marksOnlyFilenameFromUrl(item.image_marks_only);
+    const variant =
+      item.marks_with_wrong_notes_filename ||
+      marksOnlyFilenameFromUrl(item.image_marks_with_wrong_notes);
+    return printWrongNotes && variant ? variant : plain;
   };
 
   const pageNoFromFilename = (filename: string) => {
@@ -4731,7 +5476,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     studentOrder = sortFilesForPrint(studentOrder);
     const filenames = studentOrder
       .map((f) =>
-        marksOnlyFilenameFromUrl(completedByFilename[f.name]?.image_marks_only),
+        marksFilenameForPrint(completedByFilename[f.name]),
       )
       .filter((x): x is string => !!x);
     if (filenames.length === 0) {
@@ -4871,7 +5616,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     }
     const filenames = studentOrder
       .map((f) =>
-        marksOnlyFilenameFromUrl(completedByFilename[f.name]?.image_marks_only),
+        marksFilenameForPrint(completedByFilename[f.name]),
       )
       .filter((x): x is string => !!x);
     if (filenames.length === 0) return false;
@@ -5052,12 +5797,14 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
               undefined,
               filenames,
               essayPrompts,
+              dingtalkPushMode === "auto",
             )
           : await startReferenceGrade(
               selectedFolder,
               gradingEngine,
               undefined,
               filenames,
+              dingtalkPushMode === "auto",
             );
       // 编排可能已被中止（如等待期间切换文件夹/启动新编排）：不再启动轮询，避免游离任务
       if (
@@ -5443,7 +6190,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
 
   const handlePrintOne = async () => {
     if (!detailItem?.image_marks_only) return;
-    const filename = marksOnlyFilenameFromUrl(detailItem.image_marks_only);
+    const filename = marksFilenameForPrint(detailItem);
     if (!filename) {
       toast.error(t("grading.toast.noMarkFilename"));
       return;
@@ -5487,7 +6234,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
 
   const handleExportMarksPdfOne = async () => {
     if (!detailItem?.image_marks_only) return;
-    const filename = marksOnlyFilenameFromUrl(detailItem.image_marks_only);
+    const filename = marksFilenameForPrint(detailItem);
     if (!filename) {
       toast.error(t("grading.toast.noMarkFilename"));
       return;
@@ -5506,7 +6253,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
 
   const handleBrowserPrintOne = async () => {
     if (!detailItem?.image_marks_only) return;
-    const filename = marksOnlyFilenameFromUrl(detailItem.image_marks_only);
+    const filename = marksFilenameForPrint(detailItem);
     if (!filename) {
       toast.error(t("grading.toast.noMarkFilename"));
       return;
@@ -5519,50 +6266,6 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
       toast.error(e?.message || t("grading.toast.printFailed"));
     } finally {
       setBrowserPrintOneLoading(false);
-    }
-  };
-
-  const handleRotateOne = async (direction: "left" | "right") => {
-    if (!detailItem?.image_marks_only) return;
-    const filename = marksOnlyFilenameFromUrl(detailItem.image_marks_only);
-    if (!filename) {
-      toast.error(t("grading.toast.noMarkFilename"));
-      return;
-    }
-    setRotateOneLoading(direction);
-    try {
-      await rotateImage(
-        filename,
-        direction,
-        selectedFolder || undefined,
-        detailItem.name,
-      );
-      // 旋转后给图片 URL 追加缓存破坏参数，强制刷新预览
-      const bust = (url?: string) =>
-        url ? `${url}${url.includes("?") ? "&" : "?"}v=${Date.now()}` : url;
-      setDetailItem((prev) =>
-        prev
-          ? {
-              ...prev,
-              image_original: bust(prev.image_original),
-              image_annotated: bust(prev.image_annotated),
-              image_marks_only: bust(prev.image_marks_only),
-            }
-          : prev,
-      );
-      // 原卷（correct_documents/test_paper 下的原始上传件）也已同步旋转，刷新试卷框里的原卷预览
-      if (detailItem.name) {
-        setFolderFiles((prev) =>
-          prev.map((f) =>
-            f.name === detailItem.name ? { ...f, url: bust(f.url) } : f,
-          ),
-        );
-      }
-      toast.success(t("grading.toast.rotated"));
-    } catch (e: any) {
-      toast.error(e?.message || t("grading.toast.rotateFailed"));
-    } finally {
-      setRotateOneLoading(null);
     }
   };
 
@@ -5647,7 +6350,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     studentOrder = sortFilesForPrint(studentOrder);
     const filenames = studentOrder
       .map((f) =>
-        marksOnlyFilenameFromUrl(completedByFilename[f.name]?.image_marks_only),
+        marksFilenameForPrint(completedByFilename[f.name]),
       )
       .filter((x): x is string => !!x);
     if (filenames.length === 0) {
@@ -5692,22 +6395,30 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
       return;
     }
     setDeleteExecuting(true);
-    try {
-      for (const filename of deletingIds) {
+    const total = deletingIds.size;
+    const failed: string[] = [];
+    let lastError: any = null;
+    for (const filename of deletingIds) {
+      try {
         await deleteFolderFile(selectedFolder, filename);
+      } catch (e: any) {
+        // 单个失败不中断整批；失败的留在选中集里。结束时无条件刷新列表，
+        // 免得已删掉的文件还挂在列表上、下次重试报「文件不存在」。
+        failed.push(filename);
+        lastError = e;
       }
-      toast.success(
-        t("grading.toast.filesDeleted", { count: deletingIds.size }),
-      );
+    }
+    if (failed.length === 0) {
+      toast.success(t("grading.toast.filesDeleted", { count: total }));
       setDeletingIds(new Set());
       setDeleteMode(false);
-      setDeleteConfirmOpen(false);
-      loadFolderFiles(selectedFolder);
-    } catch (e: any) {
-      toast.error(e?.message || t("grading.start.deleteFailed"));
-    } finally {
-      setDeleteExecuting(false);
+    } else {
+      toast.error(lastError?.message || t("grading.start.deleteFailed"));
+      setDeletingIds(new Set(failed));
     }
+    setDeleteConfirmOpen(false);
+    setDeleteExecuting(false);
+    loadFolderFiles(selectedFolder);
   };
 
   const openZoomPreview = (url: string, studentFilename?: string | null) => {
@@ -5753,14 +6464,21 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
   }, [completedByFilename, folderFiles, gradingEngine, standardAnswer, t]);
 
   const scoringQuestionTitles = useMemo(() => {
-    if ((gradingEngine !== "baidu" && gradingEngine !== "aliyun") || !firstSmartCompletedItem?.result)
-      return [];
+    if (gradingEngine !== "baidu" && gradingEngine !== "aliyun") return [];
+    // 已有统分配置（自动识别/保存过）：题清单以配置键为准——标准答题区路径下
+    // 它就是老师手改过的答题区题清单，比批改结果文本（页内题号、可能缺页）更全更准。
+    const fromConfig = Object.keys(scoringConfig || {});
+    if (fromConfig.length > 0)
+      return fromConfig.sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+      );
+    if (!firstSmartCompletedItem?.result) return [];
     return extractAiScoringTitlesFromBlocks(
       parseAiResultBlocks(String(firstSmartCompletedItem.result), t),
     ).sort((a, b) =>
       a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
     );
-  }, [firstSmartCompletedItem?.result, gradingEngine, t]);
+  }, [scoringConfig, firstSmartCompletedItem?.result, gradingEngine, t]);
 
   const scoringQuestionGroups = useMemo(() => {
     if (gradingEngine !== "baidu" && gradingEngine !== "aliyun") return [];
@@ -5774,12 +6492,29 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     for (const m of Object.keys(majorScores)) if (!orderedMajors.includes(m)) orderedMajors.push(m);
 
     if (orderedMajors.length > 0) {
-      return orderedMajors.map((major) => ({
-        major,
-        subs: paperSubs[major] || [],
-        titles: [] as string[],
-        hasSubItems: true,
-      }));
+      // 每题分数框的归属：structure.major → 大题。大题下没有纸面小题行时（标准答题区路径
+      // paper_subs 为空、或卷面某大题没切出小题），直接给逐题行，保证每道题都有分数框可改。
+      const used = new Set<string>();
+      const groups = orderedMajors.map((major) => {
+        const subs = paperSubs[major] || [];
+        const titles: string[] = [];
+        if (subs.length === 0) {
+          for (const title of scoringQuestionTitles) {
+            const m = String(questionStructure?.[title]?.major || "").trim();
+            if (m === major) {
+              titles.push(title);
+              used.add(title);
+            }
+          }
+        }
+        return { major, subs, titles, hasSubItems: true };
+      });
+      const orphans = scoringQuestionTitles.filter((title) => !used.has(title));
+      // 没归属到任何大题的题（匹配失败/结构缺失）平铺到末尾，别把题弄丢
+      if (orphans.length > 0) {
+        groups.push({ major: "", subs: [], titles: orphans, hasSubItems: false });
+      }
+      return groups;
     }
 
     // 兜底：无纸面结构时退回「题目块」平铺（老逻辑，题块标题 + 分数框）
@@ -5790,9 +6525,10 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     );
     if (titles.length === 0) return [];
     return [{ major: "", subs: [], titles, hasSubItems: false }];
-  }, [gradingEngine, majorOrder, paperSubs, majorScores, firstSmartCompletedItem?.result, t]);
+  }, [gradingEngine, majorOrder, paperSubs, majorScores, questionStructure, scoringQuestionTitles, firstSmartCompletedItem?.result, t]);
 
-  // 打开统分设置时，若尚未分配分值，则自动触发 AI 自动分配分值（无需手动逐项填写）
+  // 打开统分设置时，若尚未分配分值，则自动触发 AI 自动分配分值（无需手动逐项填写）。
+  // 题清单可以来自标准答题区（还没批改也能统分），所以不能只看批改结果标题。
   useEffect(() => {
     if (!scoringDialogOpen) {
       autoScoringTriggeredRef.current = false;
@@ -5800,13 +6536,13 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     }
     if (gradingEngine !== "baidu" && gradingEngine !== "aliyun") return;
     if (!selectedFolder) return;
-    if (scoringQuestionTitles.length === 0) return;
+    if (scoringQuestionTitles.length === 0 && standardAnswers.length === 0) return;
     if (Object.keys(scoringConfig).length > 0) return;
     if (autoScoringTriggeredRef.current) return;
     autoScoringTriggeredRef.current = true;
     void handleAutoScoringConfig();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scoringDialogOpen, gradingEngine, selectedFolder, scoringQuestionTitles, scoringConfig]);
+  }, [scoringDialogOpen, gradingEngine, selectedFolder, scoringQuestionTitles, scoringConfig, standardAnswers]);
 
   const getEssayCompletedItems = useCallback((): EssayPdfItem[] => {
     if (gradingEngine !== "essay") return [];
@@ -5968,6 +6704,30 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     }
   }, [selectedFolder, selectedClass, selectedSubject, t]);
 
+  /** 手动推一次钉钉工作通知（「手动推送」模式下的按钮） */
+  const handleManualDingtalkPush = async () => {
+    if (!selectedFolder || dingtalkPushing) return;
+    const kind =
+      gradingEngine === "essay"
+        ? "essay"
+        : isManualEngine(gradingEngine)
+          ? "manual"
+          : "grading_done";
+    setDingtalkPushing(true);
+    try {
+      const res = await pushDingtalkNotify(selectedFolder, kind);
+      if (res.ok) {
+        toast.success(res.message || t("grading.dingtalkPush.sent"));
+      } else {
+        toast.error(res.message || t("grading.dingtalkPush.failed"));
+      }
+    } catch (e: any) {
+      toast.error(e?.message || t("grading.dingtalkPush.failed"));
+    } finally {
+      setDingtalkPushing(false);
+    }
+  };
+
   // 整批批改完成时自动推送一次到「课堂讲评」，并在弹窗中提示（需手动开启开关）
   useEffect(() => {
     if (!autoPushClassReview) return;
@@ -6120,6 +6880,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
           answerText: string;
           bbox: unknown;
         }>;
+        statuses: string[];
       }
     >();
 
@@ -6160,6 +6921,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
               bbox: b?.bbox,
             },
           ],
+          statuses: [String(b?.status || "")],
         });
         return;
       }
@@ -6175,12 +6937,18 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
         answerText: slotAnswerText,
         bbox: b?.bbox,
       });
+      existing.statuses.push(String(b?.status || ""));
     });
 
     return Array.from(groups.values()).sort((a, b) => a.index - b.index);
   }, [detailManualBlocks, gradingEngine]);
   const detailPreviewPath = useMemo(() => {
     if (!detailItem) return "";
+    // 带错因批注的卷面变体（「显示批注」开时优先，无变体时回退普通卷面）
+    const annotatedWithNotes =
+      previewWrongNotes && !detailShowOriginal && !isManualRegrading
+        ? detailItem.image_annotated_with_wrong_notes || null
+        : null;
     if (isManualEngine(gradingEngine)) {
       if (detailShowOriginal || isManualRegrading) {
         return (
@@ -6192,6 +6960,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
       }
       if (manualHasFinalMarks) {
         return (
+          annotatedWithNotes ||
           detailItem.image_annotated ||
           detailItem.image_original ||
           detailSourceFile?.url ||
@@ -6210,7 +6979,8 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
           detailItem.image_annotated ||
           detailSourceFile?.url ||
           ""
-      : detailItem.image_annotated ||
+      : annotatedWithNotes ||
+          detailItem.image_annotated ||
           detailItem.image_original ||
           detailSourceFile?.url ||
           "";
@@ -6221,6 +6991,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
     gradingEngine,
     isManualRegrading,
     manualHasFinalMarks,
+    previewWrongNotes,
   ]);
 
   const paperBoxPreviewAnimClass = cn(
@@ -6418,7 +7189,18 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
       answerText: string;
       bbox: unknown;
     }>;
+    statuses?: string[];
   }) => {
+    const statuses = group.statuses ?? [];
+    const wrongLike = statuses.some((s) => s === "wrong" || s === "partial");
+    const blankLike = statuses.some((s) => s === "unanswered");
+    const allCorrect =
+      statuses.length > 0 && statuses.every((s) => s === "correct");
+    const showWrongAnno =
+      Boolean(wrongAnnotations[group.key]) ||
+      wrongLike ||
+      blankLike ||
+      showManualScoreInputs;
     return (
       <div
         key={group.key}
@@ -6455,6 +7237,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
           <div className="space-y-3">
             {group.slots.map((slot) => {
               const scoreVal = manualGradeScores[slot.scoreKey];
+              const slotDeductions = manualDeductions[slot.scoreKey] || [];
               return (
                 <div
                   key={slot.scoreKey}
@@ -6495,11 +7278,27 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                               const value = normalizeManualScoreInput(
                                 e.target.value,
                               );
+                              const prevValue =
+                                manualGradeScores[slot.scoreKey] ?? "";
                               const newScores = {
                                 ...manualGradeScores,
                                 [slot.scoreKey]: value,
                               };
                               setManualGradeScores(newScores);
+                              // 清空分数 → 该题扣分项一并清空（客户清单 #9 步骤 4）；
+                              // 纯改分不动扣分项则原样保留
+                              if (
+                                value === "" &&
+                                prevValue !== "" &&
+                                (manualDeductions[slot.scoreKey]?.length || 0) >
+                                  0
+                              ) {
+                                const next = { ...manualDeductionsRef.current };
+                                delete next[slot.scoreKey];
+                                manualDeductionsRef.current = next;
+                                manualDeductionsDirtyRef.current = true;
+                                setManualDeductions(next);
+                              }
                             }}
                           />
                         </>
@@ -6513,15 +7312,116 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                         </span>
                       )}
                     </div>
+                    {slotDeductions.length > 0 && (
+                      <TooltipProvider delayDuration={80}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="mt-1 cursor-default truncate text-center text-[10px] leading-3 text-amber-700">
+                              {t("grading.manual.deductionBadge", {
+                                count: String(slotDeductions.length),
+                                total: String(
+                                  slotDeductions.reduce(
+                                    (s, d) => s + (Number(d.points) || 0),
+                                    0,
+                                  ),
+                                ),
+                              })}
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent
+                            side="left"
+                            className="max-w-[260px] whitespace-pre-line"
+                          >
+                            {slotDeductions
+                              .map((d) =>
+                                d.label
+                                  ? `${d.label} -${d.points}`
+                                  : `-${d.points}`,
+                              )
+                              .join("\n")}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
+
+          {showWrongAnno &&
+            renderWrongAnnotationCard(group.key, {
+              wrong: wrongLike,
+              muted: allCorrect,
+            })}
         </div>
       </div>
     );
   };
+
+  /** 错因批注编辑卡（详情右栏/修正对话框共用）：错/半对常显，未作答可手写，已有批注始终可改删 */
+  const renderWrongAnnotationCard = (
+    questionKey: string | undefined,
+    opts: { wrong?: boolean; muted?: boolean } = {},
+  ) => {
+    if (!questionKey || !wrongAnnoEngine) return null;
+    return (
+      <WrongAnnotationCard
+        questionKey={questionKey}
+        annotation={wrongAnnotations[questionKey]}
+        wrong={opts.wrong ?? true}
+        regenerating={wrongAnnoRegenerating === questionKey}
+        onEditText={(text) => handleWrongAnnoEdit(questionKey, text)}
+        onRegenerate={() => void handleWrongAnnoRegenerate(questionKey)}
+        onMarkManual={() => handleWrongAnnoMarkManual(questionKey)}
+        onDelete={() => handleWrongAnnoDelete(questionKey)}
+        muted={opts.muted}
+      />
+    );
+  };
+
+  /** 智能卷解析块下的批注卡：块内子项共用一个题号 key，错/半对/未作答或已有批注时显示 */
+  const renderWrongAnnoForAiBlock = (b: AiResultBlock) => {
+    const key = b.key || b.subItems?.find((s) => s.key)?.key;
+    if (!key || !wrongAnnoEngine) return null;
+    const subs = b.subItems ?? [];
+    const wrongLike = subs.some(
+      (s) => s.status === "wrong" || s.status === "partial",
+    );
+    const blankLike = subs.some((s) => s.status === "blank");
+    const allCorrect = subs.length > 0 && subs.every((s) => s.status === "correct");
+    if (!wrongAnnotations[key] && !wrongLike && !blankLike) return null;
+    return renderWrongAnnotationCard(key, {
+      wrong: wrongLike,
+      muted: allCorrect,
+    });
+  };
+
+  /** 打印/导出旁的「打印批注」快捷开关（全局偏好，单张/批量同用） */
+  const renderPrintWrongNotesToggle = () => (
+    <button
+      type="button"
+      onClick={() => setPrintWrongNotes(!printWrongNotes)}
+      className={cn(
+        "flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border px-2 py-1.5 text-xs transition-colors",
+        printWrongNotes
+          ? "border-orange-300 bg-orange-50 text-orange-700"
+          : "border-border/70 bg-background text-muted-foreground",
+      )}
+      title={t(
+        "grading.printWrongNotes.hint",
+        undefined,
+        "打印/导出留痕时是否带上错因批注",
+      )}
+    >
+      {printWrongNotes ? (
+        <Check className="w-3 h-3" />
+      ) : (
+        <X className="w-3 h-3" />
+      )}
+      {t("grading.printWrongNotes.short", undefined, "打印批注")}
+    </button>
+  );
 
   const opGlassBtnClass =
     "border-sky-300/80 bg-white/70 text-foreground backdrop-blur-sm transition-all duration-300 " +
@@ -6609,16 +7509,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
           <div className="flex flex-wrap items-center gap-2">
             {(gradingEngine === "aliyun" || gradingEngine === "smart_ref") && (
               <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => stdInputRef.current?.click()}
-                  className={cn("gap-2", opGlassBtnClass)}
-                  disabled={refLoading || standardBoxUploading}
-                >
-                  <Upload className="w-4 h-4" />
-                  {t("grading.uploadStdAnswer")}
-                </Button>
+                {/* 上传入口只留试卷框里的标准答案卡片（避免与工具栏重复）；这里只留隐藏文件框 */}
                 <input
                   ref={stdInputRef}
                   type="file"
@@ -6628,6 +7519,42 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                   disabled={refLoading || standardBoxUploading}
                   onChange={handleUploadStd}
                 />
+                {/* 答案纸入口放工具栏（上次藏在弹窗里被漏点，答案整页识别成空气）——传完自动开专窗核对 */}
+                <input
+                  ref={answerSheetInputRef}
+                  type="file"
+                  accept="image/*,.pdf"
+                  multiple
+                  className="hidden"
+                  disabled={refLoading || standardBoxUploading}
+                  onChange={(e) => void handleAnswerSheetFileChange(e)}
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => answerSheetInputRef.current?.click()}
+                  className={cn("gap-2", opGlassBtnClass)}
+                  disabled={refLoading || standardBoxUploading}
+                >
+                  <Upload className="w-4 h-4" />
+                  {t("grading.answerTable.uploadAnswers")}
+                </Button>
+                {standardAnswers.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleOpenAnswerTable()}
+                    className={cn("gap-2", opGlassBtnClass)}
+                    disabled={refLoading || answerTableLoading || standardBoxUploading}
+                  >
+                    {answerTableLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <ClipboardList className="w-4 h-4" />
+                    )}
+                    {t("grading.answerTable.button")}
+                  </Button>
+                )}
               </>
             )}
             <Button
@@ -6635,10 +7562,19 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
               size="sm"
               onClick={() => studentInputRef.current?.click()}
               className={cn("gap-2", opGlassBtnClass)}
-              disabled={refLoading}
+              disabled={refLoading || studentUploading}
             >
-              <Upload className="w-4 h-4" />
-              {t("grading.uploadStudentPapers")}
+              {studentUploading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Upload className="w-4 h-4" />
+              )}
+              {studentUploading && studentUploadProgress
+                ? t("grading.status.uploadingProgress", {
+                    done: studentUploadProgress.done,
+                    total: studentUploadProgress.total,
+                  })
+                : t("grading.uploadStudentPapers")}
             </Button>
             <input
               ref={studentInputRef}
@@ -6646,7 +7582,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
               accept="image/*,.pdf,.doc,.docx"
               multiple
               className="hidden"
-              disabled={refLoading}
+              disabled={refLoading || studentUploading}
               onChange={handleUploadStudent}
             />
             <Button
@@ -6775,6 +7711,26 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                 {t("grading.classReviewPush.autoToggle")}
               </span>
             </div>
+            <div
+              className={cn(
+                "flex h-9 items-center gap-2 rounded-md border px-3",
+                dingtalkPushMode === "auto"
+                  ? "border-emerald-300/80 bg-emerald-50/70 text-emerald-700"
+                  : "border-border bg-background text-muted-foreground",
+              )}
+              title={t("grading.dingtalkPush.autoToggleHint")}
+            >
+              <Switch
+                checked={dingtalkPushMode === "auto"}
+                onCheckedChange={(checked) =>
+                  setDingtalkPushMode(checked ? "auto" : "manual")
+                }
+                disabled={refLoading}
+              />
+              <span className="whitespace-nowrap text-sm font-medium">
+                {t("grading.dingtalkPush.autoToggle")}
+              </span>
+            </div>
             <div className="mx-1 h-6 w-px bg-sky-200/90" />
             <Select
               value={gradingEngine}
@@ -6795,6 +7751,9 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                 </SelectItem>
                 <SelectItem value="aliyun">
                   {t("grading.engine.aliyun")}
+                </SelectItem>
+                <SelectItem value="manual_paper">
+                  {t("grading.engine.manualPaper")}
                 </SelectItem>
                 <SelectItem value="essay">
                   {t("grading.engine.essay")}
@@ -6935,6 +7894,26 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                             })
                           : t("grading.action.gradeAll")}
             </Button>
+            {gradingEngine === "aliyun" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className={cn("gap-2", opGlassBtnClass)}
+                disabled={
+                  refLoading ||
+                  referenceLayoutPreparing ||
+                  referenceLayoutOpening ||
+                  layoutTemplateSaving
+                }
+                onClick={() => {
+                  setLayoutTemplateMode("apply");
+                  setLayoutTemplateOpen(true);
+                }}
+              >
+                <Sparkles className="w-4 h-4" />
+                {t("layoutTemplate.apply")}
+              </Button>
+            ) : null}
             {!isManualEngine(gradingEngine) && (
               <Button
                 variant="outline"
@@ -6972,6 +7951,25 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                   : ""}
               </Button>
             )}
+            {dingtalkPushMode === "manual" &&
+              !refLoading &&
+              (gradingsPersisted?.completed?.length || 0) > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleManualDingtalkPush}
+                  disabled={dingtalkPushing}
+                  className={cn("gap-2", opGlassBtnClass)}
+                  title={t("grading.dingtalkPush.manualButtonHint")}
+                >
+                  {dingtalkPushing ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Send className="w-4 h-4" />
+                  )}
+                  {t("grading.dingtalkPush.manualButton")}
+                </Button>
+              )}
             <div className="mx-1 h-6 w-px bg-sky-200/90" />
             {refLoading && activeGradingJobId && (
               <Button
@@ -7066,6 +8064,8 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
               const printerReady = currentPrinter?.ready ?? false;
               return (
                 <>
+                  {gradingEngine !== "essay" &&
+                    renderPrintWrongNotesToggle()}
                   {gradingEngine === "essay" ? (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -7540,6 +8540,11 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                         completedByFilename,
                         gradingEngine,
                       );
+                      const boxBreakdown = computeBoxPageBreakdown(
+                        box,
+                        completedByFilename,
+                        gradingEngine,
+                      );
                       const allBoxDeleting =
                         boxFileNames.length > 0 &&
                         boxFileNames.every((name) => deletingIds.has(name));
@@ -7614,7 +8619,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                               <div className="flex items-center gap-1 shrink-0">
                                 {boxScoreGrade.score != null && (
                                   <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-xs font-bold text-primary shrink-0">
-                                    {boxScoreGrade.score}分
+                                    {boxBreakdown || `${boxScoreGrade.score}分`}
                                     {boxScoreGrade.grade
                                       ? `·${boxScoreGrade.grade}`
                                       : ""}
@@ -7717,23 +8722,44 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                                 {previewFile &&
                                   !deleteMode &&
                                   !selectGradeMode && (
-                                    <button
-                                      type="button"
-                                      aria-label={t(
-                                        "grading.action.renameCoverPaper",
-                                      )}
-                                      title={t(
-                                        "grading.action.renameCoverPaper",
-                                      )}
-                                      className="absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full bg-background/85 opacity-0 shadow transition-opacity hover:bg-background group-hover:opacity-100"
-                                      disabled={refLoading}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        openRenameFileDialog(previewFile.name);
-                                      }}
-                                    >
-                                      <Edit2 className="h-4 w-4" />
-                                    </button>
+                                    <>
+                                      <button
+                                        type="button"
+                                        aria-label={t(
+                                          "grading.preview.detailTitle",
+                                        )}
+                                        title={t(
+                                          "grading.preview.detailTitle",
+                                        )}
+                                        className="absolute right-11 bottom-2 flex h-8 w-8 items-center justify-center rounded-full bg-background/85 opacity-0 shadow transition-opacity hover:bg-background group-hover:opacity-100"
+                                        disabled={refLoading}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openPaperBoxDialog(box.student.id, {
+                                            previewOnly: true,
+                                          });
+                                        }}
+                                      >
+                                        <Search className="h-4 w-4" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        aria-label={t(
+                                          "grading.action.renameCoverPaper",
+                                        )}
+                                        title={t(
+                                          "grading.action.renameCoverPaper",
+                                        )}
+                                        className="absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full bg-background/85 opacity-0 shadow transition-opacity hover:bg-background group-hover:opacity-100"
+                                        disabled={refLoading}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openRenameFileDialog(previewFile.name);
+                                        }}
+                                      >
+                                        <Edit2 className="h-4 w-4" />
+                                      </button>
+                                    </>
                                   )}
                               </div>
                               {paperBoxCapacity > 1 && (
@@ -8028,7 +9054,14 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                                 if (deleteMode) return;
                                 if (selectGradeMode) return;
                                 if (isManualEngine(gradingEngine)) {
-                                  openManualPaper(file.name);
+                                  // 放大镜 = 统分/批改详情入口（卡片点按才是打分弹窗）；
+                                  // 未开批的直接进打分弹窗
+                                  if (completed) {
+                                    setPreviewPaperBoxStudentId(null);
+                                    setDetailItem({ ...completed, name: file.name });
+                                  } else {
+                                    openManualPaper(file.name);
+                                  }
                                   return;
                                 }
                                 if (completed) {
@@ -8687,6 +9720,40 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                           {t("grading.layout.viewButton")}
                         </Button>
                       ) : null}
+                      {gradingEngine === "aliyun" ? (
+                        <>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1.5"
+                            disabled={refLoading || layoutTemplateSaving}
+                            onClick={() => {
+                              setLayoutTemplateMode("save");
+                              setLayoutTemplateOpen(true);
+                            }}
+                          >
+                            <Save className="h-4 w-4" />
+                            {t("layoutTemplate.save")}
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1.5"
+                            disabled={
+                              refLoading ||
+                              referenceLayoutPreparing ||
+                              referenceLayoutOpening
+                            }
+                            onClick={() => {
+                              setLayoutTemplateMode("apply");
+                              setLayoutTemplateOpen(true);
+                            }}
+                          >
+                            <Sparkles className="h-4 w-4" />
+                            {t("layoutTemplate.apply")}
+                          </Button>
+                        </>
+                      ) : null}
                       {standardBoxCurrentSlot ? (
                         <Button
                           variant="outline"
@@ -9038,6 +10105,38 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                                   : t("grading.action.viewOriginal")}
                               </Button>
                             )}
+                            {detailItem?.image_annotated &&
+                            !detailShowOriginal &&
+                            wrongAnnoEngine &&
+                            (detailItem.image_annotated_with_wrong_notes ||
+                              Object.keys(wrongAnnotations).length > 0) ? (
+                              <button
+                                type="button"
+                                onClick={() => setPreviewWrongNotes((v) => !v)}
+                                className={cn(
+                                  "flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border px-2 py-1.5 text-xs transition-colors",
+                                  previewWrongNotes
+                                    ? "border-orange-300 bg-orange-50 text-orange-700"
+                                    : "border-border/70 bg-background text-muted-foreground",
+                                )}
+                                title={t(
+                                  "grading.preview.showWrongNotesHint",
+                                  undefined,
+                                  "预览试卷上是否显示错因批注",
+                                )}
+                              >
+                                {previewWrongNotes ? (
+                                  <Check className="w-3 h-3" />
+                                ) : (
+                                  <X className="w-3 h-3" />
+                                )}
+                                {t(
+                                  "grading.preview.showWrongNotes",
+                                  undefined,
+                                  "显示批注",
+                                )}
+                              </button>
+                            ) : null}
                             {gradingEngine === "essay" &&
                               detailItem?.result && (
                                 <Button
@@ -9054,6 +10153,8 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                                   {t("grading.action.downloadPdf")}
                                 </Button>
                               )}
+                            {detailItem?.image_marks_only &&
+                              renderPrintWrongNotesToggle()}
                             {detailItem?.image_marks_only && (
                               <Button
                                 variant="outline"
@@ -9102,38 +10203,6 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                                   <Printer className="w-4 h-4" />
                                 )}
                                 {t("grading.action.browserPrint")}
-                              </Button>
-                            )}
-                            {detailItem?.image_marks_only && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => void handleRotateOne("left")}
-                                disabled={rotateOneLoading !== null}
-                                title={t("grading.action.rotateLeft")}
-                                className="shrink-0 px-2"
-                              >
-                                {rotateOneLoading === "left" ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                  <RotateCcw className="w-4 h-4" />
-                                )}
-                              </Button>
-                            )}
-                            {detailItem?.image_marks_only && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => void handleRotateOne("right")}
-                                disabled={rotateOneLoading !== null}
-                                title={t("grading.action.rotateRight")}
-                                className="shrink-0 px-2"
-                              >
-                                {rotateOneLoading === "right" ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                  <RotateCw className="w-4 h-4" />
-                                )}
                               </Button>
                             )}
                           </div>
@@ -9272,6 +10341,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                                         </p>
                                       )}
                                     </div>
+                                    {renderWrongAnnoForAiBlock(b)}
                                   </div>
                                 ))}
                           </div>
@@ -9442,6 +10512,8 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                                     )}
                                     {t("grading.action.regradeSmart")}
                                   </Button>
+                                  {detailItem?.image_marks_only &&
+                                    renderPrintWrongNotesToggle()}
                                   {detailItem?.image_marks_only && (
                                     <Button
                                       variant="outline"
@@ -9490,38 +10562,6 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                                         <Printer className="w-4 h-4" />
                                       )}
                                       {t("grading.action.browserPrint")}
-                                    </Button>
-                                  )}
-                                  {detailItem?.image_marks_only && (
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => void handleRotateOne("left")}
-                                      disabled={rotateOneLoading !== null}
-                                      title={t("grading.action.rotateLeft")}
-                                      className="shrink-0 px-2"
-                                    >
-                                      {rotateOneLoading === "left" ? (
-                                        <Loader2 className="w-4 h-4 animate-spin" />
-                                      ) : (
-                                        <RotateCcw className="w-4 h-4" />
-                                      )}
-                                    </Button>
-                                  )}
-                                  {detailItem?.image_marks_only && (
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => void handleRotateOne("right")}
-                                      disabled={rotateOneLoading !== null}
-                                      title={t("grading.action.rotateRight")}
-                                      className="shrink-0 px-2"
-                                    >
-                                      {rotateOneLoading === "right" ? (
-                                        <Loader2 className="w-4 h-4 animate-spin" />
-                                      ) : (
-                                        <RotateCw className="w-4 h-4" />
-                                      )}
                                     </Button>
                                   )}
                                 </>
@@ -9638,6 +10678,7 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                                       </p>
                                     )}
                                   </div>
+                                  {renderWrongAnnoForAiBlock(b)}
                                 </div>
                               ))
                             )}
@@ -9782,6 +10823,29 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                               className="h-8 flex-1 text-sm"
                             />
                           </div>
+                          {(() => {
+                            const vals = blocks.map(
+                              (b) =>
+                                aiCorrections[`${b.index}::${b.sub_index ?? ""}`] ??
+                                b.result,
+                            );
+                            const wrongLike = vals.some(
+                              (v) => v === "错" || v === "半对",
+                            );
+                            const blankLike = vals.some((v) => v === "未作答");
+                            const allCorrect =
+                              vals.length > 0 && vals.every((v) => v === "对");
+                            if (
+                              !wrongAnnotations[qKey] &&
+                              !wrongLike &&
+                              !blankLike
+                            )
+                              return null;
+                            return renderWrongAnnotationCard(qKey, {
+                              wrong: wrongLike,
+                              muted: allCorrect,
+                            });
+                          })()}
                         </div>
                       );
                     });
@@ -10907,12 +11971,58 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
             pages={referenceLayoutPages}
             loading={referenceLayoutSaving}
             preparing={referenceLayoutPreparing}
+            initialPageNo={boxEditTargetPage || undefined}
             onOpenChange={(open) => {
-              if (!referenceLayoutSaving && !referenceLayoutPreparing)
+              if (!referenceLayoutSaving && !referenceLayoutPreparing) {
                 setReferenceLayoutOpen(open);
+                if (!open) {
+                  // 关掉不确认=放弃改框：清掉「回识别列表」标记与落点页
+                  boxEditReturnRef.current = false;
+                  setBoxEditTargetPage(0);
+                }
+              }
             }}
             onConfirm={handleConfirmReferenceLayout}
             onReprepare={handlePrepareReferenceLayout}
+          />
+
+          <LayoutTemplateDialog
+            open={layoutTemplateOpen}
+            mode={layoutTemplateMode}
+            saving={layoutTemplateSaving}
+            onOpenChange={(open) => {
+              if (!layoutTemplateSaving) setLayoutTemplateOpen(open);
+            }}
+            onSave={handleSaveLayoutTemplate}
+            onApply={handleApplyLayoutTemplate}
+          />
+
+          <StandardAnswerTableDialog
+            open={answerTableOpen}
+            pages={answerTablePages}
+            loading={answerTableLoading}
+            saving={answerTableSaving}
+            onOpenChange={(open) => {
+              if (!answerTableSaving && !answerTableLoading) setAnswerTableOpen(open);
+            }}
+            onSave={handleSaveAnswerTable}
+            onRebuild={handleRebuildAnswerTable}
+            onUploadAnswerSheets={handleUploadAnswerSheets}
+            onEditBoxes={gradingEngine === "aliyun" ? handleEditAnswerBoxes : undefined}
+          />
+
+          <AnswerSheetDialog
+            open={answerSheetOpen}
+            rows={answerSheetRows}
+            loading={answerSheetLoading}
+            saving={answerSheetSaving}
+            error={answerSheetError}
+            onOpenChange={(open) => {
+              if (!answerSheetSaving && !answerSheetLoading)
+                setAnswerSheetOpen(open);
+            }}
+            onRescan={handleRescanAnswerSheet}
+            onConfirm={handleConfirmAnswerSheet}
           />
 
           <ReferenceLayoutCorrectionDialog
@@ -10942,6 +12052,9 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
             answerKey={answerKeyLoaded}
             initialQuestionNotes={manualGradingItem?.question_notes}
             initialPaperNote={manualGradingItem?.paper_note}
+            initialWrongAnnotations={manualGradingItem?.wrong_annotations}
+            initialDeductionItems={manualGradingItem?.deduction_items}
+            regenerateWrongAnnotation={handleManualWrongAnnoRegenerate}
             saving={manualPaperSaving}
             printing={manualPaperPrinting}
             otherPagesScore={manualOtherPagesScore}
@@ -11195,7 +12308,10 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <Button
-                onClick={() => setCreateDialogOpen(true)}
+                onClick={() => {
+                  setNewFolderSubject(selectedSubject);
+                  setCreateDialogOpen(true);
+                }}
                 className="gap-2"
                 disabled={!selectedClass}
               >
@@ -11312,7 +12428,10 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                   : t("grading.start.selectClassFirst")}
               </p>
               <Button
-                onClick={() => setCreateDialogOpen(true)}
+                onClick={() => {
+                  setNewFolderSubject(selectedSubject);
+                  setCreateDialogOpen(true);
+                }}
                 variant="outline"
                 className="gap-2"
                 disabled={!selectedClass}
@@ -11503,6 +12622,28 @@ export function GradingStartPage({ selectedClass }: GradingStartPageProps) {
                 onChange={(e) => setNewFolderName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleCreateFolder()}
               />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="folder-subject">
+                {t("grading.start.folderSubject")}
+              </Label>
+              <Select
+                value={newFolderSubject}
+                onValueChange={setNewFolderSubject}
+              >
+                <SelectTrigger id="folder-subject" className="w-full">
+                  <SelectValue
+                    placeholder={t("grading.start.folderSubjectPlaceholder")}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {getSubjectsBySchoolLevel(schoolLevel).map((s) => (
+                    <SelectItem key={s.id} value={s.name}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="folder-homework-type">

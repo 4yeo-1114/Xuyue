@@ -13,7 +13,7 @@ import traceback
 from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import requests
@@ -28,7 +28,7 @@ from app.models.response_log import ResponseLog
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.utils.security import verify_password, build_download_url, create_download_ticket
-from app.utils.qwen_settings import get_llm_config, get_llm_thinking_extra, get_qwen_config
+from app.utils.qwen_settings import get_llm_config, get_llm_thinking_extra, get_qwen_config, get_vl_model
 from app.dependencies import get_current_user_id, bind_grading_user_context
 from app.grading.file_auth import user_id_from_request
 from app.grading.pipeline import (
@@ -48,15 +48,25 @@ from app.grading.doc_convert import normalize_uploaded_image_orientation
 from app.grading.essay_text_layout import fix_punctuation_line_starts
 from app.grading.reference_vlm_grading import (
     build_reference_vlm_slot_template,
+    crop_reference_answer_table_region,
+    load_or_build_reference_answer_table,
     build_reference_layout_page,
     confirm_reference_layout,
     delete_reference_layout,
     draw_reference_vlm_marks_and_save,
     get_confirmed_reference_document,
     grade_reference_vlm_paper,
+    invalidate_reference_answer_table,
+    clear_answer_sheet_cache,
+    load_or_build_answer_sheet_texts,
+    load_reference_layout,
     load_reference_layout_for_editing,
+    read_answer_sheet_texts,
+    read_reference_answer_table_page,
     recognize_reference_vlm_batch,
     reference_layout_status,
+    save_answer_sheet_texts,
+    save_reference_answer_table_edits,
     save_reference_layout_prepare,
 )
 from app.grading.manual_grading import (
@@ -66,6 +76,7 @@ from app.grading.manual_grading import (
     baidu_paper_cut,
     build_manual_layout_page,
     build_manual_layout_page_from_boxes,
+    build_manual_layout_page_from_reference_layout,
     confirm_manual_layout,
     delete_manual_layout,
     load_manual_layout_for_editing,
@@ -82,6 +93,7 @@ from app.grading.answer_key_grading import (
     grade_paper_by_answer_key,
     parse_answer_key_text,
 )
+from app.grading.quota_gate import quota_gate
 from app.grading.user_paths import (
     correct_docs_dir,
     correct_docs_img_dir,
@@ -134,9 +146,47 @@ def _require_local_admin(request: Optional[Request], db: Session) -> str:
 # 错题库写入（含可选 AI 分析）放到后台，避免阻塞智能模型批改主流程
 _wrong_question_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="wq-upsert")
 
+# 批改后自动导入学情+自动分层（客户清单 #1）：独立线程池，避免被错题库/LLM 任务堵住
+_auto_sync_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="auto-class-sync")
+# 同文件夹合并触发：跑的期间又有落盘则跑完再补一轮（保证最后一次落盘不丢）
+_auto_sync_state: dict[str, dict] = {}
+_auto_sync_state_lock = threading.Lock()
+
 
 def _baidu_ref_grade_workers() -> int:
     return max(1, min(32, int(os.environ.get("BAIDU_GRADE_WORKERS", "16"))))
+
+
+def _find_active_ref_job_locked(
+    safe: str,
+    *,
+    engine: str,
+    only_filename: Optional[str],
+    only_filenames: Optional[set],
+    user_id: Optional[str],
+) -> Optional[tuple[str, bool]]:
+    """1015 冻死防线：同文件夹参照批改单飞闸。返回 (job_id, same_scope)。
+
+    【调用方必须持有 _ref_grade_lock】——闸门检查和任务注册必须在同一临界区
+    内完成，否则「检查→清历史→注册」之间可挤进第二个请求（TOCTOU）。
+
+    同文件夹已有未完成任务时：参数完全一致 → same_scope=True（前端连点可幂等
+    返回在跑的 job_id）；参数/用户不一致 → 调用方应 409，绝不允许双批次并行
+    （2026-10-15 两次连点各 8 线程整页 base64 把 8G 内存顶穿致整机僵死）。
+    """
+    target_names = sorted(only_filenames) if only_filenames else None
+    for job_id, res in _ref_grade_results.items():
+        if res.get("done") or res.get("folder") != safe:
+            continue
+        job_names = res.get("only_filenames")
+        same_scope = (
+            res.get("user_id") == user_id
+            and str(res.get("engine") or "") == engine
+            and (res.get("only_filename") or None) == (only_filename or None)
+            and (sorted(job_names) if job_names else None) == target_names
+        )
+        return job_id, same_scope
+    return None
 
 
 def _paper_result_key(name: str) -> str:
@@ -305,6 +355,105 @@ def _schedule_response_log_write(
     _wrong_question_executor.submit(run_with_grading_user, user_id, _run)
 
 
+def _schedule_wrong_annotation_generation(
+    user_id: str,
+    folder_safe: str,
+    paper_name: str,
+    engine: str,
+    blocks_with_result: list,
+    source_image_path: str = "",
+) -> None:
+    """批改完成后异步为错/半对的题生成「为什么错」批注；绝不阻断批改主流程。
+
+    生成结果写回 grading_history item 的 wrong_annotations（edited/manual 条目不覆盖）。
+    """
+
+    def _run() -> None:
+        try:
+            from app.grading.wrong_annotations import generate_wrong_annotations_for_blocks
+
+            with _grading_history_lock:
+                data = _read_grading_history(folder_safe, engine)
+                item = (data.get("completed") or {}).get(paper_name)
+            if not isinstance(item, dict):
+                return
+            generated = generate_wrong_annotations_for_blocks(
+                blocks_with_result or item.get("blocks") or [],
+                source_image_path=source_image_path,
+                existing=item.get("wrong_annotations"),
+            )
+            if not generated:
+                return
+            with _grading_history_lock:
+                data = _read_grading_history(folder_safe, engine)
+                item = (data.get("completed") or {}).get(paper_name)
+                if not isinstance(item, dict):
+                    return
+                merged = dict(item.get("wrong_annotations") or {})
+                merged.update(generated)
+                item["wrong_annotations"] = merged
+                _regenerate_wrong_annotation_marks(
+                    folder_safe,
+                    item,
+                    blocks_with_result or item.get("blocks") or [],
+                    merged,
+                )
+                data["completed"][paper_name] = item
+                _write_grading_history(folder_safe, data, engine)
+        except Exception as e:
+            print(f"判错批注生成失败: {folder_safe}/{paper_name}: {e}")
+
+    _wrong_question_executor.submit(run_with_grading_user, user_id, _run)
+
+
+def _schedule_auto_sync_class(user_id: str, folder_safe: str) -> None:
+    """批改落盘后异步：成绩导入学情（成绩历史/当前分/错题）→ 按成绩自动分层。
+
+    同文件夹合并触发（一批 N 张不跑 N 次）；跑的期间再有落盘则跑完补一轮。
+    绝不阻断批改主流程；非班级文件夹在 worker 里静默跳过。
+    """
+    if not user_id or not folder_safe:
+        return
+    with _auto_sync_state_lock:
+        st = _auto_sync_state.setdefault(folder_safe, {"running": False, "dirty": False})
+        if st["running"]:
+            st["dirty"] = True
+            return
+        st["running"] = True
+
+    def _run() -> None:
+        from app.services.auto_class_sync import auto_sync_folder_after_grading
+
+        try:
+            while True:
+                with _auto_sync_state_lock:
+                    st = _auto_sync_state[folder_safe]
+                    st["dirty"] = False
+                try:
+                    summary = auto_sync_folder_after_grading(user_id, folder_safe)
+                    if summary and not summary.get("skipped"):
+                        print(
+                            f"[auto_class_sync] {folder_safe}: 导入 {summary.get('students')} 人"
+                            f"/分层更新 {summary.get('tier_updated')} 人"
+                        )
+                except Exception as e:
+                    print(f"[auto_class_sync] 失败: {folder_safe}: {e}")
+                with _auto_sync_state_lock:
+                    st = _auto_sync_state[folder_safe]
+                    if st["dirty"]:
+                        continue
+                    st["running"] = False
+                    break
+        except BaseException:
+            with _auto_sync_state_lock:
+                st = _auto_sync_state.get(folder_safe)
+                if st is not None:
+                    st["running"] = False
+            raise
+
+    _auto_sync_executor.submit(run_with_grading_user, user_id, _run)
+
+
 _print_batch_lock = threading.Lock()
 _print_batch_jobs: dict[str, dict] = {}
 _print_batch_stop_events: dict[str, threading.Event] = {}
@@ -370,6 +519,26 @@ def _is_original_paper_filename(filename: str) -> bool:
     return _original_paper_page_no(filename) is not None
 
 
+# 答案纸（答案单独一张纸，空白卷模式第二上传）：只认「答案[_N]」，与
+# 「标准答案[_N]」「原始试卷[_N]」三足鼎立，不抢后者职责。
+_ANSWER_SHEET_STEM_RE = re.compile(r"^答案(?:_(?P<page>\d+))?$")
+
+
+def _answer_sheet_page_no(filename: str) -> Optional[int]:
+    stem = Path(str(filename or "")).stem
+    match = _ANSWER_SHEET_STEM_RE.fullmatch(stem)
+    if not match:
+        return None
+    try:
+        return max(1, int(match.group("page") or "1"))
+    except Exception:
+        return None
+
+
+def _is_answer_sheet_filename(filename: str) -> bool:
+    return _answer_sheet_page_no(filename) is not None
+
+
 def _original_paper_sources(folder_safe: str) -> dict[int, tuple[Path, Path]]:
     """收集已上传的原始试卷所有页（用于识别每题分值），按页号分组。PDF 全页转换。"""
     result: dict[int, tuple[Path, Path]] = {}
@@ -413,6 +582,21 @@ def _safe_unlink(p: Path) -> None:
         pass
 
 
+def _img_name_from_url(url: Optional[str]) -> str:
+    # Stored preview URLs carry cache-busting / download-ticket queries such as
+    # ?t=123 or ?ticket=<JWT>. The filesystem name must be extracted before the
+    # query, otherwise the "name" is hundreds of bytes and Path.is_file() raises
+    # OSError: File name too long (ENAMETOOLONG).
+    if not url:
+        return ""
+    name = str(url).split("?", 1)[0].split("#", 1)[0].rsplit("/", 1)[-1]
+    # Path("..").name == ".."，点段要单独拦，不能只靠 Path(name).name != name；
+    # 反斜杠在 Linux 上是合法文件名字符、Windows 上是分隔符，为跨平台一致直接拒。
+    if not name or name in (".", "..") or "\\" in name or Path(name).name != name:
+        return ""
+    return name
+
+
 def _home_delete_by_record(record: dict) -> None:
     files = []
     if isinstance(record.get("files"), dict):
@@ -422,7 +606,9 @@ def _home_delete_by_record(record: dict) -> None:
     for key in ["image_original", "image_annotated", "image_marks_only"]:
         url = record.get(key)
         if isinstance(url, str) and url.startswith("/api/v1/grading/home_img/"):
-            files.append(url.split("/")[-1])
+            img_name = _img_name_from_url(url)
+            if img_name:
+                files.append(img_name)
     if isinstance(record.get("upload_filename"), str):
         files.append(record["upload_filename"])
     files.append(f"{record.get('id')}.json")
@@ -541,6 +727,7 @@ def _run_home_quick_job(job_id: str, img_path: Path, standard_path: Optional[Pat
                 "progress": 100,
                 "message": "完成",
                 "result": result or "",
+                "blocks": blocks_with_result or [],
                 "image_original": image_original,
                 "image_annotated": image_annotated,
                 "image_marks_only": image_marks_only,
@@ -553,6 +740,42 @@ def _run_home_quick_job(job_id: str, img_path: Path, standard_path: Optional[Pat
                 },
             },
         )
+
+        # 判错批注：批完后异步补「为什么错」，写回作业记录（不阻塞快速批改）
+        if blocks_with_result:
+            def _gen_home_wrong(
+                _blocks=list(blocks_with_result),
+                _img=str(img_path),
+                _uid=user_id,
+                _job=job_id,
+            ) -> None:
+                try:
+                    from app.grading.wrong_annotations import (
+                        generate_wrong_annotations_for_blocks,
+                        normalize_wrong_annotations,
+                    )
+
+                    generated = generate_wrong_annotations_for_blocks(
+                        _blocks, source_image_path=_img
+                    )
+                    if not generated:
+                        return
+                    p = _home_record_path(_job)
+                    rec = {}
+                    if p.is_file():
+                        try:
+                            rec = json.loads(p.read_text(encoding="utf-8"))
+                        except Exception:
+                            rec = {}
+                    merged = normalize_wrong_annotations(rec.get("wrong_annotations"))
+                    merged.update(generated)
+                    _home_update_record(_job, {"wrong_annotations": merged})
+                except Exception as e:
+                    print(f"首页判错批注生成失败: {job_id}: {e}")
+
+            _wrong_question_executor.submit(
+                run_with_grading_user, user_id, _gen_home_wrong
+            )
     except Exception as e0:
         _home_update_record(
             job_id,
@@ -595,6 +818,11 @@ def _read_essay_history(safe: str) -> dict:
 def _write_essay_history(safe: str, data: dict) -> None:
     data["version"] = 1
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # 整卷总分持久化（客户清单 #7）：作文整卷语义（多页重复总分取最大）一并落 box_totals
+    try:
+        data["box_totals"] = _compute_box_totals_snapshot(safe, "essay", data)
+    except Exception:
+        pass
     p = _essay_history_path(safe)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
@@ -621,6 +849,11 @@ def _persist_essay_success(safe: str, item: dict) -> None:
         record_graded_state_change(
             get_grading_user_id(), safe, old_entry, store, source="essay", filename=name
         )
+    except Exception:
+        pass
+    # 作文批改落盘 → 同样自动导入学情+自动分层（客户清单 #1/#7；整卷总分语义见 box_totals）
+    try:
+        _schedule_auto_sync_class(get_grading_user_id(), safe)
     except Exception:
         pass
 
@@ -781,37 +1014,14 @@ router = APIRouter(prefix="/grading", tags=["grading"], dependencies=[Depends(bi
 def _quota_gate() -> None:
     """0924 需求：批改额度 105% 硬停前置闸门（1 面 = 1 张上传图）。
 
-    额度用尽（已用 >= 总量 × 105%）⇒ `HTTPException(403)` + 中文提示。
-    ⛔ **只挡「发起新批改」**：只挂在「发起」端点上，⛔ 不挂进度/结果/取消端点 ⇒
-    **已在跑的批改绝不被中断**（老师已上传 40 张卷子，不能扣到一半报错）。
-    闸门自身故障（查库异常）时放行并留痕，不影响教学可用性。
-    （替代同事的「分余额 402 闸门」—— 计费口径已统一为「按面 + 105% 硬停」。）
+    实现已抽到 `app/grading/quota_gate.py`（供流水/首页/批量等入口复用），
+    本函数保留为薄别名，既有 5 处调用点零改动。语义：
+    ⛔ 只挡「发起新批改」不挡进度/结果/取消；身份缺失/查库故障放行留痕。
+    （替代同事的「分余额 402 闸门」—— 计费口径统一为「按面 + 105% 硬停」。）
     """
-    from app.services import quota_service
+    from app.grading.quota_gate import quota_gate
 
-    # ⚠️ 身份上下文由 **async 中间件**（`main.py::grading_user_context_middleware`）写入 ——
-    #    sync `Depends` 里写的 contextvar **不会**传到 async 端点（本仓 `dependencies.py:52`
-    #    的注释已点明这条）。取不到 uid 属异常态 ⇒ **放行 + 留痕**，⛔ 绝不把「查不到身份」
-    #    变成 500 去挡老师批改。（能走到本端点 ⇒ 鉴权已通过 ⇒ 不存在「无身份绕过计费」。）
-    try:
-        uid = get_grading_user_id()
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).error(
-            "批改额度闸门：grading 用户上下文未绑定，本次放行（不阻塞批改）", exc_info=True
-        )
-        return
-    try:
-        quota_service.ensure_user_available(uid)
-    except HTTPException:
-        raise
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).error(
-            "批改额度闸门判定失败，本次放行（不阻塞批改）", exc_info=True
-        )
+    quota_gate()
 
 # C6：图片/文件直链独立于 Bearer-only 主 router（<img> 标签无法带 Authorization Header），
 # 走 user_id_from_request（Bearer 或 ?ticket= 短时下载票），并按 user_id 定位本人目录。
@@ -1053,9 +1263,9 @@ def cleanup_grading_data_for_class(class_id: str, user_id: str) -> dict:
                             for key in ["image_original", "image_annotated", "image_marks_only"]:
                                 url = entry.get(key)
                                 if url and isinstance(url, str) and url.startswith("/api/v1/grading/modify/"):
-                                    img_name = url.split("/")[-1]
-                                    img_path = modify_dir() / img_name
-                                    _safe_unlink(img_path)
+                                    img_name = _img_name_from_url(url)
+                                    if img_name:
+                                        _safe_unlink(modify_dir() / img_name)
                     hist = _grading_history_path(safe, engine)
                     if hist.is_file():
                         _safe_unlink(hist)
@@ -1074,9 +1284,9 @@ def cleanup_grading_data_for_class(class_id: str, user_id: str) -> dict:
                         for key in ["image_original", "image_annotated", "image_marks_only"]:
                             url = entry.get(key)
                             if url and isinstance(url, str) and url.startswith("/api/v1/grading/modify/"):
-                                img_name = url.split("/")[-1]
-                                img_path = modify_dir() / img_name
-                                _safe_unlink(img_path)
+                                img_name = _img_name_from_url(url)
+                                if img_name:
+                                    _safe_unlink(modify_dir() / img_name)
                 hist = _essay_history_path(safe)
                 if hist.is_file():
                     _safe_unlink(hist)
@@ -1143,6 +1353,17 @@ def _safe_marks_only_filename(name: str) -> bool:
     if not name or ".." in name or "/" in name or "\\" in name:
         return False
     return name.startswith("marks_only_") and (
+        name.lower().endswith(".jpg")
+        or name.lower().endswith(".jpeg")
+        or name.lower().endswith(".png")
+    )
+
+
+def _safe_annotated_filename(name: str) -> bool:
+    """只允许 annotated_ 开头的图片文件名，且无路径成分。"""
+    if not name or ".." in name or "/" in name or "\\" in name:
+        return False
+    return name.startswith("annotated_") and (
         name.lower().endswith(".jpg")
         or name.lower().endswith(".jpeg")
         or name.lower().endswith(".png")
@@ -1712,11 +1933,77 @@ def _read_grading_history(safe: str, engine: str = "default") -> dict:
         return _empty_grading_history(engine)
 
 
-def _write_grading_history(safe: str, data: dict, engine: str = "default") -> None:
+def _item_score_total(item: dict) -> Optional[float]:
+    """completed 条目的分数：优先 score_total，兜底 result JSON 里的 score_total。"""
+    raw = item.get("score_total")
+    if raw is not None:
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            pass
+    try:
+        parsed = json.loads(item.get("result") or "{}")
+        if isinstance(parsed, dict) and parsed.get("score_total") is not None:
+            return float(parsed["score_total"])
+    except Exception:
+        pass
+    return None
+
+
+def _compute_box_totals_snapshot(safe: str, current_engine: str, current_data: dict) -> dict:
+    """整卷总分持久化字段 box_totals：default+manual+essay 三份历史的合并视图。
+
+    合并顺序 default → manual（同名覆盖）→ essay（同名覆盖，作文整卷语义）；
+    作文条目整卷计分（取最大），普通条目逐页计分（累加）。只读不写，无递归风险。
+    """
+    from app.grading.box_totals import build_box_totals
+
+    entries: dict[str, tuple] = {}  # filename -> (score, mode)；后写覆盖先写
+
+    def _put(completed: Any, mode: str) -> None:
+        if not isinstance(completed, dict):
+            return
+        for name, item in completed.items():
+            if not isinstance(item, dict):
+                continue
+            entries[str(name)] = (_item_score_total(item), mode)
+
+    is_manual_file = current_engine == "manual"
+    is_essay_file = current_engine == "essay"
+
+    if is_essay_file:
+        _put(_read_grading_history(safe, "default").get("completed"), "sum")
+        _put(_read_grading_history(safe, "manual").get("completed"), "sum")
+        _put(current_data.get("completed"), "max")
+    else:
+        if is_manual_file:
+            _put(_read_grading_history(safe, "default").get("completed"), "sum")
+            _put(current_data.get("completed"), "sum")
+        else:
+            _put(current_data.get("completed"), "sum")
+            _put(_read_grading_history(safe, "manual").get("completed"), "sum")
+        _put(_read_essay_history(safe).get("completed"), "max")
+
+    return build_box_totals((name, score, mode) for name, (score, mode) in entries.items())
+
+
+def _write_grading_history(
+    safe: str, data: dict, engine: str = "default", *, authoritative: bool = False
+) -> None:
+    # 引擎切换守卫统一收口：所有历史写（含统分/批注/满分同步等旁路）都过这道闸，
+    # 迟到 worker 不经 _persist_* 也能被拦住。authoritative=True 只给
+    # _replace_folder_grading_run 建立权威 run 的那一次空历史写用。
+    if not authoritative and _persist_run_superseded(safe, engine):
+        return
     data["version"] = 1
     if engine != "default" or not data.get("engine"):
         data["engine"] = "manual" if engine == "manual" else engine
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # 整卷总分持久化（客户清单 #7）：每次写历史都刷新 box_totals 快照（正反面合并+作文语义）
+    try:
+        data["box_totals"] = _compute_box_totals_snapshot(safe, engine, data)
+    except Exception:
+        pass
     p = _grading_history_path(safe, engine)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
@@ -1751,6 +2038,33 @@ def _latest_grading_history(safe: str) -> tuple[dict, str]:
     return data, engine
 
 
+# 引擎切换守卫（对齐批改君）：_replace_folder_grading_run 是文件夹唯一「权威批改 run」
+# 入口，会清空 default/manual 两份历史、再写一份盖着本次引擎戳的空历史。被顶替的旧 run
+# 的迟到 worker 若再落盘，会把旧模式的结果/失败复活进新 run 的历史（例如取消 aliyun 后
+# 立刻开 smart_ref，旧 worker 的「已停止批改」或最后一张卷会混进新历史）。
+# 判据用「目标历史文件的引擎戳」而不是进程内标记：文件本身按用户隔离（user_paths），
+# 同名文件夹多用户互不干扰；进程重启后也无状态可言（迟到 worker 必然是本进程线程）。
+def _persist_run_superseded(safe: str, engine: str) -> bool:
+    """True = 该落盘属于已被顶替的旧 run，应丢弃。调用方需在 _grading_history_lock 内。"""
+    writer = str(engine or "").strip().lower()
+    if writer in ("", "default"):
+        # 引擎未知（兼容旧调用/测试桩、统分/配置等直写）→ 放行
+        return False
+    path = _grading_history_path(safe, engine)
+    if not path.is_file():
+        # 目标历史文件不在 = 已被更新的权威 run 清掉（正常写入方都经 replace 建好的
+        # 空历史落盘，或要求历史里已有该条目）→ 这是迟到写入，丢弃，不许凭空复活历史。
+        return True
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            stamp = str((json.load(f) or {}).get("engine") or "").strip().lower()
+    except Exception:
+        return False  # 读不出引擎戳（损坏/竞态）→ 放行，宁可多写不丢结果
+    if stamp in ("", "default"):
+        return False  # 旧历史没盖引擎戳 → 放行
+    return stamp != writer
+
+
 def _persist_grading_success(safe: str, item: dict, engine: str = "default") -> None:
     """将成功批改结果写入本地 JSON，重启后仍可加载；同试卷名再次批改会覆盖本条。"""
     name = item.get("name")
@@ -1760,6 +2074,8 @@ def _persist_grading_success(safe: str, item: dict, engine: str = "default") -> 
     source = "manual" if engine == "manual" else "ref"
     old_entry: Optional[dict] = None
     with _grading_history_lock:
+        if _persist_run_superseded(safe, engine):
+            return
         data = _read_grading_history(safe, engine)
         prev = (data.get("completed") or {}).get(name)
         if isinstance(prev, dict):
@@ -1775,6 +2091,11 @@ def _persist_grading_success(safe: str, item: dict, engine: str = "default") -> 
         )
     except Exception:
         pass
+    # 批改完成 → 自动导入学情+自动分层（客户清单 #1）；旁路异步，失败只打日志
+    try:
+        _schedule_auto_sync_class(get_grading_user_id(), safe)
+    except Exception:
+        pass
 
 
 def _persist_grading_failure(safe: str, name: str, msg: str, engine: str = "default") -> None:
@@ -1782,6 +2103,8 @@ def _persist_grading_failure(safe: str, name: str, msg: str, engine: str = "defa
     if not name:
         return
     with _grading_history_lock:
+        if _persist_run_superseded(safe, engine):
+            return
         data = _read_grading_history(safe, engine)
         data["failed"][name] = {"name": name, "msg": msg or "批改失败"}
         _write_grading_history(safe, data, engine)
@@ -1814,20 +2137,13 @@ def _sync_stats_on_folder_delete(user_id: str, safe: str) -> None:
 def _remove_grading_history_entry(safe: str, filename: str, engine: str = "default") -> None:
     with _grading_history_lock:
         data = _read_grading_history(safe, engine)
-        
-        # 尝试删除 modify 文件夹中残留的图片
+
+        # 尝试删除 modify 文件夹中残留的图片（URL 带 ?ticket= 查询串，必须先剥掉，
+        # 否则文件名撑爆 → OSError ENAMETOOLONG → 删除试卷在 unlink 之后 500）
         entry = data["completed"].get(filename)
         if entry and isinstance(entry, dict):
             for key in ["image_original", "image_annotated", "image_marks_only"]:
-                url = entry.get(key)
-                if url and url.startswith("/api/v1/grading/modify/"):
-                    img_name = url.split("/")[-1]
-                    img_path = modify_dir() / img_name
-                    if img_path.is_file():
-                        try:
-                            img_path.unlink()
-                        except Exception:
-                            pass
+                _delete_modify_file_by_url(entry.get(key))
 
         data["completed"].pop(filename, None)
         data["failed"].pop(filename, None)
@@ -1862,18 +2178,16 @@ def _rename_grading_history_entry(safe: str, old_filename: str, new_filename: st
 def _delete_modify_file_by_url(url: Optional[str]) -> None:
     if not url or not str(url).startswith("/api/v1/grading/modify/"):
         return
-    # Stored preview URLs include a cache-busting query such as ?t=123. The
-    # filesystem name must be extracted before the query, otherwise deleted
-    # papers leave their annotated and marks-only images behind.
-    img_name = str(url).split("?", 1)[0].split("#", 1)[0].rsplit("/", 1)[-1]
-    if not img_name or Path(img_name).name != img_name:
+    # 见 _img_name_from_url：URL 里的 ?ticket=/?t= 查询串绝不能进文件名。
+    img_name = _img_name_from_url(url)
+    if not img_name:
         return
-    img_path = modify_dir() / img_name
-    if img_path.is_file():
-        try:
+    try:
+        img_path = modify_dir() / img_name
+        if img_path.is_file():
             img_path.unlink()
-        except Exception:
-            pass
+    except Exception:
+        pass
 
 
 def _delete_reference_modify_artifacts(safe: str, filename: Optional[str] = None) -> None:
@@ -1900,7 +2214,9 @@ def _delete_reference_modify_artifacts(safe: str, filename: Optional[str] = None
                 break
         if not generated_stem or not generated_stem.startswith(folder_prefixes):
             continue
-        if target_stems and generated_stem not in target_stems:
+        # 批注打印变体 marks_only_{stem}_wa.jpg 与原图同生命周期
+        stem_for_match = generated_stem[:-3] if generated_stem.endswith("_wa") else generated_stem
+        if target_stems and stem_for_match not in target_stems:
             continue
         try:
             path.unlink()
@@ -1922,7 +2238,7 @@ def _delete_modify_files_referenced_by_history(history_path: Path) -> None:
         for entry in entries.values():
             if not isinstance(entry, dict):
                 continue
-            for key in ("image_original", "image_annotated", "image_marks_only"):
+            for key in ("image_original", "image_annotated", "image_marks_only", "image_marks_with_wrong_notes", "image_annotated_with_wrong_notes"):
                 _delete_modify_file_by_url(entry.get(key))
 
 
@@ -1941,7 +2257,11 @@ def _replace_folder_grading_run(safe: str, engine: str) -> None:
                 path.unlink(missing_ok=True)
             except OSError:
                 pass
-        _write_grading_history(safe, _empty_grading_history(target_engine), target_engine)
+        # authoritative：本写入就是建立权威 run 的那一步（文件刚被删，引擎戳还没落地），
+        # 引擎切换守卫必须放行它，否则 replace 自己会把自己拦掉。
+        _write_grading_history(
+            safe, _empty_grading_history(target_engine), target_engine, authoritative=True
+        )
 
     _delete_reference_modify_artifacts(safe)
     try:
@@ -1954,6 +2274,13 @@ def _replace_folder_grading_run(safe: str, engine: str) -> None:
         from app.grading.reference_vlm_grading import delete_reference_vlm_folder_artifacts
 
         delete_reference_vlm_folder_artifacts(safe)
+    except Exception:
+        pass
+    # B 项：re-grade 全量重跑后旧台账行置 voided（历史事实保留，当前态统计排除）
+    try:
+        from app.grading.correction_ledger import void_folder_corrections
+
+        void_folder_corrections(safe)
     except Exception:
         pass
 
@@ -2024,6 +2351,9 @@ async def api_grade_quick(file: UploadFile = File(...)):
     """快速批改：上传单张试卷图片，大模型自主批改，返回结果与图片 URL。"""
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="请上传图片文件（如 jpg、png）")
+    # 0924：大模型批改发起闸（本入口无独立上传侧计面 ⇒ 同步计 1 面）。
+    # 放在 try/except Exception 之前，确保 403 不被下面的 500 包装吞掉。
+    quota_gate(charge_pages=1)
     ext = ".jpg"
     if file.filename:
         for e in (".jpg", ".jpeg", ".png", ".webp"):
@@ -2101,6 +2431,8 @@ async def api_home_grade_quick(
     """首页图片批改：上传学生试卷（可选标准答案卷 id）。有答案卷走千问对照批改(smart_ref)，否则百度盲批。原图/留痕/空白留痕/json 保存到 grading_data/home_img。"""
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="请上传图片文件（如 jpg、png）")
+    # 0924：大模型批改发起闸（smart_ref/baidu，无独立上传侧计面 ⇒ 同步计 1 面）
+    quota_gate(charge_pages=1)
     ext = ".jpg"
     if file.filename:
         for e in (".jpg", ".jpeg", ".png", ".webp"):
@@ -2222,6 +2554,92 @@ async def api_home_detail(job_id: str):
     return {"ok": True, "item": rec}
 
 
+def _home_record_blocks(rec: dict) -> list:
+    blocks = rec.get("blocks")
+    if isinstance(blocks, list) and blocks:
+        return blocks
+    return []
+
+
+@router.post("/home/{job_id}/wrong-annotation/save")
+async def api_home_wrong_annotation_save(job_id: str, request: Request):
+    """首页作业判错批注：整体覆盖保存（首页无留痕变体，只存文本）。"""
+    p = _home_record_path(job_id)
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="作业不存在或已被清理")
+    try:
+        rec = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(rec, dict):
+            raise ValueError("bad json")
+    except Exception:
+        raise HTTPException(status_code=500, detail="读取作业数据失败")
+    _assert_job_owner(rec)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    from app.grading.wrong_annotations import normalize_wrong_annotations
+
+    wrong_annotations = normalize_wrong_annotations(body.get("wrong_annotations"))
+    _home_update_record(job_id, {"wrong_annotations": wrong_annotations})
+    return {"ok": True, "wrong_annotations": wrong_annotations}
+
+
+@router.post("/home/{job_id}/wrong-annotation/generate")
+async def api_home_wrong_annotation_generate(job_id: str, request: Request):
+    """首页作业判错批注：AI 生成/重生成（带 question_key 单题覆盖，不带整卷补齐）。"""
+    p = _home_record_path(job_id)
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="作业不存在或已被清理")
+    try:
+        rec = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(rec, dict):
+            raise ValueError("bad json")
+    except Exception:
+        raise HTTPException(status_code=500, detail="读取作业数据失败")
+    _assert_job_owner(rec)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    question_key = str(body.get("question_key") or "").strip()
+    blocks = _home_record_blocks(rec)
+    if not blocks:
+        raise HTTPException(status_code=409, detail="该作业缺少逐题数据，无法生成批注")
+
+    from app.grading.wrong_annotations import (
+        collect_wrong_question_groups,
+        generate_wrong_annotations_for_blocks,
+        normalize_wrong_annotations,
+    )
+
+    source_path = home_img_dir() / str(
+        (rec.get("files") or {}).get("upload") or ""
+    )
+    source_image_path = str(source_path) if source_path.is_file() else ""
+    existing = normalize_wrong_annotations(rec.get("wrong_annotations"))
+    if question_key:
+        groups = collect_wrong_question_groups(blocks)
+        if question_key not in groups:
+            raise HTTPException(status_code=404, detail="该题不是错/半对，无需生成错因批注")
+        generated = generate_wrong_annotations_for_blocks(
+            blocks,
+            source_image_path=source_image_path,
+            existing={},
+            only_keys={question_key},
+        )
+    else:
+        generated = generate_wrong_annotations_for_blocks(
+            blocks,
+            source_image_path=source_image_path,
+            existing=existing,
+        )
+    if generated:
+        existing.update(generated)
+        _home_update_record(job_id, {"wrong_annotations": existing})
+    return {"ok": True, "wrong_annotations": existing, "generated": generated}
+
+
 @router.delete("/home/{job_id}")
 async def api_home_delete(job_id: str):
     """删除首页最近作业：删除原图/留痕/仅留痕/json。"""
@@ -2266,6 +2684,8 @@ async def api_grade_batch(files: List[UploadFile] = File(...)):
         tasks.append((save_path, save_path.stem, f.filename or name))
     if not tasks:
         raise HTTPException(status_code=400, detail="没有有效的图片文件")
+    # 0924：大模型批改发起闸（无独立上传侧计面 ⇒ 按本批张数计面）
+    quota_gate(charge_pages=len(tasks))
     batch_id = str(uuid.uuid4())
     with _batch_lock:
         _batch_results[batch_id] = {"total": len(tasks), "completed": [], "failed": [], "user_id": get_grading_user_id()}
@@ -2790,7 +3210,7 @@ def _re_sign_history_image_url(url: Optional[str]) -> Optional[str]:
 
 
 # 历史记录里需要重签下载票的图片字段（快速批改与作文批改共用）
-_HISTORY_IMAGE_KEYS = ("image_original", "image_annotated", "image_marks_only")
+_HISTORY_IMAGE_KEYS = ("image_original", "image_annotated", "image_marks_only", "image_marks_with_wrong_notes", "image_annotated_with_wrong_notes")
 
 
 def _resign_history_images(item: dict) -> dict:
@@ -2866,6 +3286,32 @@ def _preview_image_name_for_file(filename: str) -> Optional[str]:
     return None
 
 
+def _answer_table_region_url(folder_safe: str, page_no: int, bbox) -> str:
+    """答案表作答区缩略图直链（带当前用户下载票），前端 <img> 直接用。"""
+    try:
+        x1, y1, x2, y2 = (int(v) for v in (bbox or [])[:4])
+    except (TypeError, ValueError):
+        return ""
+    if x2 <= x1 or y2 <= y1:
+        return ""
+    base = (
+        f"/api/v1/grading/folders/{folder_safe}/answer-table/region-image"
+        f"?page_no={int(page_no)}&x1={x1}&y1={y1}&x2={x2}&y2={y2}"
+    )
+    return _with_download_ticket(base, f"grading/folders/{folder_safe}/answer-table/region-image")
+
+
+def _attach_answer_table_region_urls(folder_safe: str, page_no: int, questions: list) -> list:
+    """给每个作答区槽挂上缩略图直链（就地修改并返回同一列表）。"""
+    for entry in questions or []:
+        if not isinstance(entry, dict):
+            continue
+        for slot in entry.get("slots") or []:
+            if isinstance(slot, dict):
+                slot["region_url"] = _answer_table_region_url(folder_safe, page_no, slot.get("bbox"))
+    return questions
+
+
 def _reference_standard_sources(folder_safe: str) -> dict[int, tuple[Path, Path]]:
     """Return standard-answer source and OCR image paths grouped by page."""
     result: dict[int, tuple[Path, Path]] = {}
@@ -2888,6 +3334,43 @@ def _reference_standard_sources(folder_safe: str) -> dict[int, tuple[Path, Path]
     return result
 
 
+def _answer_sheet_sources(folder_safe: str) -> dict[int, tuple[Path, Path]]:
+    """答案纸（答案单独一张纸）所有页：返回 {页号: (源文件, 批改图)}。"""
+    result: dict[int, tuple[Path, Path]] = {}
+    directory = correct_docs_dir() / folder_safe
+    if not directory.is_dir():
+        return result
+    for path in directory.iterdir():
+        if not path.is_file() or path.suffix.lower() not in _ALL_UPLOAD_EXTS:
+            continue
+        page_no = _answer_sheet_page_no(path.name)
+        if page_no is None or page_no in result:
+            continue
+        grading_path = _get_grading_path(folder_safe, path)
+        if grading_path is None:
+            if path.suffix.lower() in (".doc", ".docx"):
+                grading_path = path
+            else:
+                grading_path = _ensure_img_in_folder(path, folder_safe) or path
+        result[page_no] = (path, Path(grading_path))
+    return result
+
+
+def _load_answer_sheet_texts_for_folder(folder_safe: str) -> dict:
+    """答案纸答案 {印刷题号: 文本}（扫描缓存按文件签名自动失效）；无答案纸回 {}。"""
+    sources = _answer_sheet_sources(folder_safe)
+    if not sources:
+        return {}
+    try:
+        return load_or_build_answer_sheet_texts(
+            folder_safe,
+            [(str(source), str(grading)) for _page, (source, grading) in sorted(sources.items())],
+        )
+    except Exception:
+        traceback.print_exc()
+        return {}
+
+
 def _manual_template_sources(folder_safe: str) -> dict[int, tuple[Path, Path]]:
     """Use every page in the first natural paper box as the manual layout template."""
     directory = correct_docs_dir() / folder_safe
@@ -2899,6 +3382,7 @@ def _manual_template_sources(folder_safe: str) -> dict[int, tuple[Path, Path]]:
         if path.is_file()
         and path.suffix.lower() in _ALL_UPLOAD_EXTS
         and not _is_standard_answer_filename(path.name)
+        and not _is_answer_sheet_filename(path.name)
     ]
     candidates.sort(key=lambda path: _natural_sort_key(path.name))
     if not candidates:
@@ -3020,17 +3504,23 @@ async def api_list_files(folder_name: str):
             "files": [],
             "standard_answer": None,
             "standard_answers": [],
+            "answer_sheets": [],
             "reference_layout": {"confirmed": False, "reviewed_pages": [], "stale_pages": []},
             "manual_layout": {"confirmed": False, "reviewed_pages": [], "stale_pages": []},
         }
     files = []
     standard_answer_names: list[tuple[int, str]] = []
+    answer_sheet_names: list[tuple[int, str]] = []
     for f in dir_path.iterdir():
         if not f.is_file() or f.suffix.lower() not in _ALL_UPLOAD_EXTS:
             continue
         standard_page_no = _standard_answer_page_no(f.name)
         if standard_page_no is not None:
             standard_answer_names.append((standard_page_no, f.name))
+            continue
+        sheet_page_no = _answer_sheet_page_no(f.name)
+        if sheet_page_no is not None:
+            answer_sheet_names.append((sheet_page_no, f.name))
             continue
         t = _file_type(f.name)
         url = _preview_url_for_file(safe, f.name)
@@ -3047,6 +3537,17 @@ async def api_list_files(folder_name: str):
                 "page_no": page_no,
             }
         )
+    answer_sheets = []
+    for page_no, filename in sorted(answer_sheet_names, key=lambda item: item[0]):
+        answer_sheets.append(
+            {
+                "name": f"答案纸 P{page_no}",
+                "filename": filename,
+                "url": _preview_url_for_file(safe, filename),
+                "type": _file_type(filename),
+                "page_no": page_no,
+            }
+        )
     standard_answer = next(
         (item for item in standard_answers if item["page_no"] == 1),
         standard_answers[0] if standard_answers else None,
@@ -3056,6 +3557,7 @@ async def api_list_files(folder_name: str):
         "files": files,
         "standard_answer": standard_answer,
         "standard_answers": standard_answers,
+        "answer_sheets": answer_sheets,
         "reference_layout": reference_layout_status(
             safe,
             {page_no: source for page_no, (source, _grading) in _reference_standard_sources(safe).items()},
@@ -3065,7 +3567,7 @@ async def api_list_files(folder_name: str):
 
 
 @router.post("/folders/{folder_name:path}/reference-layout/prepare")
-async def api_prepare_reference_layout(folder_name: str):
+def api_prepare_reference_layout(folder_name: str):
     """OCR only the standard-answer pages for the interactive cut-question review."""
     safe = _safe_folder_name(folder_name)
     if not safe:
@@ -3078,7 +3580,11 @@ async def api_prepare_reference_layout(folder_name: str):
         (f"__layout_standard_p{page_no}__", f"标准答案 P{page_no}", str(source_path))
         for page_no, (source_path, _grading_path) in sorted(sources.items())
     ]
-    cache, errors = recognize_reference_vlm_batch(ocr_items, allow_empty=True)
+    # 同步重活（整页 VL OCR）：def 进线程池跑，别堵事件循环（堵死全站点不进去）
+    from app.services.heavy_budget import heavy_slot
+
+    with heavy_slot("layout-prepare"):
+        cache, errors = recognize_reference_vlm_batch(ocr_items, allow_empty=True)
     if errors:
         details = "；".join(
             f"{key.replace('__layout_standard_', '').replace('__', '')}: {error}"
@@ -3154,6 +3660,235 @@ async def api_confirm_reference_layout(folder_name: str, body: dict = Body(...))
     return {"ok": True, "confirmed": status["confirmed"], "reference_layout": status, "updated_at": result.get("updated_at")}
 
 
+def _answer_table_standard_document(safe: str, page_no: int, source_path: Path, grading_path: Path):
+    """答案表识别用的标准页文档：优先已确认切题，未确认时现场 OCR 出题框。"""
+    try:
+        confirmed = get_confirmed_reference_document(safe, page_no, source_path, str(grading_path))
+    except Exception:
+        confirmed = None
+    if confirmed is not None:
+        return confirmed, None
+    cache_key = f"__answer_table_p{page_no}__"
+    try:
+        cache, errors = recognize_reference_vlm_batch(
+            [(cache_key, f"标准答案 P{page_no}", str(grading_path))],
+            allow_empty=True,
+        )
+    except Exception as exc:
+        return None, f"标准答案 OCR 识别失败：{exc}"
+    document = cache.get(cache_key)
+    if not document:
+        err = errors.get(cache_key)
+        return None, f"标准答案 OCR 识别失败：{err}" if err else "标准答案 OCR 未返回结果"
+    return {
+        "name": source_path.name,
+        "source_path": str(source_path),
+        "image_path": str(document.get("image_path") or grading_path),
+        "raw": document.get("raw") or {},
+        "image_size": document.get("image_size") or [0, 0],
+    }, None
+
+
+def _answer_table_pages_response(safe: str, *, build: bool) -> list[dict]:
+    """逐标准页组装答案表：build=True 时自动识别（有缓存直接用），失败给缓存兜底。"""
+    pages_out: list[dict] = []
+    # 答案纸（答案单独一张纸）按印刷题号的答案，逐标准页合并进识别结果
+    sheet_texts = _load_answer_sheet_texts_for_folder(safe)
+    for page_no, (source_path, grading_path) in sorted(_reference_standard_sources(safe).items()):
+        entry: dict = {
+            "page_no": page_no,
+            "filename": source_path.name,
+            "questions": [],
+            "error": "",
+            # 答题区框总览底图（与切题审查同源预览图）+ 批改图坐标尺寸
+            "image_url": _preview_url_for_file(safe, source_path.name),
+            "image_size": None,
+        }
+        cached = read_reference_answer_table_page(safe, page_no)
+        if not build:
+            entry["questions"] = cached.get("questions") or []
+            entry["updated_at"] = cached.get("updated_at")
+            entry["image_size"] = cached.get("image_size") or None
+            pages_out.append(entry)
+            continue
+        standard_doc, doc_error = _answer_table_standard_document(safe, page_no, source_path, grading_path)
+        if standard_doc is None:
+            entry["questions"] = cached.get("questions") or []
+            entry["updated_at"] = cached.get("updated_at")
+            entry["image_size"] = cached.get("image_size") or None
+            entry["error"] = doc_error or "标准答案识别失败"
+            pages_out.append(entry)
+            continue
+        try:
+            table = load_or_build_reference_answer_table(
+                safe, page_no, standard_doc, answer_sheet_texts=sheet_texts
+            )
+        except Exception as exc:
+            traceback.print_exc()
+            entry["questions"] = cached.get("questions") or []
+            entry["updated_at"] = cached.get("updated_at")
+            entry["image_size"] = cached.get("image_size") or None
+            entry["error"] = f"标准答案识别失败：{exc}"
+            pages_out.append(entry)
+            continue
+        entry["questions"] = table.get("questions") or cached.get("questions") or []
+        entry["updated_at"] = table.get("updated_at") or cached.get("updated_at")
+        entry["image_size"] = (
+            table.get("image_size")
+            or cached.get("image_size")
+            or standard_doc.get("image_size")
+            or None
+        )
+        pages_out.append(entry)
+    for entry in pages_out:
+        _attach_answer_table_region_urls(safe, entry.get("page_no") or 0, entry.get("questions") or [])
+    return pages_out
+
+
+@router.get("/folders/{folder_name:path}/answer-table")
+def api_get_reference_answer_table(folder_name: str, build: int = 1):
+    """上传完标准答案自动识别每道题答案；识别结果可手动修改（POST .../save）。"""
+    safe = _safe_folder_name(folder_name)
+    if not safe:
+        raise HTTPException(status_code=400, detail="无效文件夹名")
+    if not _reference_standard_sources(safe):
+        raise HTTPException(status_code=400, detail="请先上传标准答案试卷")
+    # 重建=逐槽 VL 转写+PIL 裁剪，分钟级重活：def 进线程池+总闸排队，别堵事件循环
+    from app.services.heavy_budget import heavy_slot
+
+    with heavy_slot("answer-table"):
+        return {"ok": True, "pages": _answer_table_pages_response(safe, build=bool(build))}
+
+
+@router.post("/folders/{folder_name:path}/answer-table/save")
+async def api_save_reference_answer_table(folder_name: str, body: dict = Body(...)):
+    safe = _safe_folder_name(folder_name)
+    if not safe:
+        raise HTTPException(status_code=400, detail="无效文件夹名")
+    try:
+        page_no = int(body.get("page_no") or 0)
+    except (TypeError, ValueError):
+        page_no = 0
+    questions = body.get("questions")
+    if page_no <= 0 or not isinstance(questions, list) or not questions:
+        raise HTTPException(status_code=400, detail="缺少答案修改数据")
+    try:
+        saved = save_reference_answer_table_edits(safe, page_no, questions)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "page_no": page_no,
+        "updated_at": saved.get("updated_at"),
+        "questions": _attach_answer_table_region_urls(safe, page_no, saved.get("questions") or []),
+    }
+
+
+@router.post("/folders/{folder_name:path}/answer-table/rebuild")
+def api_rebuild_reference_answer_table(folder_name: str, body: Optional[dict] = Body(default=None)):
+    """强制重新识别答案表；reset_edits=True 连手动修改一起清掉。"""
+    safe = _safe_folder_name(folder_name)
+    if not safe:
+        raise HTTPException(status_code=400, detail="无效文件夹名")
+    body = body or {}
+    try:
+        page_no = int(body.get("page_no") or 0)
+    except (TypeError, ValueError):
+        page_no = 0
+    invalidate_reference_answer_table(safe, page_no or None, reset_edits=bool(body.get("reset_edits")))
+    if not _reference_standard_sources(safe):
+        raise HTTPException(status_code=400, detail="请先上传标准答案试卷")
+    from app.services.heavy_budget import heavy_slot
+
+    with heavy_slot("answer-table"):
+        return {"ok": True, "pages": _answer_table_pages_response(safe, build=True)}
+
+
+def _answer_sheet_rows(texts: dict) -> list[dict]:
+    """{题号: 答案} 排成专窗行（数字题号升序在前，其它在后）。"""
+
+    def _key(item):
+        no = str(item[0])
+        try:
+            return (0, int(no), no)
+        except ValueError:
+            return (1, 0, no)
+
+    return [{"no": str(k), "answer": str(v)} for k, v in sorted(texts.items(), key=_key)]
+
+
+@router.get("/folders/{folder_name:path}/answer-sheet")
+def api_get_answer_sheet(folder_name: str, build: int = 1):
+    """答案纸专窗：识别答案纸上每道题的答案（先看答案，再合并进答题区）。"""
+    safe = _safe_folder_name(folder_name)
+    if not safe:
+        raise HTTPException(status_code=400, detail="无效文件夹名")
+    sources = _answer_sheet_sources(safe)
+    if not sources:
+        raise HTTPException(status_code=400, detail="请先上传答案纸")
+    pages = [
+        (str(source), str(grading))
+        for _page, (source, grading) in sorted(sources.items())
+    ]
+    error = ""
+    if build:
+        try:
+            # 整版 VL 扫描是重活：def 进线程池+总闸，别堵事件循环
+            from app.services.heavy_budget import heavy_slot
+
+            with heavy_slot("answer-sheet"):
+                texts = load_or_build_answer_sheet_texts(safe, pages)
+        except Exception as exc:
+            traceback.print_exc()
+            texts = read_answer_sheet_texts(safe)
+            error = f"答案纸识别失败：{exc}"
+    else:
+        texts = read_answer_sheet_texts(safe)
+    return {
+        "ok": True,
+        "pages": [
+            {"page_no": page_no, "filename": source.name}
+            for page_no, (source, _grading) in sorted(sources.items())
+        ],
+        "rows": _answer_sheet_rows(texts),
+        "error": error,
+    }
+
+
+@router.post("/folders/{folder_name:path}/answer-sheet/save")
+def api_save_answer_sheet(folder_name: str, body: dict = Body(...)):
+    """保存答案纸识别结果（专窗核对/改错后点「合并进答案表」）。
+
+    rescan=true 丢弃缓存重新识别（扫错重试）；否则按老师确认过的答案落盘，
+    后续答案表重建直接吃这份人工修正版。
+    """
+    safe = _safe_folder_name(folder_name)
+    if not safe:
+        raise HTTPException(status_code=400, detail="无效文件夹名")
+    sources = _answer_sheet_sources(safe)
+    if not sources:
+        raise HTTPException(status_code=400, detail="请先上传答案纸")
+    pages = [
+        (str(source), str(grading))
+        for _page, (source, grading) in sorted(sources.items())
+    ]
+    if bool(body.get("rescan")):
+        clear_answer_sheet_cache(safe)
+        from app.services.heavy_budget import heavy_slot
+
+        with heavy_slot("answer-sheet"):
+            texts = load_or_build_answer_sheet_texts(safe, pages)
+    else:
+        by_printed_no = body.get("by_printed_no")
+        if not isinstance(by_printed_no, dict):
+            raise HTTPException(status_code=400, detail="缺少答案数据")
+        try:
+            texts = save_answer_sheet_texts(safe, pages, by_printed_no)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "rows": _answer_sheet_rows(texts)}
+
+
 def _manual_student_files(folder_safe: str) -> list[Path]:
     directory = correct_docs_dir() / folder_safe
     if not directory.is_dir():
@@ -3164,6 +3899,7 @@ def _manual_student_files(folder_safe: str) -> list[Path]:
         if path.is_file()
         and path.suffix.lower() in _ALL_UPLOAD_EXTS
         and not _is_standard_answer_filename(path.name)
+        and not _is_answer_sheet_filename(path.name)
         and not _is_original_paper_filename(path.name)
         and not path.stem.endswith("试卷")
     ]
@@ -3241,36 +3977,69 @@ def _materialize_manual_layout_history(folder_safe: str, layout_data: dict) -> i
 
 
 @router.post("/folders/{folder_name:path}/manual-layout/prepare")
-def api_prepare_manual_layout(folder_name: str):
-    """先识别视觉题号、再按答题卡框线切题，生成可编辑的自主阅卷模板。
+def api_prepare_manual_layout(folder_name: str, body: Optional[dict] = Body(default=None)):
+    """生成可编辑的自主阅卷切题模板，source 决定框线来源（两种同构共用后续全链）。
 
-    不再用百度「试卷切题」（paper_cut_edu，切得乱、漏题、把选择题切成手写小块），改用
-    框线检测（detect_answer_card_boxes）切作答格 + 通用 OCR 识别印刷题号，把每个作答格
-    挂到它上方/左侧的题号上。选择题整题跳过，display_no 用卷面原题号（1..8、15..21）。
+    source=answer_card（默认，答题卡）：先识别视觉题号、再按答题卡框线切题。不再用
+    百度「试卷切题」（paper_cut_edu，切得乱、漏题、把选择题切成手写小块），改用框线检测
+    （detect_answer_card_boxes）切作答格 + 通用 OCR 识别印刷题号，把每个作答格挂到它
+    上方/左侧的题号上。选择题整题跳过，display_no 用卷面原题号（1..8、15..21）。
+    source=reference（试卷手动批改）：普通试卷没有答题卡印刷框线（框线检测会「未识别到
+    题目」），改取标准答案识别列表已确认的标准答题区（reference layout）题目/作答区框，
+    等比缩放到模板卷面坐标系。
     """
     safe = _safe_folder_name(folder_name)
     if not safe:
         raise HTTPException(status_code=400, detail="无效文件夹名")
+    source = str((body or {}).get("source") or "answer_card").strip().lower()
+    if source not in ("answer_card", "reference"):
+        raise HTTPException(status_code=400, detail="无效切题来源")
     sources = _manual_template_sources(safe)
     if not sources:
         raise HTTPException(status_code=400, detail="请先上传至少一张学生试卷")
+
+    ref_pages: dict = {}
+    if source == "reference":
+        ref = load_reference_layout(safe)
+        if not isinstance(ref, dict) or ref.get("status") != "confirmed":
+            raise HTTPException(status_code=400, detail="请先在「标准答案识别列表」确认标准答题区")
+        ref_pages = ref.get("pages") if isinstance(ref.get("pages"), dict) else {}
 
     # 已确认的原始试卷分值（若有）注入每题 max_score，切题后即带真实分值。
     paper_scores = load_paper_scores(safe)
     pending_pages: list[dict] = []
     response_pages: list[dict] = []
+    number_offset = 0  # 标准答题区页内题号 → 全卷题号（与 _scoring_title_offsets 同口径）
     for page_no, (source_path, grading_path) in sorted(sources.items()):
-        try:
-            page = build_manual_layout_page_from_boxes(
-                str(grading_path),
-                page_no=page_no,
-                filename=source_path.name,
-                image_url=_preview_url_for_file(safe, source_path.name),
-            )
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=f"P{page_no} 切题失败：{exc}") from exc
-        if not page.get("questions"):
-            raise HTTPException(status_code=502, detail=f"模板试卷 P{page_no} 未识别到题目")
+        if source == "reference":
+            ref_page = ref_pages.get(str(page_no))
+            if not isinstance(ref_page, dict):
+                raise HTTPException(status_code=502, detail=f"标准答题区缺少 P{page_no}，无法切分试卷")
+            try:
+                page = build_manual_layout_page_from_reference_layout(
+                    ref_page,
+                    page_no=page_no,
+                    filename=source_path.name,
+                    image_url=_preview_url_for_file(safe, source_path.name),
+                    image_path=str(grading_path),
+                    number_offset=number_offset,
+                )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=502, detail=f"P{page_no} 切题失败：{exc}") from exc
+            if page.get("questions"):
+                number_offset = max(int(q.get("display_no") or 0) for q in page["questions"])
+        else:
+            try:
+                page = build_manual_layout_page_from_boxes(
+                    str(grading_path),
+                    page_no=page_no,
+                    filename=source_path.name,
+                    image_url=_preview_url_for_file(safe, source_path.name),
+                )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=502, detail=f"P{page_no} 切题失败：{exc}") from exc
+            if not page.get("questions"):
+                raise HTTPException(status_code=502, detail=f"模板试卷 P{page_no} 未识别到题目")
         apply_paper_scores_to_page(page, paper_scores)
         pending_pages.append(
             {
@@ -3574,6 +4343,32 @@ async def api_get_grading_history(folder_name: str, engine: str = "default"):
     }
 
 
+@router.get("/folders/{folder_name:path}/score-summary")
+def api_get_folder_score_summary(
+    folder_name: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    """轻成绩表（对齐批改君 exam_scores）：本文件夹每生一行成绩汇总。
+
+    读时按批改历史重建（幂等，旧文件夹自愈）再返回；未统分条目不落行。
+    用 def 不用 async：写库+读历史放线程池，不占事件循环（防全站假死口径）。
+    """
+    safe = _safe_folder_name(folder_name)
+    if not safe:
+        return {"ok": False, "rows": [], "msg": "文件夹不存在"}
+    try:
+        from app.grading.score_summary_db import (
+            get_folder_score_summaries,
+            sync_folder_score_summaries,
+        )
+
+        summary = sync_folder_score_summaries(user_id, safe)
+        rows = get_folder_score_summaries(user_id, safe)
+    except Exception as e:
+        return {"ok": False, "rows": [], "msg": str(e)}
+    return {"ok": True, "rows": rows, "count": len(rows), "summary": summary}
+
+
 @router.get("/folders/{folder_name:path}/essay-grading-history")
 async def api_get_essay_grading_history(folder_name: str):
     """读取本文件夹已持久化的「作文批改」记录（仅作文批改使用），重启后端后仍可用。"""
@@ -3858,6 +4653,46 @@ async def api_serve_file(folder_name: str, filename: str, request: Request):
     return FileResponse(path, filename=base_name)
 
 
+@file_router.get("/folders/{folder_name:path}/answer-table/region-image")
+async def api_serve_answer_table_region_image(
+    folder_name: str,
+    request: Request,
+    page_no: int = 0,
+    x1: int = 0,
+    y1: int = 0,
+    x2: int = 0,
+    y2: int = 0,
+):
+    """答案表作答区缩略图：按 bbox 裁标准答案页返回 JPEG。
+
+    前端 6889 跨域画布裁剪会污染画布，缩略图必须服务端裁；<img> 带不了
+    Authorization，鉴权走下载票（resource 绑定到本端点）。
+    bbox 是答案表缓存 image_path 的坐标空间（与识别时同一张图）。
+    """
+    safe = _safe_folder_name(folder_name)
+    if not safe or page_no <= 0:
+        raise HTTPException(status_code=404)
+    user_id = user_id_from_request(
+        request, resource=f"grading/folders/{safe}/answer-table/region-image"
+    )
+    set_grading_user_id(user_id)
+    # 答题区坐标按答案表缓存图（image_path）记；缓存缺失时回退标准答案识别图
+    cached = read_reference_answer_table_page(safe, page_no)
+    image_path = Path(str(cached.get("image_path") or "")) if cached.get("image_path") else None
+    if not image_path or not image_path.is_file():
+        sources = _reference_standard_sources(safe)
+        pair = sources.get(int(page_no))
+        if pair:
+            image_path = pair[1]
+    if not image_path or not image_path.is_file():
+        raise HTTPException(status_code=404)
+    try:
+        jpeg = crop_reference_answer_table_region(str(image_path), [x1, y1, x2, y2])
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(content=jpeg, media_type="image/jpeg")
+
+
 @router.post("/folders/{folder_name:path}/file/rename")
 async def api_rename_folder_file(folder_name: str, request: Request):
     safe = _safe_folder_name(folder_name)
@@ -3880,6 +4715,8 @@ async def api_rename_folder_file(folder_name: str, request: Request):
         raise HTTPException(status_code=404, detail="试卷文件不存在")
     if _is_standard_answer_filename(old_path.name):
         raise HTTPException(status_code=400, detail="标准答案不支持重命名")
+    if _is_answer_sheet_filename(old_path.name):
+        raise HTTPException(status_code=400, detail="答案纸不支持重命名")
 
     old_ext = old_path.suffix
     new_path_obj = Path(raw_new_name)
@@ -3893,6 +4730,8 @@ async def api_rename_folder_file(folder_name: str, request: Request):
         raise HTTPException(status_code=400, detail="新试卷名称无效")
     if _is_standard_answer_filename(new_name):
         raise HTTPException(status_code=400, detail="学生试卷不能重命名为标准答案")
+    if _is_answer_sheet_filename(new_name):
+        raise HTTPException(status_code=400, detail="学生试卷不能重命名为答案纸")
     if old_name == new_name:
         return {
             "ok": True,
@@ -3951,34 +4790,26 @@ async def api_rename_folder_file(folder_name: str, request: Request):
     }
 
 
-@router.delete("/folders/{folder_name:path}/file/{filename:path}")
-async def api_delete_folder_file(folder_name: str, filename: str):
-    safe = _safe_folder_name(folder_name)
-    if not safe:
-        raise HTTPException(status_code=400, detail="无效文件夹名")
-    base_name = Path(filename).name
-    if not base_name or not _safe_file_filename(base_name):
-        raise HTTPException(status_code=400, detail="无效文件名")
+def _cleanup_paper_leftovers(safe: str, base_name: str) -> None:
+    """删除试卷后的收尾清理：同名 json、批改/作文历史、错题本、参照批改产物、批注图。
+
+    任何一步失败都只打日志、绝不向上传播——删除接口在 unlink 之后不能再 5xx，
+    否则前端会当成删除失败反复重试，第二次起全部 404「文件不存在」。
+    """
     path = correct_docs_dir() / safe / base_name
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="文件不存在")
-    standard_page_no = _standard_answer_page_no(base_name)
-    if standard_page_no is not None:
-        delete_reference_layout(safe, standard_page_no)
-    _sync_stats_on_paper_delete(get_grading_user_id(), safe, base_name)
-    path.unlink()
-
-    # 尝试一并删除同名的 .json 文件（如果有）
-    json_path = path.with_suffix(".json")
-    if json_path.is_file():
-        try:
+    try:
+        # 尝试一并删除同名的 .json 文件（如果有）
+        json_path = path.with_suffix(".json")
+        if json_path.is_file():
             json_path.unlink()
-        except Exception:
-            pass
-
-    _remove_grading_history_entry(safe, base_name, "default")
-    _remove_grading_history_entry(safe, base_name, "manual")
-    _remove_essay_history_entry(safe, base_name)
+    except Exception:
+        print(traceback.format_exc())
+    try:
+        _remove_grading_history_entry(safe, base_name, "default")
+        _remove_grading_history_entry(safe, base_name, "manual")
+        _remove_essay_history_entry(safe, base_name)
+    except Exception:
+        print(traceback.format_exc())
     try:
         from app.grading.wrong_question_db import remove_paper_from_exam_wrong_questions
         remove_paper_from_exam_wrong_questions(safe, base_name)
@@ -3989,19 +4820,45 @@ async def api_delete_folder_file(folder_name: str, filename: str):
         remove_reference_vlm_paper_artifacts(safe, base_name)
     except Exception:
         pass
-    _delete_reference_modify_artifacts(safe, base_name)
-    ext = Path(base_name).suffix.lower()
-    if ext == ".pdf":
-        img_path = correct_docs_img_dir() / safe / f"{Path(base_name).stem}_img.jpg"
-    elif ext in _IMAGE_EXTS:
-        img_path = correct_docs_img_dir() / safe / base_name
-    else:
-        img_path = None
-    if img_path and img_path.is_file():
-        try:
+    try:
+        _delete_reference_modify_artifacts(safe, base_name)
+    except Exception:
+        print(traceback.format_exc())
+    try:
+        ext = Path(base_name).suffix.lower()
+        if ext == ".pdf":
+            img_path = correct_docs_img_dir() / safe / f"{Path(base_name).stem}_img.jpg"
+        elif ext in _IMAGE_EXTS:
+            img_path = correct_docs_img_dir() / safe / base_name
+        else:
+            img_path = None
+        if img_path and img_path.is_file():
             img_path.unlink()
-        except Exception:
-            pass
+    except Exception:
+        print(traceback.format_exc())
+
+
+@router.delete("/folders/{folder_name:path}/file/{filename:path}")
+async def api_delete_folder_file(folder_name: str, filename: str):
+    safe = _safe_folder_name(folder_name)
+    if not safe:
+        raise HTTPException(status_code=400, detail="无效文件夹名")
+    base_name = Path(filename).name
+    if not base_name or not _safe_file_filename(base_name):
+        raise HTTPException(status_code=400, detail="无效文件名")
+    path = correct_docs_dir() / safe / base_name
+    if not path.is_file():
+        # 幂等删除：文件可能已在上一次请求里被 unlink、但收尾清理崩溃留下历史/批注
+        # 残留。继续走清理并返回成功，让前端把幽灵条目从列表拿掉，否则每次重试都是
+        # 404「文件不存在」。
+        _cleanup_paper_leftovers(safe, base_name)
+        return {"ok": True}
+    standard_page_no = _standard_answer_page_no(base_name)
+    if standard_page_no is not None:
+        delete_reference_layout(safe, standard_page_no)
+    _sync_stats_on_paper_delete(get_grading_user_id(), safe, base_name)
+    path.unlink()
+    _cleanup_paper_leftovers(safe, base_name)
     return {"ok": True}
 
 
@@ -4115,6 +4972,8 @@ async def api_upload_to_folder(
     standard_page_no: str = Form(""),
     is_original_paper: str = Form(""),
     original_page_no: str = Form(""),
+    is_answer_sheet: str = Form(""),
+    answer_sheet_page_no: str = Form(""),
 ):
     safe = _safe_folder_name(folder_name)
     if not safe:
@@ -4129,6 +4988,7 @@ async def api_upload_to_folder(
     ext = _ext_from_filename(file.filename)
     is_std = str(is_standard_answer).strip().lower() in ("true", "1", "yes")
     is_orig = str(is_original_paper).strip().lower() in ("true", "1", "yes")
+    is_sheet = str(is_answer_sheet).strip().lower() in ("true", "1", "yes")
     try:
         content = await file.read()
     except Exception as e:
@@ -4216,6 +5076,46 @@ async def api_upload_to_folder(
             "type": t,
             "page_no": page_no,
         }
+    if is_sheet:
+        try:
+            page_no = int(str(answer_sheet_page_no or "1").strip() or "1")
+        except Exception:
+            raise HTTPException(status_code=400, detail="答案纸页码必须是整数")
+        if page_no < 1 or page_no > 20:
+            raise HTTPException(status_code=400, detail="答案纸页码必须在 1 到 20 之间")
+        for old in dir_path.iterdir():
+            if old.is_file() and _answer_sheet_page_no(old.name) == page_no:
+                try:
+                    old.unlink()
+                except Exception:
+                    pass
+        img_dir = correct_docs_img_dir() / safe
+        for old in img_dir.iterdir():
+            if not old.is_file():
+                continue
+            original_stem = old.stem[:-4] if old.stem.endswith("_img") else old.stem
+            if _answer_sheet_page_no(original_stem) == page_no:
+                try:
+                    old.unlink()
+                except Exception:
+                    pass
+        save_stem = "答案" if page_no == 1 else f"答案_{page_no}"
+        save_name = save_stem + ext
+        save_path = dir_path / save_name
+        save_path.write_bytes(content)
+        normalize_uploaded_image_orientation(save_path)
+        _trim_uploaded_scan_borders(save_path)
+        _ensure_img_in_folder(save_path, safe)
+        t = _file_type(save_name)
+        url = _preview_url_for_file(safe, save_name)
+        return {
+            "ok": True,
+            "name": f"答案纸 P{page_no}",
+            "filename": save_name,
+            "url": url,
+            "type": t,
+            "page_no": page_no,
+        }
     # 105% 硬停：额度用尽时拒绝新增学生试卷
     try:
         from app.services import quota_service
@@ -4276,18 +5176,30 @@ def _run_ref_grade(
 ):
     if user_id:
         set_grading_user_id(user_id)
+    # 1015 根治：全局重活预算——跨文件夹也排队限流。拿不到槽位就在这里等
+    # （queued=True 供前端显示「排队中」），绝不两个批次并发硬扛内存。
+    from app.services.heavy_budget import heavy_slot
+
+    with _ref_grade_lock:
+        if job_id in _ref_grade_results:
+            _ref_grade_results[job_id]["queued"] = True
     try:
-        if engine == "manual":
-            from app.grading.manual_grading import baidu_paper_cut, parse_paper_cut_result
-            _run_manual_grade_analyze(job_id, folder_name, only_filename, only_filenames)
-        else:
-            _run_ref_grade_impl(
-                job_id,
-                folder_name,
-                engine,
-                only_filename=only_filename,
-                only_filenames=only_filenames,
-            )
+        with heavy_slot("ref-grade") as waited_s:
+            with _ref_grade_lock:
+                if job_id in _ref_grade_results:
+                    _ref_grade_results[job_id]["queued"] = False
+                    _ref_grade_results[job_id]["queue_waited_s"] = round(waited_s, 1)
+            if engine == "manual":
+                from app.grading.manual_grading import baidu_paper_cut, parse_paper_cut_result
+                _run_manual_grade_analyze(job_id, folder_name, only_filename, only_filenames)
+            else:
+                _run_ref_grade_impl(
+                    job_id,
+                    folder_name,
+                    engine,
+                    only_filename=only_filename,
+                    only_filenames=only_filenames,
+                )
     except Exception as e:
         safe = _safe_folder_name(folder_name) or str(folder_name or "")
         msg = f"参照答案批改任务异常: {type(e).__name__}: {e}"
@@ -4307,10 +5219,24 @@ def _run_ref_grade(
                 print(traceback.format_exc())
     finally:
         _sync_ref_job_from_history(job_id, _safe_folder_name(folder_name) or "")
-        _ref_grade_stop_events.pop(job_id, None)
+        stop_ev = _ref_grade_stop_events.pop(job_id, None)
+        was_cancelled = bool(stop_ev and stop_ev.is_set())
+        push_now = True
         with _ref_grade_lock:
             if job_id in _ref_grade_results:
                 _ref_grade_results[job_id]["done"] = True
+                push_now = bool(_ref_grade_results[job_id].get("push_dingtalk", True))
+        # 批改一跑完就推钉钉（仅智能/参照引擎；手动批改有自己的 all-done 钩子；
+        # 取消的任务不推，避免推空/半截成绩单）
+        if push_now and not was_cancelled and engine in ("baidu", "aliyun") and user_id:
+            try:
+                from app.services.dingtalk_notify import notify_grading_done
+
+                notify_grading_done(
+                    user_id, _safe_folder_name(folder_name) or "", "grading_done"
+                )
+            except Exception as e:
+                print(f"[dingtalk_notify] hook after ref grade failed: {e}")
 
 def _run_manual_grade_analyze(job_id: str, folder_name: str, only_filename: Optional[str], only_filenames: Optional[set[str]]):
     safe = _safe_folder_name(folder_name)
@@ -4328,7 +5254,7 @@ def _run_manual_grade_analyze(job_id: str, folder_name: str, only_filename: Opti
     for f in dir_path.iterdir():
         if not f.is_file() or f.suffix.lower() not in _ALL_UPLOAD_EXTS:
             continue
-        if _is_standard_answer_filename(f.name):
+        if _is_standard_answer_filename(f.name) or _is_answer_sheet_filename(f.name):
             continue
         student_orig.append(f)
         gp = _get_grading_path(safe, f)
@@ -4488,10 +5414,25 @@ def _run_ref_grade_impl(
     with _ref_grade_lock:
         if job_id in _ref_grade_results:
             _ref_grade_results[job_id]["total"] = len(paired)
+    # 科目族路由（方案 S3b 单一决策点）：文件夹 meta 优先，缺/无法映射才 VL 兜底，灰区强制 general
+    subject_family = "general"
+    family_hint = ""
+    try:
+        from app.grading.response_log_db import _read_folder_meta as _rfm
+        from app.grading.subject_family import family_prompt_hint, resolve_family_with_fallback
+
+        meta_subject = str((_rfm(safe) or {}).get("subject") or "").strip()
+        first_img = str(student_files[0]) if student_files else None
+        subject_family, _fam_src = resolve_family_with_fallback(meta_subject, first_img)
+        family_hint = family_prompt_hint(subject_family)
+    except Exception:
+        subject_family = "general"
+        family_hint = ""
     stop_ev = _ref_grade_stop_events.get(job_id)
     paper_vlm_cache: dict[str, dict] = {}
     paper_vlm_errors: dict[str, Exception] = {}
     paper_vlm_slot_templates: dict[int, list] = {}
+    reference_answer_tables: dict[int, dict] = {}
     precomputed_std_by_page: dict[int, object] = {}
     precomputed_std_errors: dict[int, Exception] = {}
     student_page_by_name = {
@@ -4576,6 +5517,8 @@ def _run_ref_grade_impl(
         paper_vlm_cache.update(batch_cache)
         paper_vlm_errors.update(batch_errors)
 
+        # 答案纸（答案单独一张纸）答案也进标准答案表：与识别列表同一份合并文本
+        sheet_texts = _load_answer_sheet_texts_for_folder(safe)
         for page_no in required_pages:
             standard_doc = precomputed_std_by_page.get(page_no)
             if standard_doc is None:
@@ -4588,6 +5531,16 @@ def _run_ref_grade_impl(
             paper_vlm_slot_templates[page_no] = build_reference_vlm_slot_template(
                 page_documents
             )
+            # 用户要求第①步：批卷前先把每道题的标准答案完完整整识别成文本
+            # （逐槽无上下文 VL 转写，按卷缓存）。判分提示词以该文本为唯一
+            # 判分依据，再逐卷按题号对照作答区比对手写答案。
+            try:
+                reference_answer_tables[page_no] = load_or_build_reference_answer_table(
+                    safe, page_no, standard_doc, answer_sheet_texts=sheet_texts, stop_event=stop_ev
+                )
+            except Exception:
+                traceback.print_exc()
+                reference_answer_tables[page_no] = {}
     # 百度：提交/查询各 2QPS，后台约 4 并发；流水线：百度完成一张即留痕并写入 completed
     if engine == "baidu":
         REF_WORKERS = _baidu_ref_grade_workers()
@@ -4623,7 +5576,7 @@ def _run_ref_grade_impl(
                     _ref_grade_results[job_id]["failed"].append(
                         {"index": i, "name": original_name, "msg": "已停止批改"}
                     )
-            _persist_grading_failure(safe, original_name, "已停止批改")
+            _persist_grading_failure(safe, original_name, "已停止批改", engine)
             return
         try:
             item = None
@@ -4661,6 +5614,7 @@ def _run_ref_grade_impl(
                             str(student_grading_path),
                             precomputed_std=precomputed_std_by_page.get(student_page_no),
                             stop_event=stop_ev,
+                            family_hint=family_hint,
                         )
                     else:
                         if original_name in paper_vlm_errors:
@@ -4690,7 +5644,80 @@ def _run_ref_grade_impl(
                             folder_safe=safe,
                             slot_template=paper_vlm_slot_templates.get(student_page_no, []),
                             stop_event=stop_ev,
+                            family_hint=family_hint,
+                            # C3 判分缓存身份：与回写侧（store_blocks）共用 meta 科目
+                            cache_subject=meta_subject,
+                            answer_table=reference_answer_tables.get(student_page_no),
                         )
+                    # 形态校验兜底（方案 v1.0「一套兜底保险」）：强矛盾自动降级未作答，弱矛盾只标 suspicious；
+                    # 同时统一补科目族标签，随 blocks 落 history/response_logs 供复核记账。
+                    if blocks_with_result:
+                        for _blk in blocks_with_result:
+                            if isinstance(_blk, dict):
+                                _blk["subject_family"] = subject_family
+                        # 题干/作答区角色甄别（2026-10-12）：剔除百度切题把题干素材卡片
+                        # 误框成的假作答区（「分一分」类题）。必须在 form_guard 之前，
+                        # 否则假块还会触发「有笔迹判未作答」存疑噪音。
+                        try:
+                            from app.grading.slot_role import filter_stem_slots
+                            _slot_changes = filter_stem_slots(str(student_grading_path), blocks_with_result)
+                        except Exception:
+                            _slot_changes = []
+                        try:
+                            from app.grading.form_guard import apply_form_guard
+                            _fg_changes = apply_form_guard(str(student_grading_path), blocks_with_result)
+                        except Exception:
+                            _fg_changes = []
+                        # VL 笔迹证据复核（A项）：印刷插图槽幻觉拦截——form_guard 的像素盲区
+                        try:
+                            from app.grading.ink_evidence import verify_handwriting_with_vl
+                            _vl_changes = verify_handwriting_with_vl(str(student_grading_path), blocks_with_result)
+                        except Exception:
+                            _vl_changes = []
+                        # B3 复核记账：兜底降级/复核存疑进 correction_ledger（旁路静默，绝不阻断批改）
+                        if _fg_changes or _vl_changes:
+                            try:
+                                from app.grading.correction_ledger import (
+                                    guard_changes_to_ledger_rows,
+                                    record_corrections,
+                                )
+                                record_corrections(
+                                    get_grading_user_id(),
+                                    safe,
+                                    original_name,
+                                    engine,
+                                    guard_changes_to_ledger_rows(_fg_changes, "form_guard", blocks_with_result, subject_family)
+                                    + guard_changes_to_ledger_rows(_vl_changes, "vl_ink", blocks_with_result, subject_family),
+                                    subject_family=subject_family,
+                                )
+                            except Exception:
+                                pass
+                        # C3 判分缓存回写：必须在 guard **之后**（guard 前写会把幻觉放大
+                        # 到全班）；带 form_guard/ink_evidence 痕迹的块在 store_blocks 内
+                        # 自拒不入缓存。baidu/smart_ref 块无文本身份，键红线自动跳过。
+                        try:
+                            from app.grading.verdict_cache import store_blocks
+
+                            store_blocks(
+                                blocks_with_result,
+                                meta_subject,
+                                engine,
+                                "ai",
+                                subject_family=subject_family,
+                            )
+                        except Exception:
+                            pass
+                        if any(
+                            c.get("action") in ("downgraded", "removed_stem")
+                            for c in _fg_changes + _vl_changes + _slot_changes
+                        ):
+                            if engine in ("baidu", "smart_ref"):
+                                # 降级后摘要文本同步（与 ai-correct 同口径）
+                                try:
+                                    from app.grading.baidu_grading import _summarize_result
+                                    result = _summarize_result(baidu_raw or {}, blocks_with_result)
+                                except Exception:
+                                    pass
                     image_original = image_annotated = image_marks_only = None
                     marks_only_filename = None
                     if blocks_with_result:
@@ -4815,6 +5842,15 @@ def _run_ref_grade_impl(
                         safe,
                         original_name,
                         baidu_raw or {},
+                        blocks_with_result or [],
+                        str(student_grading_path),
+                    )
+                if engine in ("baidu", "smart_ref", "aliyun", "manual"):
+                    _schedule_wrong_annotation_generation(
+                        get_grading_user_id(),
+                        safe,
+                        original_name,
+                        engine,
                         blocks_with_result or [],
                         str(student_grading_path),
                     )
@@ -5253,7 +6289,7 @@ def _run_essay_grade(
     for f in dir_path.iterdir():
         if not f.is_file() or f.suffix.lower() not in _ALL_UPLOAD_EXTS:
             continue
-        if _is_standard_answer_filename(f.name):
+        if _is_standard_answer_filename(f.name) or _is_answer_sheet_filename(f.name):
             continue
         if only_filename and f.name != only_filename:
             continue
@@ -5840,9 +6876,15 @@ def _run_essay_grade(
         print(f"[ai_auto_report] hook after essay grade failed: {e}")
 
     try:
-        from app.services.dingtalk_notify import notify_grading_done
+        # 手动模式（push_dingtalk=false）不推；结果按 job 存在任务字典里
+        with _essay_grade_lock:
+            _essay_push = bool(
+                _essay_grade_results.get(job_id, {}).get("push_dingtalk", True)
+            )
+        if _essay_push:
+            from app.services.dingtalk_notify import notify_grading_done
 
-        notify_grading_done(ctx_uid, safe, "essay")
+            notify_grading_done(ctx_uid, safe, "essay")
     except Exception as e:
         print(f"[dingtalk_notify] hook after essay grade failed: {e}")
 
@@ -6002,6 +7044,8 @@ async def api_print_test_marks_grade(
 ):
     """测试打印第一步：上传试卷（图片/PDF/Word）→ AI 批改 → 生成留痕，返回留痕文件名供第二步打印。"""
     _require_local_admin(request, db)  # M5
+    # 0924：大模型批改发起闸（real_grade_pipeline，无独立上传侧计面 ⇒ 计 1 面）
+    quota_gate(charge_pages=1)
     from app.grading.doc_convert import ensure_image_path
 
     allowed_exts = (".jpg", ".jpeg", ".png", ".webp", ".pdf", ".doc", ".docx")
@@ -6129,8 +7173,18 @@ async def api_print_marks_pdf(request: Request, db: Session = Depends(get_db)):
                 raise HTTPException(status_code=404, detail=f"留痕图片不存在: {fn}")
         paths.append(str(path))
 
+    import asyncio
+
+    def _build_pdf():
+        # 1015 根治：合成 PDF 也进全局重活预算排队；放到线程池里等槽位，
+        # 排队再久也不堵事件循环（其他请求照常响应）。
+        from app.services.heavy_budget import heavy_slot
+
+        with heavy_slot("print-marks-pdf"):
+            return images_to_pdf_bytes(paths)
+
     try:
-        pdf_bytes = images_to_pdf_bytes(paths)
+        pdf_bytes = await asyncio.to_thread(_build_pdf)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -6321,9 +7375,16 @@ async def api_print_marks_batch_start(request: Request, db: Session = Depends(ge
             "user_id": get_grading_user_id(),
         }
     _print_batch_stop_events[job_id] = threading.Event()
+
+    def _run_print_batch_guarded():
+        # 1015 根治：打印批次也进全局重活预算排队（与批改/报告共享槽位）
+        from app.services.heavy_budget import heavy_slot
+
+        with heavy_slot("print-batch"):
+            _run_print_batch_job(job_id, validated, printer_name, get_grading_user_id())
+
     threading.Thread(
-        target=_run_print_batch_job,
-        args=(job_id, validated, printer_name, get_grading_user_id()),
+        target=_run_print_batch_guarded,
         daemon=True,
     ).start()
     return {"ok": True, "job_id": job_id, "total": len(validated)}
@@ -6414,6 +7475,8 @@ async def api_start_essay_grade(folder_name: str, request: Request):
             "in_progress": [],
             "ocr_tasks": {},
             "user_id": get_grading_user_id(),
+            # 批改完是否自动推钉钉（前端「自动推送钉钉/手动」开关）
+            "push_dingtalk": bool(body.get("push_dingtalk", True)),
         }
         _essay_grade_stop_events[job_id] = threading.Event()
 
@@ -6452,7 +7515,7 @@ async def api_start_essay_grade(folder_name: str, request: Request):
     for f in dir_path.iterdir():
         if not f.is_file() or f.suffix.lower() not in _ALL_UPLOAD_EXTS:
             continue
-        if _is_standard_answer_filename(f.name):
+        if _is_standard_answer_filename(f.name) or _is_answer_sheet_filename(f.name):
             continue
         if only_filename and f.name != only_filename:
             continue
@@ -6708,6 +7771,9 @@ async def api_update_essay_score(
     new_grade = derive_essay_grade(total_score, dimensions)
 
     if body.regenerate_report:
+        # 0924：局部重批走 regrade_essay_with_qwen（大模型）⇒ 接闸；不计面
+        # （图片在上传/发起作文批改时已计，防双扣）。只写记录模式不调模型，不拦。
+        quota_gate()
         title = str(item.get("ocr_title") or "").strip()
         content = str(item.get("ocr_content") or "").strip()
         if not content:
@@ -6743,6 +7809,12 @@ async def api_update_essay_score(
     with _essay_history_lock:
         data["completed"][filename] = item
         _write_essay_history(safe, data)
+
+    # 作文改分/局部重批后总分变了 → 同步导入学情+自动分层（客户清单 #7）
+    try:
+        _schedule_auto_sync_class(get_grading_user_id(), safe)
+    except Exception:
+        pass
 
     return {
         "ok": True,
@@ -6838,6 +7910,12 @@ async def api_update_essay_result(
     with _essay_history_lock:
         data["completed"][filename] = item
         _write_essay_history(safe, data)
+
+    # 作文改分/局部重批后总分变了 → 同步导入学情+自动分层（客户清单 #7）
+    try:
+        _schedule_auto_sync_class(get_grading_user_id(), safe)
+    except Exception:
+        pass
 
     return {
         "ok": True,
@@ -7314,11 +8392,98 @@ def _detect_missing_questions(history: dict, history_engine: str) -> dict[str, d
     return result
 
 
-def _score_ai_result_by_config(text: str, scoring_config: dict, blank_count_map: dict = None) -> tuple[float, dict]:
+def _standard_scoring_questions(safe: str) -> list[dict]:
+    """标准答题区（识别答案，老师手改过）→ 统分权威题清单（跨页全局重编号）。
+
+    「有哪些题、多少道题」以答题区为准（2026-10-16 用户口径），不再从批改结果文本反推。
+    题号口径与统分键一致：第1页第N题→第N题，第2页第N题→第(M+N)题（M=上一页最大题号）；
+    批改结果文本的页内题号按 _scoring_title_offsets 同一偏移折算到本清单的键。
+    """
+    out: list[dict] = []
+    offset = 0
+    for page_no in sorted(_reference_standard_sources(safe).keys()):
+        cached = read_reference_answer_table_page(safe, page_no)
+        entries = [e for e in (cached.get("questions") or []) if isinstance(e, dict)]
+        page_max = 0
+        for entry in entries:
+            try:
+                display_no = int(entry.get("display_index") or 0)
+            except (TypeError, ValueError):
+                display_no = 0
+            if display_no <= 0:
+                continue
+            key_no = offset + display_no
+            page_max = max(page_max, key_no)
+            slots = [s for s in (entry.get("slots") or []) if isinstance(s, dict)]
+            answer = "\n".join(
+                str(s.get("answer_text") or "").strip()
+                for s in slots
+                if str(s.get("answer_text") or "").strip()
+            ) or str(entry.get("full_answer") or "").strip()
+            out.append(
+                {
+                    "key": f"第{key_no}题",
+                    "page_no": page_no,
+                    "display_no": display_no,
+                    "printed_no": str(entry.get("printed_no") or "").strip(),
+                    "slot_count": len(slots),
+                    "answer_preview": re.sub(r"\s+", "、", answer)[:60],
+                }
+            )
+        if page_max:
+            offset = page_max
+    return out
+
+
+def _scoring_title_offsets(safe: str, completed: dict) -> dict[int, int]:
+    """页号 → 统分键题号偏移（跨页全局重编号：第k页第N题 → 第(offset+N)题）。
+
+    有标准答题区时以答题区为准（与 _standard_scoring_questions 同源）；
+    无则退回按批改结果文本各页最大题号累加（与老自动统分同口径）。
+    """
+    std = _standard_scoring_questions(safe)
+    if std:
+        out: dict[int, int] = {}
+        for q in std:
+            m = re.match(r"^第(\d+)题$", str(q.get("key") or ""))
+            if m:
+                out[int(q["page_no"])] = int(m.group(1)) - int(q["display_no"])
+        return out
+    page_texts: dict[int, str] = {}
+    for item in (completed or {}).values():
+        if not isinstance(item, dict):
+            continue
+        t = str(item.get("result") or "").strip()
+        if not t or t.startswith("{"):
+            continue
+        p = _image_path_of_item(safe, item)
+        pn = _page_no_of_filename(p.name) if (p and p.is_file()) else None
+        if pn is None:
+            continue
+        page_texts.setdefault(pn, t)
+    out: dict[int, int] = {}
+    offset = 0
+    for pn in sorted(page_texts):
+        out[pn] = offset
+        _c, blks = _parse_ai_result_to_counts(page_texts[pn])
+        page_max = 0
+        for b in blks:
+            m = re.match(r"^第(\d+)题$", str(b.get("title") or "").strip())
+            if not m:
+                continue
+            page_max = max(page_max, offset + int(m.group(1)))
+        offset = page_max or offset
+    return out
+
+
+def _score_ai_result_by_config(text: str, scoring_config: dict, blank_count_map: dict = None, title_offset: int = 0) -> tuple[float, dict]:
     """按统分配置为智能模型批改结果计算每题得分和总分。
 
     blank_count_map（第N题 → {blanks, kind}）是视觉「重切作答区」数出的空数，优先用
     「整题满分 ÷ 空数」得干净每空分；缺失时才退回按作答区数均分。
+
+    title_offset：统分键是跨页全局重编号（第2页第1题=第14题），批改结果文本的题号是页内号；
+    查分按 offset 折算到全局键，details 仍存页内题号（前端按 blocks 对照展示）。
     """
     _, blocks = _parse_ai_result_to_counts(text or "")
     blank_count_map = blank_count_map if isinstance(blank_count_map, dict) else {}
@@ -7345,12 +8510,18 @@ def _score_ai_result_by_config(text: str, scoring_config: dict, blank_count_map:
         title = str(b.get("title") or "").strip()
         if not title or title == "总览":
             continue
+        # 页内题号 → 全局键（第2页第1题=第14题）；details 键保持页内题号
+        lookup = title
+        if title_offset:
+            _m = re.match(r"^第(\d+)题$", title)
+            if _m:
+                lookup = f"第{title_offset + int(_m.group(1))}题"
         sub_items = b.get("subItems") or []
-        full = _full_score_of(title)  # 题级满分（整数）
+        full = _full_score_of(lookup)  # 题级满分（整数）
         if isinstance(sub_items, list) and len(sub_items) > 1:
             # 题级记分：整题一个满分，按各作答区正确率累计得分。
             # 优先用「重切作答区」数出的空数算出干净每空分；缺失才退回按作答区数均分。
-            bcm = blank_count_map.get(title)
+            bcm = blank_count_map.get(lookup) or blank_count_map.get(title)
             if bcm and int(bcm.get("blanks") or 0) > 0:
                 blanks = int(bcm["blanks"])
                 kind = str(bcm.get("kind") or "blank")
@@ -7683,16 +8854,12 @@ async def api_get_error_book_folder_detail(folder_name: str):
 
 
 @router.post("/folders/{folder_name:path}/scoring-config/apply")
-async def api_apply_scoring_config(folder_name: str, request: Request):
+def api_apply_scoring_config(folder_name: str, body: Optional[dict] = Body(default=None)):
     """按统分配置为当前文件夹的智能模型批改结果批量计算分数。"""
     safe = _safe_folder_name(folder_name)
     if not safe:
         raise HTTPException(status_code=400, detail="无效文件夹名")
-
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = body or {}
 
     with _grading_history_lock:
         data = _read_grading_history(safe)
@@ -7732,6 +8899,9 @@ async def api_apply_scoring_config(folder_name: str, request: Request):
         if not isinstance(completed, dict) or not completed:
             raise HTTPException(status_code=400, detail="当前文件夹暂无智能模型批改结果")
 
+        # 统分键是跨页全局重编号（第2页第1题=第14题）；按页偏移折算后再查分
+        title_offsets = _scoring_title_offsets(safe, completed)
+
         applied = 0
         question_titles: list[str] = []
         for filename, item in completed.items():
@@ -7743,8 +8913,11 @@ async def api_apply_scoring_config(folder_name: str, request: Request):
             titles = _extract_ai_scoring_titles(result_text)
             if titles and not question_titles:
                 question_titles = titles
+            _p = _image_path_of_item(safe, item)
+            _pn = _page_no_of_filename(_p.name) if (_p and _p.is_file()) else None
+            title_offset = title_offsets.get(_pn, 0) if _pn is not None else 0
             score_total, question_scores = _score_ai_result_by_config(
-                result_text, scoring_config, data.get("blank_count_map")
+                result_text, scoring_config, data.get("blank_count_map"), title_offset=title_offset
             )
             item["score_total"] = score_total
             item["question_scores"] = question_scores
@@ -7762,11 +8935,19 @@ async def api_apply_scoring_config(folder_name: str, request: Request):
 
     try:
         # 统分完成自动钉钉工作通知（user_id 在请求上下文先取值再传参，避免子线程 contextvar 丢失）
-        from app.services.dingtalk_notify import notify_grading_done
+        # push_dingtalk=false（前端「手动推送」模式）时跳过
+        if bool(body.get("push_dingtalk", True)):
+            from app.services.dingtalk_notify import notify_grading_done
 
-        notify_grading_done(get_grading_user_id(), safe)
+            notify_grading_done(get_grading_user_id(), safe)
     except Exception as e:
         print(f"[dingtalk_notify] hook after scoring apply failed: {e}")
+
+    # 统分后 score_total 才齐：再触发一次自动导入学情+自动分层（客户清单 #1）
+    try:
+        _schedule_auto_sync_class(get_grading_user_id(), safe)
+    except Exception as e:
+        print(f"[auto_class_sync] hook after scoring apply failed: {e}")
 
     return {
         "ok": True,
@@ -7967,7 +9148,7 @@ def _vision_recognize_paper_questions(db: Session, image_path: Path) -> Optional
         '{"major":"四","sub":"","sub_sub":"","title":"习作","type":"作文","score":30}]}'
     )
     payload = {
-        "model": "qwen-vl-max",
+        "model": get_vl_model(),
         "messages": [
             {
                 "role": "user",
@@ -8364,7 +9545,13 @@ def _vision_read_full_scores(
                 continue
             _bm = blank_map.get((_m.get("major"), _m.get("sub"), _m.get("sub_sub"), _m.get("score")))
             if _bm and isinstance(_bm, dict) and int(_bm.get("blanks") or 0) > 0:
-                blank_count_map[f"第{_idx}题"] = {
+                try:
+                    _ki = int(_idx)
+                except (TypeError, ValueError):
+                    _ki = 0
+                # 键必须与 question_keys 同名（答题区路径题号可能跳号，位置号≠题号）
+                _bkey = question_keys[_ki - 1] if 1 <= _ki <= len(question_keys) else f"第{_idx}题"
+                blank_count_map[_bkey] = {
                     "blanks": int(_bm["blanks"]),
                     "kind": str(_bm.get("kind") or "blank"),
                 }
@@ -8464,101 +9651,127 @@ def _attach_scores_to_blocks(
 
 
 @router.post("/folders/{folder_name:path}/scoring-config/auto")
-async def api_auto_scoring_config(
-    folder_name: str, request: Request, db: Session = Depends(get_db)
+def api_auto_scoring_config(
+    folder_name: str, db: Session = Depends(get_db)
 ):
-    """AI 识别试卷印的每题满分（视觉 qwen-vl-max 优先，文本大模型猜分兜底），返回给前端确认后应用。"""
+    """AI 识别试卷印的每题满分，返回给前端确认后应用。
+
+    题清单优先取标准答题区（识别答案，老师手改过——「有哪些题、多少道题」以它为准），
+    分值从标准试卷卷面读；没传标准答案的旧文件夹才退回从批改结果文本反推。
+    VL 读分是分钟级重活：def 进线程池 + heavy_slot 排队，别堵事件循环（整站假死教训）。
+    """
     safe = _safe_folder_name(folder_name)
     if not safe:
         raise HTTPException(status_code=400, detail="无效文件夹名")
 
-    with _grading_history_lock:
-        data = _read_grading_history(safe)
-        completed = data.get("completed", {})
-        if not isinstance(completed, dict) or not completed:
-            raise HTTPException(status_code=400, detail="当前文件夹暂无智能模型批改结果")
+    from app.services.heavy_budget import heavy_slot
 
-        # 多页卷：按页号收集整卷各页的批改结果文本（不再只取第一份，避免漏掉后面页的题），
-        # 并按页累加题号全局重编号（第1页第N题→第N题，第2页第N题→第(M+N)题，M=上一页最大题号），
-        # 保证跨页题号唯一，与统分界面/课堂讲评的全局题号口径一致。
-        page_results: list[tuple[int, str]] = []
-        for _filename, item in completed.items():
-            if not isinstance(item, dict):
-                continue
-            t = str(item.get("result") or "").strip()
-            if not t or t.startswith("{"):
-                continue
-            _p = _image_path_of_item(safe, item)
-            _pn = _page_no_of_filename(_p.name) if (_p and _p.is_file()) else None
-            if _pn is None:
-                continue
-            if any(pn == _pn for pn, _ in page_results):
-                continue
-            page_results.append((_pn, t))
-        page_results.sort(key=lambda x: x[0])
+    with heavy_slot("scoring-auto"):
+        # ── 题清单：标准答题区优先（2026-10-16：统分按识别答案那套题来） ──
+        std_questions = _standard_scoring_questions(safe)
+        if std_questions:
+            question_keys = [q["key"] for q in std_questions]
+            title_keys = list(question_keys)
+            descriptions = [
+                (
+                    f'{q["key"]}：印刷题号「{q["printed_no"] or "?"}」；'
+                    f'{q["slot_count"]}个作答区；标准答案：{q["answer_preview"]}'
+                )
+                for q in std_questions
+            ]
+            paper_images = [
+                grading_path
+                for _page_no, (_src, grading_path) in sorted(_reference_standard_sources(safe).items())
+            ]
+        else:
+            with _grading_history_lock:
+                data = _read_grading_history(safe)
+                completed = data.get("completed", {})
+                if not isinstance(completed, dict) or not completed:
+                    raise HTTPException(status_code=400, detail="当前文件夹暂无智能模型批改结果")
 
-        blocks: list[dict] = []
-        offset = 0
-        for _pn, t in page_results:
-            _c, _blks = _parse_ai_result_to_counts(t)
-            _page_max = 0
-            for _b in _blks:
-                _m = re.match(r"^第(\d+)题$", str(_b.get("title") or "").strip())
-                if not _m:
-                    continue
-                _new_no = offset + int(_m.group(1))
-                _b["title"] = f"第{_new_no}题"
-                _page_max = max(_page_max, _new_no)
-            offset = _page_max
-            blocks.extend(_blks)
-        if not blocks:
-            raise HTTPException(status_code=400, detail="未识别到可统分的题目")
-        # 过滤「空白答题区」块：百度会把作文格/方格等纯印刷空白区切成题，
-        # 内容形如「仅见印刷…无任何新增笔迹」，不是题目，不应进入统分。
-        blocks = [
-            b
-            for b in blocks
-            if not (
-                re.search(r"仅见印刷", str(b.get("content") or ""))
-                and re.search(r"无任何新增", str(b.get("content") or ""))
-            )
-        ]
-        question_keys: list[str] = []
-        descriptions: list[str] = []
-        for b in blocks:
-            title = str(b.get("title") or "").strip()
-            if not title or title == "总览":
-                continue
-            snippet = str(b.get("content") or "").strip()
-            # 去掉「第N题-作答区M：对/错；」前缀，只留作答理由关键词，避免题号/空数干扰读分
-            snippet = re.sub(r"第\d+题-作答区\d+[:：](?:对|错|半对|部分对|未作答)?[；;]?", "", snippet)
-            snippet = re.sub(r"\s+", " ", snippet).strip()[:100]
-            # 题级键：一道题一个分值，不再拆到作答区
-            question_keys.append(title)
-            descriptions.append(f"{title}：{snippet}")
-        # 题级键（去重的「第N题」顺序），与视觉识别的 structure index 一一对应
-        title_keys: list[str] = []
-        _seen_titles: set[str] = set()
-        for b in blocks:
-            t = str(b.get("title") or "").strip()
-            if not t or t == "总览" or t in _seen_titles:
-                continue
-            _seen_titles.add(t)
-            title_keys.append(t)
+                # 多页卷：按页号收集整卷各页的批改结果文本（不再只取第一份，避免漏掉后面页的题），
+                # 并按页累加题号全局重编号（第1页第N题→第N题，第2页第N题→第(M+N)题，M=上一页最大题号），
+                # 保证跨页题号唯一，与统分界面/课堂讲评的全局题号口径一致。
+                page_results: list[tuple[int, str]] = []
+                for _filename, item in completed.items():
+                    if not isinstance(item, dict):
+                        continue
+                    t = str(item.get("result") or "").strip()
+                    if not t or t.startswith("{"):
+                        continue
+                    _p = _image_path_of_item(safe, item)
+                    _pn = _page_no_of_filename(_p.name) if (_p and _p.is_file()) else None
+                    if _pn is None:
+                        continue
+                    if any(pn == _pn for pn, _ in page_results):
+                        continue
+                    page_results.append((_pn, t))
+                page_results.sort(key=lambda x: x[0])
 
-        if not question_keys:
-            raise HTTPException(status_code=400, detail="未识别到可统分的题目")
+                blocks: list[dict] = []
+                offset = 0
+                for _pn, t in page_results:
+                    _c, _blks = _parse_ai_result_to_counts(t)
+                    _page_max = 0
+                    for _b in _blks:
+                        _m = re.match(r"^第(\d+)题$", str(_b.get("title") or "").strip())
+                        if not _m:
+                            continue
+                        _new_no = offset + int(_m.group(1))
+                        _b["title"] = f"第{_new_no}题"
+                        _page_max = max(_page_max, _new_no)
+                    offset = _page_max or offset
+                    blocks.extend(_blks)
+                if not blocks:
+                    raise HTTPException(status_code=400, detail="未识别到可统分的题目")
+                # 过滤「空白答题区」块：百度会把作文格/方格等纯印刷空白区切成题，
+                # 内容形如「仅见印刷…无任何新增笔迹」，不是题目，不应进入统分。
+                blocks = [
+                    b
+                    for b in blocks
+                    if not (
+                        re.search(r"仅见印刷", str(b.get("content") or ""))
+                        and re.search(r"无任何新增", str(b.get("content") or ""))
+                    )
+                ]
+                question_keys = []
+                descriptions = []
+                for b in blocks:
+                    title = str(b.get("title") or "").strip()
+                    if not title or title == "总览":
+                        continue
+                    snippet = str(b.get("content") or "").strip()
+                    # 去掉「第N题-作答区M：对/错；」前缀，只留作答理由关键词，避免题号/空数干扰读分
+                    snippet = re.sub(r"第\d+题-作答区\d+[:：](?:对|错|半对|部分对|未作答)?[；;]?", "", snippet)
+                    snippet = re.sub(r"\s+", " ", snippet).strip()[:100]
+                    # 题级键：一道题一个分值，不再拆到作答区
+                    question_keys.append(title)
+                    descriptions.append(f"{title}：{snippet}")
+                # 题级键（去重的「第N题」顺序），与视觉识别的 structure index 一一对应
+                title_keys = []
+                _seen_titles: set[str] = set()
+                for b in blocks:
+                    t = str(b.get("title") or "").strip()
+                    if not t or t == "总览" or t in _seen_titles:
+                        continue
+                    _seen_titles.add(t)
+                    title_keys.append(t)
 
-    # ── 视觉识别优先：读卷面印的每题满分；失败则回退文本大模型按题型猜分 ──
-    # 多页卷要读全部页（读全卷题目结构再匹配），否则只读第一页会漏题、错配。
-    paper_images = _resolve_paper_images(safe, completed)
-    print(f"[统分诊断] safe={safe!r} paper_images={paper_images!r} question_keys={question_keys!r}")
-    vision_map = (
-        _vision_read_full_scores(db, paper_images, question_keys, descriptions)
-        if paper_images
-        else None
-    )
-    print(f"[统分诊断] vision_map={'None' if not isinstance(vision_map, dict) else ('ok, keys=' + str(list(vision_map.keys())))}")
+                if not question_keys:
+                    raise HTTPException(status_code=400, detail="未识别到可统分的题目")
+
+            # ── 视觉识别优先：读卷面印的每题满分；失败则回退文本大模型按题型猜分 ──
+            # 多页卷要读全部页（读全卷题目结构再匹配），否则只读第一页会漏题、错配。
+            paper_images = _resolve_paper_images(safe, completed)
+
+        print(f"[统分诊断] safe={safe!r} std={bool(std_questions)} paper_images={paper_images!r} question_keys={question_keys!r}")
+        vision_map = (
+            _vision_read_full_scores(db, paper_images, question_keys, descriptions)
+            if paper_images
+            else None
+        )
+        print(f"[统分诊断] vision_map={'None' if not isinstance(vision_map, dict) else ('ok, keys=' + str(list(vision_map.keys())))}")
     vision_full_score = None
     vision_scores = None
     vision_major_scores = None
@@ -8643,6 +9856,15 @@ async def api_auto_scoring_config(
                 }
     if not question_structure:
         question_structure = {}
+    if std_questions:
+        # 标准答题区路径：每道题（含未匹配上的）都补一条结构；印刷题号带上（界面行标签优先显示卷面题号）
+        for q in std_questions:
+            _s = question_structure.setdefault(
+                q["key"],
+                {"major": "", "sub": "", "sub_sub": "", "display": "", "question_text": ""},
+            )
+            if q["printed_no"]:
+                _s["printed_no"] = q["printed_no"]
 
     # 逐题准确分值优先：新识别管线已把每个题目块映射到卷面小问并读准分值（整数），
     # 直接按题落分即可（不再均分大题总分，从根上避免「7分被均成3分」这类错误）。
@@ -8758,7 +9980,11 @@ async def api_auto_scoring_config(
                 _d["blank_count_map"] = vision_blank_count_map
             if question_structure:
                 _d["question_structure"] = question_structure
-            if vision_paper_subs:
+            if std_questions:
+                # 标准答题区路径：逐题行就是答题区题目本身，不再用卷面折叠小题清单
+                # （折叠行的分摊对不上题，老师改了不生效）；清掉旧 paper_subs 防止界面串行。
+                _d["paper_subs"] = {}
+            elif vision_paper_subs:
                 _d["paper_subs"] = vision_paper_subs
             if major_titles:
                 _d["major_titles"] = major_titles
@@ -8781,14 +10007,51 @@ async def api_auto_scoring_config(
         "major_scores": vision_major_scores or {},
         "major_order": vision_order or list((vision_major_scores or {}).keys()),
         "major_titles": major_titles,
-        # 大题 → 小题（题号 + 分值）清单，供前端「大题 + 小题分数框」展示（不放题干）
-        "paper_subs": vision_paper_subs or {},
+        # 大题 → 小题清单：老路径给卷面折叠小题；标准答题区路径给空（逐题分数框直接绑 scoring_config）
+        "paper_subs": {} if std_questions else (vision_paper_subs or {}),
         # 第N题 → {blanks, kind}（供前端透传回 save/apply，保障下次应用仍用干净每空分）
         "blank_count_map": vision_blank_count_map or {},
     }
 
 
 _MANUAL_SLOT_STATUSES = {"ungraded", "correct", "wrong", "unanswered", "partial"}
+
+
+def _normalize_deduction_items(raw) -> Optional[dict]:
+    """结构化扣分项归一：{「第N题」/「第N题-作答区M」: [{label, points}, ...]}。
+
+    - key 与统分键同规则（block.title / 第N题 / 第N题-作答区M），空 key 丢弃；
+    - 每项强制 label:str、points:float>=0（扣分记正数）；垃圾条目丢弃；
+    - 空列表保留（表示该题清空扣分项）；
+    - raw=None → None（本次不改）；非 dict → {}（整体清空，防脏写）。
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    for key, items in raw.items():
+        k = str(key or "").strip()
+        if not k:
+            continue
+        if not isinstance(items, list):
+            continue
+        cleaned: list = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            label = str(it.get("label") or "").strip()
+            try:
+                points = float(it.get("points"))
+            except (TypeError, ValueError):
+                continue
+            if points < 0:
+                points = abs(points)
+            if not label and points == 0:
+                continue
+            cleaned.append({"label": label, "points": round(points, 2)})
+        out[k] = cleaned
+    return out
 
 
 def _apply_manual_annotations_to_trace(
@@ -8818,6 +10081,138 @@ def _apply_manual_annotations_to_trace(
         img.save(str(path), quality=95)
 
 
+def _variant_notes_from_item(item: dict) -> tuple:
+    """取老师的逐题批注/整卷总评：智能卷在 item 顶层，手动卷在 result JSON 里。"""
+    qn = item.get("question_notes")
+    pn = str(item.get("paper_note") or "").strip()
+    if isinstance(qn, dict) or pn:
+        return qn if isinstance(qn, dict) else {}, pn
+    try:
+        res_json = json.loads(item.get("result") or "{}")
+        if isinstance(res_json, dict):
+            qn2 = res_json.get("question_notes")
+            return (
+                qn2 if isinstance(qn2, dict) else {},
+                str(res_json.get("paper_note") or "").strip(),
+            )
+    except Exception:
+        pass
+    return {}, ""
+
+
+def _annotated_name_from_item(item: dict) -> str:
+    """解析 item 的卷面留痕文件名：image_annotated URL 取末段；退回按 marks 名换前缀。"""
+    url = str(item.get("image_annotated") or "")
+    name = url.split("?", 1)[0].rsplit("/", 1)[-1].strip()
+    if name and _safe_annotated_filename(name):
+        return name
+    marks_name = str(item.get("marks_only_filename") or "").strip()
+    if marks_name and _safe_marks_only_filename(marks_name):
+        cand = "annotated_" + marks_name[len("marks_only_"):]
+        if _safe_annotated_filename(cand):
+            return cand
+    return ""
+
+
+def _wrong_annotation_variant_fields(item: dict) -> dict:
+    """批注保存/生成响应里带给前端的变体图四个字段（URL 重签下载票）。"""
+    return {
+        "marks_with_wrong_notes_filename": item.get("marks_with_wrong_notes_filename"),
+        "image_marks_with_wrong_notes": _re_sign_history_image_url(
+            item.get("image_marks_with_wrong_notes")
+        ),
+        "annotated_with_wrong_notes_filename": item.get("annotated_with_wrong_notes_filename"),
+        "image_annotated_with_wrong_notes": _re_sign_history_image_url(
+            item.get("image_annotated_with_wrong_notes")
+        ),
+    }
+
+
+def _regenerate_wrong_annotation_marks(
+    safe: str,
+    item: dict,
+    blocks: list,
+    wrong_annotations,
+    question_notes: Optional[dict] = None,
+    paper_note: Optional[str] = None,
+) -> None:
+    """按 wrong_annotations 生成/清除两个变体图，就地写 item 四个字段。
+
+    - 打印变体 marks_only_{stem}_wa.jpg：从 marks_only 白底留痕派生（打印/导出用）。
+    - 预览变体 annotated_{stem}_wa.jpg：从 annotated 卷面留痕派生（屏幕预览直接显示）。
+    - 原图只烧老师批注，错因只进变体；wrong_annotations 为空 → 删变体文件并清字段。
+    - 调用方负责随后持久化 item。
+    """
+    from app.grading.pipeline import draw_wrong_annotations_variant
+    from app.grading.wrong_annotations import normalize_wrong_annotations
+
+    wrong = normalize_wrong_annotations(wrong_annotations)
+    marks_name = str(item.get("marks_only_filename") or "").strip()
+    ann_name = _annotated_name_from_item(item)
+    if question_notes is None or paper_note is None:
+        qn_fallback, pn_fallback = _variant_notes_from_item(item)
+        question_notes = question_notes if question_notes is not None else qn_fallback
+        paper_note = paper_note if paper_note is not None else pn_fallback
+
+    def _rebuild(src_name: str, name_key: str, url_key: str, validator, *, paper_mode: bool) -> None:
+        old_variant = str(item.get(name_key) or "").strip()
+
+        def _clear() -> None:
+            if old_variant and validator(old_variant):
+                try:
+                    (modify_dir() / old_variant).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            item.pop(name_key, None)
+            item.pop(url_key, None)
+
+        if not wrong or not src_name or not validator(src_name):
+            _clear()
+            return
+        src = modify_dir() / src_name
+        if not src.is_file():
+            _clear()
+            return
+        variant_name = f"{Path(src_name).stem}_wa.jpg"
+        out_path = modify_dir() / variant_name
+        ok = draw_wrong_annotations_variant(
+            str(src),
+            str(out_path),
+            blocks or [],
+            wrong,
+            question_notes if isinstance(question_notes, dict) else {},
+            str(paper_note or ""),
+            paper_mode=paper_mode,
+        )
+        if not ok:
+            _clear()
+            return
+        if old_variant and old_variant != variant_name and validator(old_variant):
+            try:
+                (modify_dir() / old_variant).unlink(missing_ok=True)
+            except OSError:
+                pass
+        item[name_key] = variant_name
+        item[url_key] = build_download_url(
+            f"grading/modify/{variant_name}", get_grading_user_id()
+        )
+
+    _rebuild(
+        marks_name,
+        "marks_with_wrong_notes_filename",
+        "image_marks_with_wrong_notes",
+        _safe_marks_only_filename,
+        paper_mode=False,
+    )
+    _rebuild(
+        ann_name,
+        "annotated_with_wrong_notes_filename",
+        "image_annotated_with_wrong_notes",
+        _safe_annotated_filename,
+        paper_mode=True,
+    )
+
+
 def _save_manual_slot_decisions(
     safe: str,
     filename: str,
@@ -8828,6 +10223,8 @@ def _save_manual_slot_decisions(
     generate_marks: bool,
     question_notes: Optional[dict] = None,
     paper_note: Optional[str] = None,
+    wrong_annotations: Optional[dict] = None,
+    deduction_items: Optional[dict] = None,
 ) -> dict:
     blocks = res_json.get("blocks") if isinstance(res_json.get("blocks"), list) else []
     normalized_decisions: dict[str, dict] = {}
@@ -8837,6 +10234,20 @@ def _save_manual_slot_decisions(
     completed_count = 0
     score_total = 0.0
     max_score_total = 0.0
+    # 改分/改等第进台账：只记「已批过再改」；首次批改（prev=ungraded）不进
+    _status_to_result = {
+        "correct": "对",
+        "wrong": "错",
+        "unanswered": "未作答",
+        "partial": "半对",
+    }
+    _regrade_ledger_rows: list = []
+
+    def _as_float(v):
+        try:
+            return None if v is None or str(v).strip() == "" else float(v)
+        except (TypeError, ValueError):
+            return None
 
     for index, block in enumerate(blocks):
         if not isinstance(block, dict):
@@ -8851,6 +10262,8 @@ def _save_manual_slot_decisions(
             raise HTTPException(status_code=400, detail=f"{title} 的分数上限无效，请重新保存切题规则")
         max_score_total += max_score
 
+        _prev_status = str(block.get("status") or "ungraded").strip().lower()
+        _prev_score = block.get("score")
         incoming = decisions.get(slot_id)
         if not isinstance(incoming, dict):
             incoming = {
@@ -8874,6 +10287,25 @@ def _save_manual_slot_decisions(
                 raise HTTPException(status_code=400, detail=f"{title} 的得分必须在 0 到 {max_score:g} 之间")
         else:
             score = None
+
+        # 已批过再改才进台账（状态/分数任一变）；同一路径只记这一处
+        if _prev_status != "ungraded" and (
+            _prev_status != status or _as_float(_prev_score) != _as_float(score)
+        ):
+            _regrade_ledger_rows.append(
+                {
+                    "index": block.get("index") if block.get("index") is not None else title,
+                    "sub_index": block.get("sub_index"),
+                    "source": "human_ai_correct",
+                    "was_result": _status_to_result.get(_prev_status),
+                    "new_result": _status_to_result.get(status),
+                    "was_comment": None,
+                    "new_comment": None,
+                    "was_score": _as_float(_prev_score),
+                    "new_score": _as_float(score),
+                    "subject_family": block.get("subject_family"),
+                }
+            )
 
         block["slot_id"] = slot_id
         block["title"] = title
@@ -8903,11 +10335,33 @@ def _save_manual_slot_decisions(
     res_json["scores"] = scores
     res_json["score_total"] = round(score_total, 2)
     res_json["max_score_total"] = round(max_score_total, 2)
-    res_json["question_notes"] = question_notes if isinstance(question_notes, dict) else {}
-    res_json["paper_note"] = str(paper_note or "").strip()
+    # 老师批注/整卷总评：与 wrong_annotations/deduction_items 同语义——
+    # 带了才覆盖（空 map/空串=显式清空），None=本次不改（旧分数保存口不带这两个字段，
+    # 不能顺手清掉已有批注）；正文对照前后值进台账（见下方 diff_note_rows）。
+    _prev_qn = res_json.get("question_notes")
+    _prev_pn = res_json.get("paper_note")
+    _prev_wa = item.get("wrong_annotations")
+    if isinstance(question_notes, dict):
+        res_json["question_notes"] = question_notes
+    else:
+        res_json.setdefault("question_notes", {})
+    if paper_note is not None:
+        res_json["paper_note"] = str(paper_note or "").strip()
+    else:
+        res_json.setdefault("paper_note", "")
+    _eff_qn = res_json.get("question_notes") if isinstance(res_json.get("question_notes"), dict) else {}
+    _eff_pn = str(res_json.get("paper_note") or "").strip()
     item["result"] = json.dumps(res_json, ensure_ascii=False)
     item["score_total"] = round(score_total, 2) if all_completed else None
     item["question_scores"] = question_scores if all_completed else {}
+    if wrong_annotations is not None:
+        # 判错原因批注：item 级统一存（四引擎一致）；None 表示本次未带，保持原值
+        item["wrong_annotations"] = wrong_annotations
+    if deduction_items is not None:
+        # 结构化扣分项：整体覆盖保存（res_json + item 双写，前端直读 item）；None 表示本次不改
+        res_json["deduction_items"] = deduction_items
+        item["deduction_items"] = deduction_items
+        item["result"] = json.dumps(res_json, ensure_ascii=False)
 
     if generate_marks:
         _delete_modify_file_by_url(item.get("image_annotated"))
@@ -8926,26 +10380,63 @@ def _save_manual_slot_decisions(
             score_total=round(score_total, 2), manual_style=True,
         )
         _apply_manual_annotations_to_trace(
-            annotated_name, marks_only_filename, blocks, question_notes, paper_note
+            annotated_name, marks_only_filename, blocks, _eff_qn, _eff_pn
         )
         _m_uid = get_grading_user_id()
         item["image_annotated"] = build_download_url(f"grading/modify/{annotated_name}", _m_uid)
         item["image_marks_only"] = build_download_url(f"grading/modify/{marks_only_filename}", _m_uid)
         item["marks_only_filename"] = marks_only_filename
 
+    # 判错批注打印变体：marks 重画或批注变更都需重建（wrong_annotations 为空会清掉变体）
+    _regenerate_wrong_annotation_marks(
+        safe, item, blocks, item.get("wrong_annotations"), _eff_qn, _eff_pn
+    )
+
     _persist_grading_success(safe, item, "manual")
     with _grading_history_lock:
         data = _read_grading_history(safe, "manual")
         data["full_score"] = round(max_score_total, 2)
         _write_grading_history(safe, data, "manual")
+    # 批注类增删改进台账（老师批注/整卷总评/判错批注，was→new 文本对照）；
+    # 与改分/改等第共用下面这一次 record_corrections（同一保存路径只记一遍）
+    try:
+        from app.grading.correction_ledger import diff_note_rows
+
+        _note_before = {"question_notes": _prev_qn, "paper_note": _prev_pn}
+        _note_after = {"question_notes": _eff_qn, "paper_note": _eff_pn}
+        if wrong_annotations is not None:
+            _note_before["wrong_annotations"] = _prev_wa
+            _note_after["wrong_annotations"] = wrong_annotations
+        _regrade_ledger_rows += diff_note_rows(_note_before, _note_after)
+    except Exception:
+        pass
+    # 改分/改等第台账（旁路静默；同一保存路径只记这一处，勿与 scores 分支重复）
+    if _regrade_ledger_rows:
+        try:
+            from app.grading.correction_ledger import record_corrections
+
+            record_corrections(
+                get_grading_user_id(), safe, str(filename), "manual", _regrade_ledger_rows
+            )
+        except Exception:
+            pass
     _schedule_response_log_write(
+        get_grading_user_id(), safe, str(filename), "manual", blocks
+    )
+    _schedule_wrong_annotation_generation(
         get_grading_user_id(), safe, str(filename), "manual", blocks
     )
     return item
 
 
-def _maybe_notify_manual_all_done(safe: str) -> None:
-    """答题卡（自主阅卷）全部阅完后自动推一次钉钉（最后一张 graded 时触发，标志位去重）。"""
+def _maybe_notify_manual_all_done(safe: str, allow: bool = True) -> None:
+    """答题卡（自主阅卷）全部阅完后自动推一次钉钉（最后一张 graded 时触发，标志位去重）。
+
+    allow=False（前端「手动推送」模式）：直接跳过且不消费去重标志，
+    之后手动点「推送钉钉」或切回自动模式仍能正常触发。
+    """
+    if not allow:
+        return
     try:
         with _grading_history_lock:
             data = _read_grading_history(safe, "manual")
@@ -8984,9 +10475,27 @@ async def api_save_manual_grade(folder_name: str, request: Request):
     scores = body.get("scores")
     decisions = body.get("decisions")
     generate_marks = body.get("generate_marks", True) # 新增参数，指示是否需要生成图片
+    # 老师批注/整卷总评：与 wrong_annotations 同语义——body 带了才覆盖（空=显式清空），
+    # 缺省/None=本次不改（旧分数保存口不带这两个字段，不能顺手清掉已有批注）
     question_notes = body.get("question_notes")
-    question_notes = question_notes if isinstance(question_notes, dict) else {}
-    paper_note = str(body.get("paper_note") or "").strip()
+    if question_notes is not None and not isinstance(question_notes, dict):
+        question_notes = {}
+    paper_note = body.get("paper_note")
+    paper_note = str(paper_note or "").strip() if paper_note is not None else None
+    # 判错原因批注（item 级，与 question_notes 平级）；缺省 None 表示本次不改
+    from app.grading.wrong_annotations import normalize_wrong_annotations
+
+    wrong_annotations = (
+        normalize_wrong_annotations(body.get("wrong_annotations"))
+        if "wrong_annotations" in body
+        else None
+    )
+    # 结构化扣分项：key=统分键「第N题」「第N题-作答区M」；缺省 None 表示本次不改
+    deduction_items = (
+        _normalize_deduction_items(body.get("deduction_items"))
+        if "deduction_items" in body
+        else None
+    )
 
     if not filename or (not isinstance(scores, dict) and not isinstance(decisions, dict)):
         raise HTTPException(status_code=400, detail="参数缺失")
@@ -8998,7 +10507,7 @@ async def api_save_manual_grade(folder_name: str, request: Request):
     item = completed.get(filename)
     
     if not item or "manual_analyze" not in str(item.get("result", "")):
-        raise HTTPException(status_code=404, detail="未找到答题卡（自主阅卷）切题记录")
+        raise HTTPException(status_code=404, detail="未找到自主阅卷切题记录")
 
     if isinstance(decisions, dict):
         try:
@@ -9012,8 +10521,12 @@ async def api_save_manual_grade(folder_name: str, request: Request):
                 generate_marks=bool(generate_marks),
                 question_notes=question_notes,
                 paper_note=paper_note,
+                wrong_annotations=wrong_annotations,
+                deduction_items=deduction_items,
             )
-            _maybe_notify_manual_all_done(safe)
+            _maybe_notify_manual_all_done(
+                safe, allow=bool(body.get("push_dingtalk", True))
+            )
             return {"ok": True, "message": "批改结果已保存", "item": saved_item}
         except HTTPException:
             raise
@@ -9023,10 +10536,43 @@ async def api_save_manual_grade(folder_name: str, request: Request):
     try:
         # 更新 JSON 中的分数记录
         res_json = json.loads(item["result"])
+        # 纯调分进台账：只记「改分」不记首次打分（prev 空表 → diff 空行）
+        from app.grading.correction_ledger import diff_note_rows, diff_score_map_rows
+
+        _prev_scores = res_json.get("scores") if isinstance(res_json.get("scores"), dict) else {}
+        _score_ledger_rows = diff_score_map_rows(_prev_scores, scores or {})
+        # 批注类增删改也进台账（老师批注/总评）；body 缺省不改不记，与纯调分共用一次写入
+        _prev_qn = res_json.get("question_notes")
+        _prev_pn = res_json.get("paper_note")
+        _eff_qn = question_notes if question_notes is not None else _prev_qn
+        _eff_pn = paper_note if paper_note is not None else _prev_pn
+        _score_ledger_rows += diff_note_rows(
+            {"question_notes": _prev_qn, "paper_note": _prev_pn},
+            {"question_notes": _eff_qn, "paper_note": _eff_pn},
+        )
+        if _score_ledger_rows:
+            try:
+                from app.grading.correction_ledger import record_corrections
+
+                record_corrections(
+                    get_grading_user_id(), safe, str(filename), "manual", _score_ledger_rows
+                )
+            except Exception:
+                pass
         res_json["scores"] = scores
         res_json["manual_status"] = "graded" if generate_marks else res_json.get("manual_status", "analyzed")
-        res_json["question_notes"] = question_notes
-        res_json["paper_note"] = paper_note
+        if question_notes is not None:
+            res_json["question_notes"] = question_notes
+        else:
+            res_json.setdefault("question_notes", {})
+        if paper_note is not None:
+            res_json["paper_note"] = paper_note
+        else:
+            res_json.setdefault("paper_note", "")
+        if deduction_items is not None:
+            # 结构化扣分项：整体覆盖保存（与 decisions 路径同语义）；None 表示本次不改
+            res_json["deduction_items"] = deduction_items
+            item["deduction_items"] = deduction_items
         # 可选：如果需要在前端直接显示总分，可以把计算好的总分存进去
         item["result"] = json.dumps(res_json, ensure_ascii=False)
         
@@ -9078,14 +10624,17 @@ async def api_save_manual_grade(folder_name: str, request: Request):
             str(correct_docs_dir() / safe / filename), blocks_with_result, str(modify_dir()), file_stem
         )
         _apply_manual_annotations_to_trace(
-            ann_name, marks_only_filename, blocks, question_notes, paper_note
+            ann_name, marks_only_filename, blocks, _eff_qn, _eff_pn
         )
 
         _m2_uid = get_grading_user_id()
         item["image_annotated"] = build_download_url(f"grading/modify/{ann_name}", _m2_uid)
         item["image_marks_only"] = build_download_url(f"grading/modify/{marks_only_filename}", _m2_uid)
         item["marks_only_filename"] = marks_only_filename
-        
+        _regenerate_wrong_annotation_marks(
+            safe, item, blocks, item.get("wrong_annotations"), _eff_qn, _eff_pn
+        )
+
         _persist_grading_success(safe, item, "manual")
         
         return {"ok": True, "message": "保存并生成留痕成功", "item": item}
@@ -9241,8 +10790,23 @@ async def api_ai_correct(folder_name: str, request: Request):
     question_notes = body.get("question_notes")
     question_notes = question_notes if isinstance(question_notes, dict) else {}
     paper_note = str(body.get("paper_note") or "").strip()
+    # 判错原因批注：整体覆盖保存（edited/manual 条目由前端带全量，重生成在各自端点内保护）
+    from app.grading.wrong_annotations import normalize_wrong_annotations
+
+    wrong_annotations_in = normalize_wrong_annotations(body.get("wrong_annotations"))
+    # 结构化扣分项：与 wrong_annotations 同语义——body 带了就整体覆盖，没带则保留原值
+    deduction_items_in = (
+        _normalize_deduction_items(body.get("deduction_items"))
+        if "deduction_items" in body
+        else None
+    )
     if not result_map:
         raise HTTPException(status_code=400, detail="未提供有效的对错修正")
+
+    # B1 修正对照：先快照原判四字段，就地覆盖后 diff 出真实变更（全无变化不写任何东西）
+    from app.grading.correction_ledger import _diff_ai_correct_blocks, snapshot_ai_correct_fields
+
+    _before_result_snapshot = snapshot_ai_correct_fields(stored_blocks)
 
     for blk in stored_blocks:
         key = (blk.get("index"), blk.get("sub_index"))
@@ -9263,6 +10827,23 @@ async def api_ai_correct(folder_name: str, request: Request):
                 blk.pop("score", None)
             else:
                 blk["score"] = score_map[key]
+
+    # B1 修正对照：diff → (ledger_rows, changed_blocks)；变更块盖 ai_original_result /
+    # corrected_by / status 三键（人工终态随 blocks 进 history / response_logs）
+    _ledger_rows, _changed_blocks = _diff_ai_correct_blocks(_before_result_snapshot, stored_blocks)
+    # 批注类字段对照：老师批注/试卷总评/判错批注 的增删改也进台账（同一次保存只记这一处）。
+    # wrong_annotations 仅 body 带了才覆盖（缺省不改），故只在带了时参与对照。
+    from app.grading.correction_ledger import diff_note_rows
+
+    _note_before = {
+        "question_notes": item.get("question_notes"),
+        "paper_note": item.get("paper_note"),
+    }
+    _note_after = {"question_notes": question_notes, "paper_note": paper_note}
+    if "wrong_annotations" in body:
+        _note_before["wrong_annotations"] = item.get("wrong_annotations")
+        _note_after["wrong_annotations"] = wrong_annotations_in
+    _ledger_rows += diff_note_rows(_note_before, _note_after)
 
     if engine in ("baidu", "smart_ref"):
         result_text = _summarize_result(baidu_raw, stored_blocks)
@@ -9317,6 +10898,26 @@ async def api_ai_correct(folder_name: str, request: Request):
         raise HTTPException(status_code=500, detail=f"留痕重绘失败: {e}")
 
     _uid = get_grading_user_id()
+    # B3 修正回流 + 复核记账：台账记 was→new 对照；变更块以 engine="manual" 回流
+    # response_logs（行归属人工动作）。只记真实变更，原样保存不写任何东西。
+    if _ledger_rows:
+        try:
+            from app.grading.correction_ledger import record_corrections
+
+            record_corrections(_uid, safe, filename, engine, _ledger_rows)
+        except Exception:
+            pass
+    if _changed_blocks:
+        _schedule_response_log_write(_uid, safe, filename, "manual", _changed_blocks)
+        # C3 判分缓存：人工终态最高优先（可覆盖 ai 行；幻觉被老师推翻后正应进缓存飞轮）。
+        # 无文本身份的块（baidu/smart_ref）由 cache_key 红线自动跳过。
+        try:
+            from app.grading.response_log_db import _read_folder_meta
+            from app.grading.verdict_cache import store_blocks
+
+            store_blocks(_changed_blocks, (_read_folder_meta(safe) or {}).get("subject"), engine, "human")
+        except Exception:
+            pass
     updated = dict(item)
     updated["blocks"] = stored_blocks
     if engine in ("baidu", "smart_ref"):
@@ -9325,6 +10926,11 @@ async def api_ai_correct(folder_name: str, request: Request):
     updated["result"] = result_text
     updated["question_notes"] = question_notes
     updated["paper_note"] = paper_note
+    if "wrong_annotations" in body:
+        updated["wrong_annotations"] = wrong_annotations_in
+    if deduction_items_in is not None:
+        # 结构化扣分项：整体覆盖保存；None（body 未带）保持原值
+        updated["deduction_items"] = deduction_items_in
     if score_total is not None:
         updated["score_total"] = score_total
     if question_scores is not None:
@@ -9332,14 +10938,168 @@ async def api_ai_correct(folder_name: str, request: Request):
     updated["image_annotated"] = build_download_url(f"grading/modify/{ann_name}", _uid)
     updated["image_marks_only"] = build_download_url(f"grading/modify/{marks_only_filename}", _uid)
     updated["marks_only_filename"] = marks_only_filename
+    # 判错批注打印变体随修正后的 wrong_annotations 重建（没带该字段则沿用旧批注）
+    _regenerate_wrong_annotation_marks(
+        safe, updated, stored_blocks, updated.get("wrong_annotations"), question_notes, paper_note
+    )
 
     with _grading_history_lock:
         data = _read_grading_history(safe, engine)
         data["completed"][filename] = {k: v for k, v in updated.items() if k != "index"}
         _write_grading_history(safe, data, engine)
 
+    # 改分落盘 → 自动导入学情+自动分层（成绩变了，分层跟着变；客户清单 #1）
+    try:
+        _schedule_auto_sync_class(get_grading_user_id(), safe)
+    except Exception:
+        pass
+
     view = {k: v for k, v in updated.items() if k != "baidu_raw"}
     return {"ok": True, "message": "批改结果已修正", "item": _resign_history_images(view)}
+
+
+@router.post("/folders/{folder_name:path}/wrong-annotation/generate")
+async def api_generate_wrong_annotation(folder_name: str, request: Request):
+    """为判错/半对的题重新生成「为什么错」批注（老师点「重新生成」按钮）。
+
+    body: { filename, engine, question_key? }；带 question_key 只重生成该题（老师明确要求，
+    覆盖旧稿）；不带则整卷补齐错题批注（edited/manual 条目不覆盖）。同步返回完整 wrong_annotations。
+    """
+    safe = _safe_folder_name(folder_name)
+    if not safe:
+        raise HTTPException(status_code=400, detail="无效文件夹名")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    filename = str(body.get("filename") or "").strip()
+    engine = str(body.get("engine") or "").strip()
+    question_key = str(body.get("question_key") or "").strip()
+    if not filename or not _safe_file_filename(filename):
+        raise HTTPException(status_code=400, detail="文件名无效")
+    if engine not in ("baidu", "smart_ref", "aliyun", "manual"):
+        raise HTTPException(status_code=400, detail="engine 无效")
+
+    with _grading_history_lock:
+        data = _read_grading_history(safe, engine)
+        item = (data.get("completed") or {}).get(filename)
+    if not isinstance(item, dict):
+        raise HTTPException(status_code=404, detail="未找到该试卷的批改记录")
+
+    # 手动卷 blocks 在 result JSON 字符串里，智能卷在 item["blocks"]
+    blocks = item.get("blocks")
+    if not isinstance(blocks, list) or not blocks:
+        try:
+            res_json = json.loads(item.get("result") or "{}")
+            blocks = res_json.get("blocks") if isinstance(res_json.get("blocks"), list) else []
+        except Exception:
+            blocks = []
+    if not blocks:
+        raise HTTPException(status_code=409, detail="该试卷缺少逐题数据，无法生成批注")
+
+    source_path = correct_docs_dir() / safe / filename
+    grading_path = _get_grading_path(safe, source_path)
+    if grading_path is None:
+        grading_path = _ensure_img_in_folder(source_path, safe) or source_path
+    source_image_path = str(grading_path) if grading_path and os.path.isfile(str(grading_path)) else ""
+
+    from app.grading.wrong_annotations import (
+        collect_wrong_question_groups,
+        generate_wrong_annotations_for_blocks,
+        normalize_wrong_annotations,
+    )
+
+    existing = normalize_wrong_annotations(item.get("wrong_annotations"))
+    if question_key:
+        # 老师明确点名重生成：只跑该题，覆盖旧稿（不论是否 edited）
+        groups = collect_wrong_question_groups(blocks)
+        if question_key not in groups:
+            raise HTTPException(status_code=404, detail="该题不是错/半对，无需生成错因批注")
+        generated = generate_wrong_annotations_for_blocks(
+            blocks,
+            source_image_path=source_image_path,
+            existing={},  # 空 existing = 允许覆盖
+            only_keys={question_key},
+        )
+    else:
+        generated = generate_wrong_annotations_for_blocks(
+            blocks,
+            source_image_path=source_image_path,
+            existing=existing,
+        )
+    if generated:
+        existing.update(generated)
+        with _grading_history_lock:
+            data = _read_grading_history(safe, engine)
+            item = (data.get("completed") or {}).get(filename)
+            if isinstance(item, dict):
+                item["wrong_annotations"] = existing
+                _regenerate_wrong_annotation_marks(safe, item, blocks, existing)
+                data["completed"][filename] = item
+                _write_grading_history(safe, data, engine)
+    return {
+        "ok": True,
+        "wrong_annotations": existing,
+        "generated": generated,
+        **(_wrong_annotation_variant_fields(item) if isinstance(item, dict) else {}),
+    }
+
+
+@router.post("/folders/{folder_name:path}/wrong-annotation/save")
+async def api_save_wrong_annotation(folder_name: str, request: Request):
+    """保存老师编辑/手写/删除后的判错批注（整体覆盖），并同步刷新打印变体图。
+
+    body: { filename, engine, wrong_annotations }；给详情右栏轻量编辑用（不重画留痕）。
+    """
+    safe = _safe_folder_name(folder_name)
+    if not safe:
+        raise HTTPException(status_code=400, detail="无效文件夹名")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    filename = str(body.get("filename") or "").strip()
+    engine = str(body.get("engine") or "").strip()
+    if not filename or not _safe_file_filename(filename):
+        raise HTTPException(status_code=400, detail="文件名无效")
+    if engine not in ("baidu", "smart_ref", "aliyun", "manual"):
+        raise HTTPException(status_code=400, detail="engine 无效")
+
+    from app.grading.wrong_annotations import normalize_wrong_annotations
+
+    wrong_annotations = normalize_wrong_annotations(body.get("wrong_annotations"))
+
+    with _grading_history_lock:
+        data = _read_grading_history(safe, engine)
+        item = (data.get("completed") or {}).get(filename)
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=404, detail="未找到该试卷的批改记录")
+        blocks = item.get("blocks")
+        if not isinstance(blocks, list) or not blocks:
+            try:
+                res_json = json.loads(item.get("result") or "{}")
+                blocks = res_json.get("blocks") if isinstance(res_json.get("blocks"), list) else []
+            except Exception:
+                blocks = []
+        _prev_wrong_annotations = item.get("wrong_annotations")
+        item["wrong_annotations"] = wrong_annotations
+        _regenerate_wrong_annotation_marks(safe, item, blocks, wrong_annotations)
+        data["completed"][filename] = item
+        _write_grading_history(safe, data, engine)
+        variant_fields = _wrong_annotation_variant_fields(item)
+        # 判错批注人工编辑进台账（was→new 文本对照；AI 重生成走 generate 不记）
+        try:
+            from app.grading.correction_ledger import diff_note_rows, record_corrections
+
+            _wa_rows = diff_note_rows(
+                {"wrong_annotations": _prev_wrong_annotations},
+                {"wrong_annotations": wrong_annotations},
+            )
+            if _wa_rows:
+                record_corrections(get_grading_user_id(), safe, filename, engine, _wa_rows)
+        except Exception:
+            pass
+    return {"ok": True, "wrong_annotations": wrong_annotations, **variant_fields}
 
 
 @router.post("/folders/{folder_name:path}/ai-paper-summary")
@@ -9444,11 +11204,12 @@ async def api_clear_manual_grade(folder_name: str, request: Request):
     completed = data.get("completed", {})
     item = completed.get(filename)
     if not item or "manual_analyze" not in str(item.get("result", "")):
-        raise HTTPException(status_code=404, detail="未找到答题卡（自主阅卷）记录")
+        raise HTTPException(status_code=404, detail="未找到自主阅卷记录")
 
     try:
         res_json = json.loads(item["result"])
         res_json["scores"] = {}
+        res_json["deduction_items"] = {}
         if int(res_json.get("version") or 1) >= 2:
             res_json["decisions"] = {}
             for block in res_json.get("blocks") or []:
@@ -9462,13 +11223,20 @@ async def api_clear_manual_grade(folder_name: str, request: Request):
         item["result"] = json.dumps(res_json, ensure_ascii=False)
         item["score_total"] = None
         item["question_scores"] = {}
+        item["deduction_items"] = {}
 
         _delete_modify_file_by_url(item.get("image_annotated"))
         _delete_modify_file_by_url(item.get("image_marks_only"))
+        _delete_modify_file_by_url(item.get("image_marks_with_wrong_notes"))
+        _delete_modify_file_by_url(item.get("image_annotated_with_wrong_notes"))
 
         item["image_annotated"] = ""
         item["image_marks_only"] = ""
         item["marks_only_filename"] = ""
+        item.pop("marks_with_wrong_notes_filename", None)
+        item.pop("image_marks_with_wrong_notes", None)
+        item.pop("annotated_with_wrong_notes_filename", None)
+        item.pop("image_annotated_with_wrong_notes", None)
 
         _persist_grading_success(safe, item, "manual")
         return {"ok": True, "message": "分数已清空", "item": item}
@@ -9724,8 +11492,28 @@ async def api_backfill_blocks(folder_name: str, body: dict = Body(...)):
     target_engine = max(missing_by_engine.items(), key=lambda kv: len(kv[1]))[0]
     missing_names = sorted(set(missing_by_engine[target_engine]))
 
+    # 0924：补全走原引擎重新批改（大模型）⇒ 接闸；不计面（上传时已计，防双扣）
+    quota_gate()
     job_id = str(uuid.uuid4())
+    # 1015 冻死防线②：补全与全量批改共用同文件夹单飞闸，防双入口并行顶内存。
+    # 检查+注册同锁原子完成（防 TOCTOU）。
     with _ref_grade_lock:
+        gate = _find_active_ref_job_locked(
+            safe,
+            engine=target_engine,
+            only_filename=None,
+            only_filenames=set(missing_names),
+            user_id=get_grading_user_id(),
+        )
+        if gate is not None:
+            active_job_id, same_scope = gate
+            if same_scope:
+                active_total = _ref_grade_results.get(active_job_id, {}).get("total", len(missing_names))
+                return {"ok": True, "job_id": active_job_id, "total": active_total, "already_running": True}
+            raise HTTPException(
+                status_code=409,
+                detail="该文件夹已有批改任务进行中，请等待完成或取消后再发起",
+            )
         _ref_grade_results[job_id] = {
             "completed": [],
             "failed": [],
@@ -9736,8 +11524,11 @@ async def api_backfill_blocks(folder_name: str, body: dict = Body(...)):
             "manual_analyzed": False,
             "manual_paper_cut_tasks": {},
             "user_id": get_grading_user_id(),
+            "folder": safe,
+            "only_filename": None,
+            "only_filenames": sorted(missing_names),
         }
-    _ref_grade_stop_events[job_id] = threading.Event()
+        _ref_grade_stop_events[job_id] = threading.Event()
     threading.Thread(
         target=_run_ref_grade,
         args=(job_id, safe, target_engine, None, set(missing_names), get_grading_user_id()),
@@ -9782,7 +11573,7 @@ async def api_start_grade_by_reference(folder_name: str, body: dict = Body(...))
         total = 0
         for item in dir_path.iterdir():
             if item.is_file() and item.suffix.lower() in _ALL_UPLOAD_EXTS:
-                if not _is_standard_answer_filename(item.name):
+                if not _is_standard_answer_filename(item.name) and not _is_answer_sheet_filename(item.name):
                     if only_filenames and item.name not in only_filenames:
                         continue
                     if only_filename and item.name != only_filename:
@@ -9792,11 +11583,28 @@ async def api_start_grade_by_reference(folder_name: str, body: dict = Body(...))
     if total <= 0:
         raise HTTPException(status_code=400, detail="没有找到本次需要批改的学生试卷")
 
-    # The folder detail represents one run only. Clear both the previous
-    # smart/reference history and manual history before any worker can write.
-    _replace_folder_grading_run(safe, engine)
-
+    # 1015 冻死防线②：同文件夹单飞闸——同参数连点幂等返回在跑 job，异参数 409。
+    # 检查和注册必须在同一把锁内原子完成（防 TOCTOU），且先注册再清历史：
+    # 清历史（_replace_folder_grading_run）放锁外做 IO，失败则回滚注册。
+    # 闸门必须在清空历史之前，否则第二次点击会把第一次还没跑完的批改历史
+    # 清掉并再起一条 8 线程批次（事故根因之一）。
     with _ref_grade_lock:
+        gate = _find_active_ref_job_locked(
+            safe,
+            engine=engine,
+            only_filename=only_filename,
+            only_filenames=only_filenames,
+            user_id=get_grading_user_id(),
+        )
+        if gate is not None:
+            active_job_id, same_scope = gate
+            if same_scope:
+                active_total = _ref_grade_results.get(active_job_id, {}).get("total", total)
+                return {"ok": True, "job_id": active_job_id, "total": active_total, "already_running": True}
+            raise HTTPException(
+                status_code=409,
+                detail="该文件夹已有批改任务进行中，请等待完成或取消后再发起",
+            )
         _ref_grade_results[job_id] = {
             "completed": [],
             "failed": [],
@@ -9807,15 +11615,31 @@ async def api_start_grade_by_reference(folder_name: str, body: dict = Body(...))
             "manual_analyzed": False,
             "manual_paper_cut_tasks": {},
             "user_id": get_grading_user_id(),
+            # 批改完是否自动推钉钉（前端「自动推送钉钉/手动」开关，手动模式不推）
+            "push_dingtalk": bool(body.get("push_dingtalk", True)),
+            # 1015 单飞闸：记录本次范围，供 _find_active_ref_job_locked 比对
+            "folder": safe,
+            "only_filename": only_filename,
+            "only_filenames": sorted(only_filenames) if only_filenames else None,
         }
-    _ref_grade_stop_events[job_id] = threading.Event()
-                        
+        _ref_grade_stop_events[job_id] = threading.Event()
+
+    try:
+        # The folder detail represents one run only. Clear both the previous
+        # smart/reference history and manual history before any worker can write.
+        _replace_folder_grading_run(safe, engine)
+    except Exception:
+        with _ref_grade_lock:
+            _ref_grade_results.pop(job_id, None)
+            _ref_grade_stop_events.pop(job_id, None)
+        raise
+
     threading.Thread(
         target=_run_ref_grade,
         args=(job_id, safe, engine, only_filename, only_filenames, get_grading_user_id()),
         daemon=True
     ).start()
-    
+
     return {"ok": True, "job_id": job_id, "total": total}
 
 @router.get("/folders/{folder_name:path}/grade-by-reference/status/{job_id}")
@@ -9873,6 +11697,27 @@ async def api_cancel_grade_by_reference(folder_name: str, body: dict = Body(...)
     return {"ok": True, "msg": "已请求取消批改"}
 
 
+@router.post("/folders/{folder_name:path}/dingtalk-notify")
+async def api_push_dingtalk_manual(folder_name: str, body: dict = Body(...)):
+    """手动推送钉钉通知（前端「手动推送」模式下的按钮）。
+
+    kind: grading_done=智能/参照批改完成 / essay=作文批改 / manual=自主阅卷
+    """
+    safe = _safe_folder_name(folder_name)
+    if not safe:
+        raise HTTPException(status_code=400, detail="无效文件夹名")
+    kind = str(body.get("kind") or "grading_done").strip()
+    if kind not in ("grading_done", "essay", "manual"):
+        raise HTTPException(
+            status_code=400, detail=f"kind 取值应为 grading_done/essay/manual，收到 {kind!r}"
+        )
+    from app.services.dingtalk_notify import push_dingtalk_now
+
+    # 路由处于 grading 用户上下文（中间件绑定），collector 可直接用
+    ok, message = push_dingtalk_now(get_grading_user_id(), safe, kind)
+    return {"ok": ok, "message": message}
+
+
 # ---- 答题卡按标准答案自动比对 ----
 
 def _run_answer_key_grade(job_id: str, safe: str, answers: dict, ctx_uid: str) -> None:
@@ -9917,7 +11762,12 @@ def _run_answer_key_grade_impl(job_id: str, safe: str, answers: dict) -> None:
             grading_path = _get_grading_path(safe, source_path)
             if grading_path is None:
                 grading_path = _ensure_img_in_folder(source_path, safe) or source_path
-            decisions = grade_paper_by_answer_key(str(grading_path), blocks, answers)
+            # C3 判分缓存身份：科目从 folder meta.json 取（预查/回写共用同一取值）
+            from app.grading.response_log_db import _read_folder_meta
+
+            decisions = grade_paper_by_answer_key(
+                str(grading_path), blocks, answers, subject=(_read_folder_meta(safe) or {}).get("subject")
+            )
             saved = _save_manual_slot_decisions(
                 safe, name, item, res_json, decisions, generate_marks=True
             )
@@ -10172,5 +12022,62 @@ def api_low_confidence_questions(
             "total_low_conf": total_low_conf,
             "distribution": distribution,
             "engines": engines,
+        }
+    )
+
+
+@router.get("/correction-stats", response_model=ApiResponse[dict])
+def api_correction_stats(
+    days: int = Query(30, description="回溯天数（created_at 窗口）"),
+    include_voided: bool = Query(False, description="true 则把已作废（re-grade 重跑）行计入"),
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    """修正/复核记账矩阵（只读 SELECT）：教师推翻率、兜底拦截量的原料。
+
+    matrix 按 (source, subject_family, was, new) 聚合；默认排除 voided
+    （re-grade 全量重跑会把该文件夹旧行标记作废）。
+    """
+    window_days = max(1, days)
+    from app.grading.correction_ledger import correction_stats
+
+    matrix = correction_stats(db, user_id, days=window_days, include_voided=include_voided)
+    totals_by_source: dict[str, int] = {}
+    for row in matrix:
+        src = str(row.get("source") or "unknown")
+        totals_by_source[src] = totals_by_source.get(src, 0) + int(row.get("count") or 0)
+    return ApiResponse(
+        data={
+            "matrix": matrix,
+            "totals_by_source": totals_by_source,
+            "window_days": window_days,
+        }
+    )
+
+
+@router.get("/correction-ledger", response_model=ApiResponse[dict])
+def api_correction_ledger(
+    days: int = Query(30, description="回溯天数（created_at 窗口）"),
+    include_voided: bool = Query(False, description="true 则包含已作废（re-grade 重跑）行"),
+    limit: int = Query(200, description="返回条数上限（1-500）"),
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    """修正/复核记账明细（只读 SELECT）：台账查看页逐行列表。
+
+    与 /correction-stats 同窗口同过滤；rows 含时间/学生卷/题号/改动前后/来源。
+    """
+    window_days = max(1, days)
+    from app.grading.correction_ledger import correction_ledger_rows
+
+    rows = correction_ledger_rows(
+        db, user_id, days=window_days, include_voided=include_voided, limit=limit
+    )
+    return ApiResponse(
+        data={
+            "rows": rows,
+            "count": len(rows),
+            "window_days": window_days,
+            "include_voided": include_voided,
         }
     )

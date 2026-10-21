@@ -116,7 +116,7 @@ _OWN_TABLES = (
     "payment_accounts",
     "usage_events",
     "payment_plans",
-    "payment_orders",
+    "payment_orders_v2",
     "users",
 )
 
@@ -703,12 +703,14 @@ def test_p3_50_payload_validation_rejects_and_writes_nothing(client, db, over, w
 
 
 def test_p3_51_route_inventory_has_no_admin_write_endpoint():
-    """端点清单钉死：本模块只有 8 个（方法, 路径）组合；⛔ admin 侧**只有只读那一个**。
+    """端点清单钉死：本模块只有 9 个（方法, 路径）组合；⛔ admin 侧**只有只读那一个**。
 
     ⛔ 尤其钉住「标记已开票本批**没有**后台入口」（brief 硬约束 4）—— 状态机只有数据层。
     ⚠️ 「不许有 admin 端点」这条**按逐字口径收窄**为「不许有 admin **写**端点」：`routers/payment.py:16`
        逐字排除的是 `POST /payment/admin/grant`（**写**）；`GET /admin/reconciliation` 零写路径。
     【自己的红】给 `payment.router` 加任意写路由（尤其 `/payment/admin/grant`）⇒ 集合不等 ⇒ 红。
+    ⚠️ **清单更新申报（2026-09-28，二维码 UI 批）**：+`GET /payment/orders/{order_id}`
+       （订单状态轮询，**只读**，前端二维码弹窗 2s 一次查到账）。
     """
     got = set()
     for r in payment_router.router.routes:
@@ -721,6 +723,7 @@ def test_p3_51_route_inventory_has_no_admin_write_endpoint():
         ("GET", "/payment/ledger"),
         ("GET", "/payment/usage"),
         ("POST", "/payment/orders"),
+        ("GET", "/payment/orders/{order_id}"),
         ("POST", "/payment/callback/{channel}"),
         ("POST", "/payment/invoices"),
         ("GET", "/payment/invoices"),

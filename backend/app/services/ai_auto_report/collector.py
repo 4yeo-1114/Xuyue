@@ -317,6 +317,66 @@ def collect_smart_scoring_payload(folder_safe: str) -> dict[str, Any]:
     }
 
 
+def collect_grading_done_payload(folder_safe: str) -> dict[str, Any]:
+    """批改完成即推的口径：已统分走成绩口径；未统分按错题数排名兜底。
+
+    智能批改刚跑完、还没点「应用统分」时 score_total 全为空，
+    collect_smart_scoring_payload 会返回 count=0 的空壳——这里补一个能看的版本。
+    """
+    payload = collect_smart_scoring_payload(folder_safe)
+    if (payload.get("score_summary") or {}).get("count"):
+        return payload
+
+    history = _read_grading_history(folder_safe, "default")
+    completed = history.get("completed") if isinstance(history.get("completed"), dict) else {}
+    students: list[dict[str, Any]] = []
+    for filename, info in completed.items():
+        if not isinstance(info, dict):
+            continue
+        if not is_paper_shows_graded_badge(info, source="ref"):
+            continue
+        result_text = str(info.get("result") or "").strip()
+        if not result_text or result_text.startswith("{"):
+            continue
+        counts, _blocks = _parse_ai_result_to_counts(result_text)
+        students.append(
+            {
+                "student_box": _paper_box_display_name(filename),
+                "score_total": None,
+                "wrong_count": counts["wrong"] + counts["blank"],
+            }
+        )
+    students.sort(key=lambda x: (x["wrong_count"], str(x["student_box"])))
+
+    class_meta = _load_class_meta(_parse_class_id(folder_safe))
+    return {
+        "exam_name": _display_folder_name(folder_safe),
+        "folder_safe": folder_safe,
+        "report_kind": "grading_done",
+        "scope_note": "本通知为批改完成提醒，成绩以统分后的工作通知为准。",
+        "class": class_meta,
+        "student_count": len(students),
+        "paper_count": len(students),
+        "score_summary": {
+            "count": len(students),
+            "average": None,
+            "max": None,
+            "min": None,
+            "full_score": history.get("full_score"),
+        },
+        "score_ranking": [
+            {
+                "rank": idx + 1,
+                "student_box": s["student_box"],
+                "score_total": None,
+                "wrong_count": s["wrong_count"],
+            }
+            for idx, s in enumerate(students)
+        ],
+        "students": students,
+    }
+
+
 def count_scored_ref_papers(folder_safe: str) -> int:
     return len(_iter_scored_ref_items(folder_safe))
 

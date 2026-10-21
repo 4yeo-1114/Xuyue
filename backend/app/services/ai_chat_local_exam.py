@@ -146,7 +146,7 @@ def summarize_local_exam_scores(
 
     history_files = [
         (hist_dir / f"{exam_key}.json", "智能批改"),
-        (hist_dir / f"{exam_key}__manual.json", "答题卡（自主阅卷）"),
+        (hist_dir / f"{exam_key}__manual.json", "自主阅卷"),
         (hist_dir / f"{exam_key}__essay.json", "作文批改"),
     ]
 

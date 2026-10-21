@@ -101,6 +101,21 @@ class Settings(BaseSettings):
     # H4：单用户单日邮件发送上限（防开放邮件转发滥用）
     EMAIL_DAILY_LIMIT: int = 20
 
+    # ── 登录/注册合规：阿里云短信（验证码登录 / 手机号绑定）──
+    # ⚠️ 凭据只能走环境变量/.env（`.env*` 已进 .gitignore），⛔ 绝不硬编码默认值。
+    #    未配置时发码接口返回 501「短信未配置」，绝不静默跳过（同 SMTP fail-closed 思路）。
+    ALIYUN_SMS_ACCESS_KEY_ID: str = ""            # 阿里云 AccessKey ID
+    ALIYUN_SMS_ACCESS_KEY_SECRET: str = ""        # 阿里云 AccessKey Secret
+    ALIYUN_SMS_SIGN_NAME: str = ""                # 短信签名（需在阿里云控制台审核通过）
+    ALIYUN_SMS_TEMPLATE_CODE: str = ""            # 验证码模板 Code（模板变量固定为 ${code}）
+    ALIYUN_SMS_ENDPOINT: str = "dysmsapi.aliyuncs.com"  # 短信服务 endpoint
+    SMS_DAILY_LIMIT: int = 20                     # 单手机号单日短信发送上限
+
+    # ⚠️ 临时旁路：固定短信验证码（如 "123456"）。非空时**仅手机号短信通道**用该固定码（不真
+    # 发短信），阿里云短信未接通前临时用；邮箱验证码始终走真实 SMTP 发送。接好阿里云短信后必须
+    # 清空，否则任何人都能用该固定码做手机号登录/绑定（等于后门）。
+    FIXED_VERIFICATION_CODE: str = ""
+
     # 钉钉免登：corpId / AppKey / AppSecret / AgentId；留空 = 钉钉免登不可用
     DINGTALK_CORP_ID: str = ""
     DINGTALK_APP_KEY: str = ""

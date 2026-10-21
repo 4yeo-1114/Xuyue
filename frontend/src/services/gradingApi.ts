@@ -404,8 +404,130 @@ export async function confirmReferenceLayout(
   );
 }
 
-/** 分析第一个学生试卷框，生成自主阅卷的可编辑切题模板。 */
-export async function prepareManualLayout(folderName: string): Promise<{
+export type ReferenceAnswerSlotItem = {
+  sub_index: number;
+  bbox?: [number, number, number, number];
+  answer_text: string;
+  /** 答题区缩略图直链（服务端按 bbox 裁好、自带下载票），空白试卷识别答题区用 */
+  region_url?: string;
+};
+
+/** 标准答案识别表条目：每题逐作答区答案（多空题 slots 按空拆分）。 */
+export type ReferenceAnswerEntry = {
+  display_index: number;
+  printed_no?: string | null;
+  question_bbox?: [number, number, number, number];
+  slots: ReferenceAnswerSlotItem[];
+  full_answer: string;
+  edited?: boolean;
+};
+
+export type ReferenceAnswerTablePage = {
+  page_no: number;
+  filename: string;
+  updated_at?: string | null;
+  error?: string;
+  questions: ReferenceAnswerEntry[];
+  /** 答题区框总览底图直链（与切题审查同源预览图） */
+  image_url?: string;
+  /** 批改图像素尺寸：答题区框按这个坐标系铺 SVG（与切题审查同款拉伸对齐） */
+  image_size?: [number, number] | null;
+};
+
+/** 自动识别标准答案每道题答案（已缓存则直接返回，可手动修改后保存）。 */
+export async function getReferenceAnswerTable(
+  folderName: string,
+  build = true,
+): Promise<{ ok: boolean; pages: ReferenceAnswerTablePage[] }> {
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/answer-table?build=${build ? 1 : 0}`,
+  );
+}
+
+/** 保存老师对识别答案的手动修改（重建识别时保留）。 */
+export async function saveReferenceAnswerTable(
+  folderName: string,
+  pageNo: number,
+  questions: Array<{
+    display_index: number;
+    printed_no?: string;
+    slots: Array<{ sub_index: number; answer_text: string }>;
+  }>,
+): Promise<{
+  ok: boolean;
+  page_no: number;
+  updated_at?: string;
+  questions: ReferenceAnswerEntry[];
+}> {
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/answer-table/save`,
+    {
+      method: "POST",
+      body: { page_no: pageNo, questions },
+    },
+  );
+}
+
+/** 强制重新识别答案表；resetEdits=true 连手动修改一起清掉。 */
+export async function rebuildReferenceAnswerTable(
+  folderName: string,
+  pageNo?: number,
+  resetEdits = false,
+): Promise<{ ok: boolean; pages: ReferenceAnswerTablePage[] }> {
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/answer-table/rebuild`,
+    {
+      method: "POST",
+      body: { page_no: pageNo ?? 0, reset_edits: resetEdits },
+    },
+  );
+}
+
+/** 答案纸识别结果（专窗）：每行 题号+答案，供老师核对后合并进答题区 */
+export type AnswerSheetRow = { no: string; answer: string };
+
+export async function getAnswerSheetRows(
+  folderName: string,
+  build = true,
+): Promise<{
+  ok: boolean;
+  pages: Array<{ page_no: number; filename: string }>;
+  rows: AnswerSheetRow[];
+  error?: string;
+}> {
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/answer-sheet?build=${build ? 1 : 0}`,
+  );
+}
+
+/** 保存答案纸识别结果（专窗点「合并进答案表」）；rescan=true 重新识别 */
+export async function saveAnswerSheetRows(
+  folderName: string,
+  payload: { rows?: AnswerSheetRow[]; rescan?: boolean },
+): Promise<{ ok: boolean; rows: AnswerSheetRow[] }> {
+  const body =
+    payload.rescan
+      ? { rescan: true }
+      : {
+          by_printed_no: Object.fromEntries(
+            (payload.rows || [])
+              .filter((row) => (row.answer || "").trim())
+              .map((row) => [row.no, row.answer]),
+          ),
+        };
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/answer-sheet/save`,
+    { method: "POST", body },
+  );
+}
+
+/** 分析第一个学生试卷框，生成自主阅卷的可编辑切题模板。
+ * source=answer_card（默认）：答题卡印刷框线切题；source=reference：取标准答题区
+ * （试卷手动批改，普通试卷没有答题卡框线）。 */
+export async function prepareManualLayout(
+  folderName: string,
+  source?: "answer_card" | "reference",
+): Promise<{
   ok: boolean;
   prepare_id: string;
   pages: ReferenceLayoutPage[];
@@ -414,6 +536,7 @@ export async function prepareManualLayout(folderName: string): Promise<{
     `/grading/folders/${encodeURIComponent(folderName)}/manual-layout/prepare`,
     {
       method: "POST",
+      body: source ? { source } : undefined,
     },
   );
 }
@@ -450,10 +573,17 @@ export async function confirmManualLayout(
   );
 }
 
-/** 卷面题号层级结构：{ 第N题: { major 大题号, sub 题号（小问/小题/大题）, display 组合展示, question_text 题目文字 } } */
+/** 卷面题号层级结构：{ 第N题: { major 大题号, sub 题号（小问/小题/大题）, display 组合展示, question_text 题目文字, printed_no 印刷题号 } } */
 export type QuestionStructure = Record<
   string,
-  { major: string; sub: string; display: string; question_text?: string }
+  {
+    major: string;
+    sub: string;
+    display: string;
+    question_text?: string;
+    sub_sub?: string;
+    printed_no?: string;
+  }
 >;
 
 /** 已持久化的批改记录（AI 解析、留痕 URL 等），重启后仍可从磁盘加载 */
@@ -484,7 +614,9 @@ export async function fetchGradingHistory(
   major_titles?: Record<string, string> | null;
   paper_subs?: Record<string, { num: string; score: number }[]> | null;
 }> {
-  const query = engine ? `?engine=${engine}` : "";
+  // manual 系引擎（manual_reference/manual_paper）与 manual 共用 __manual.json，
+  // 后端 _grading_history_path 只认 "manual"——在此归一，免得每个调用点各自防。
+  const query = engine ? `?engine=${manualHistoryEngine(engine)}` : "";
   return gradingFetch(
     `/grading/folders/${encodeURIComponent(folderName)}/grading-history${query}`,
   );
@@ -590,6 +722,31 @@ export async function uploadOriginalPaper(
   );
 }
 
+/** 上传答案纸（答案单独一张纸，空白卷模式第二上传），按印刷题号识别每题答案 */
+export async function uploadAnswerSheet(
+  folderName: string,
+  file: File,
+  answerSheetPageNo?: number,
+): Promise<{
+  ok: boolean;
+  name: string;
+  filename: string;
+  url: string;
+  type?: string;
+  page_no?: number;
+}> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("is_answer_sheet", "true");
+  if (answerSheetPageNo != null) {
+    form.append("answer_sheet_page_no", String(answerSheetPageNo));
+  }
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/upload`,
+    { method: "POST", body: form },
+  );
+}
+
 /** 识别原始试卷上每题的分值（返回逐题清单，供确认页核对） */
 export async function recognizePaperScores(folderName: string): Promise<{
   ok: boolean;
@@ -663,7 +820,22 @@ export async function triggerScan(
 
 /** 开始参照批改 */
 export type GradingEngine =
-  "aliyun" | "baidu" | "essay" | "smart_ref" | "manual" | "manual_reference";
+  | "aliyun"
+  | "baidu"
+  | "essay"
+  | "smart_ref"
+  | "manual"
+  | "manual_reference"
+  | "manual_paper";
+
+/** manual 系引擎（答题卡自主/参照、试卷手动）在批改历史里共用 __manual.json，统一归一 */
+export function manualHistoryEngine(
+  engine?: GradingEngine,
+): "manual" | GradingEngine | undefined {
+  return engine === "manual_reference" || engine === "manual_paper"
+    ? "manual"
+    : engine;
+}
 
 /** 自动补全「编辑批改」依赖的逐题数据：重批缺 blocks 的旧记录（不清空其它记录） */
 export async function backfillBlocks(
@@ -690,6 +862,7 @@ export async function startReferenceGrade(
   engine: GradingEngine = "aliyun",
   singleFilename?: string | null,
   selectedFilenames?: string[] | null,
+  pushDingtalk: boolean = true,
 ): Promise<{ ok: boolean; job_id: string; total: number }> {
   if (engine === "essay") {
     throw new Error("作文批改请使用 startEssayGrade()");
@@ -698,7 +871,8 @@ export async function startReferenceGrade(
     engine: GradingEngine;
     filename?: string;
     filenames?: string[];
-  } = { engine };
+    push_dingtalk?: boolean;
+  } = { engine, push_dingtalk: pushDingtalk };
   const fn = typeof singleFilename === "string" ? singleFilename.trim() : "";
   if (fn) body.filename = fn;
   if (Array.isArray(selectedFilenames) && selectedFilenames.length > 0) {
@@ -749,6 +923,23 @@ export async function cancelReferenceGrade(
     {
       method: "POST",
       body: { job_id: jobId },
+    },
+  );
+}
+
+/**
+ * 手动推送一次钉钉通知（「手动推送」模式下的按钮）。
+ * kind: grading_done=智能/参照批改完成 / essay=作文批改 / manual=自主阅卷
+ */
+export async function pushDingtalkNotify(
+  folderName: string,
+  kind: "grading_done" | "essay" | "manual" = "grading_done",
+): Promise<{ ok: boolean; message?: string }> {
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/dingtalk-notify`,
+    {
+      method: "POST",
+      body: { kind },
     },
   );
 }
@@ -963,6 +1154,7 @@ export async function startEssayGrade(
   singleFilename?: string | null,
   selectedFilenames?: string[] | null,
   prompts?: Partial<EssayRubric>,
+  pushDingtalk: boolean = true,
 ): Promise<{ ok: boolean; job_id: string; total: number }> {
   const body: {
     rubric_text: string;
@@ -975,8 +1167,10 @@ export async function startEssayGrade(
     scoring_prompt?: string;
     topic_text?: string;
     topic_image_base64?: string;
+    push_dingtalk?: boolean;
   } = {
     rubric_text: String(rubricText || "").trim(),
+    push_dingtalk: pushDingtalk,
     ...prompts,
   };
   const fn = typeof singleFilename === "string" ? singleFilename.trim() : "";
@@ -1622,6 +1816,8 @@ export async function saveManualGrade(
   generateMarks: boolean = true,
   questionNotes?: Record<string, string>,
   paperNote?: string,
+  pushDingtalk: boolean = true,
+  deductionItems?: DeductionItemsMap,
 ): Promise<{ ok: boolean; message?: string; item?: any }> {
   return gradingFetch(
     `/grading/folders/${encodeURIComponent(folderName)}/manual-grade`,
@@ -1633,6 +1829,9 @@ export async function saveManualGrade(
         generate_marks: generateMarks,
         question_notes: questionNotes,
         paper_note: paperNote,
+        push_dingtalk: pushDingtalk,
+        // 省略 = 本次不改扣分项（后端 None 语义）；显式传（哪怕空对象）= 整体覆盖
+        ...(deductionItems !== undefined ? { deduction_items: deductionItems } : {}),
       },
     },
   );
@@ -1646,6 +1845,25 @@ export type ManualSlotDecision = {
   score?: number | null;
 };
 
+/** 判错原因批注：item 级 wrong_annotations 映射的一条（key=题号） */
+export type WrongAnnotation = {
+  text: string;
+  source: "ai" | "manual";
+  edited: boolean;
+  generated_at?: string;
+};
+
+export type WrongAnnotationsMap = Record<string, WrongAnnotation>;
+
+/** 结构化扣分项一条：label=扣了什么，points=扣了多少（正数） */
+export type DeductionItem = {
+  label: string;
+  points: number;
+};
+
+/** 结构化扣分项映射：key 与统分键一致（「第N题」「第N题-作答区M」） */
+export type DeductionItemsMap = Record<string, DeductionItem[]>;
+
 export async function saveManualSlotDecisions(
   folderName: string,
   filename: string,
@@ -1653,6 +1871,9 @@ export async function saveManualSlotDecisions(
   generateMarks: boolean = true,
   questionNotes?: Record<string, string>,
   paperNote?: string,
+  pushDingtalk: boolean = true,
+  wrongAnnotations?: WrongAnnotationsMap,
+  deductionItems?: DeductionItemsMap,
 ): Promise<{ ok: boolean; message?: string; item?: any }> {
   return gradingFetch(
     `/grading/folders/${encodeURIComponent(folderName)}/manual-grade`,
@@ -1667,6 +1888,11 @@ export async function saveManualSlotDecisions(
         generate_marks: generateMarks,
         question_notes: questionNotes,
         paper_note: paperNote,
+        push_dingtalk: pushDingtalk,
+        // 省略 = 本次不改批注（后端 None 语义）；显式传（哪怕空对象）= 整体覆盖
+        ...(wrongAnnotations !== undefined ? { wrong_annotations: wrongAnnotations } : {}),
+        // 省略 = 本次不改扣分项；显式传 = 整体覆盖
+        ...(deductionItems !== undefined ? { deduction_items: deductionItems } : {}),
       },
     },
   );
@@ -1698,6 +1924,8 @@ export async function correctAiBlocks(
   }>,
   questionNotes?: Record<string, string>,
   paperNote?: string,
+  wrongAnnotations?: WrongAnnotationsMap,
+  deductionItems?: DeductionItemsMap,
 ): Promise<{ ok: boolean; message?: string; item?: any }> {
   return gradingFetch(
     `/grading/folders/${encodeURIComponent(folderName)}/ai-correct`,
@@ -1709,7 +1937,94 @@ export async function correctAiBlocks(
         blocks,
         question_notes: questionNotes,
         paper_note: paperNote,
+        // 省略 = 本次不改批注；显式传 = 整体覆盖保存
+        ...(wrongAnnotations !== undefined ? { wrong_annotations: wrongAnnotations } : {}),
+        // 省略 = 本次不改扣分项；显式传 = 整体覆盖保存
+        ...(deductionItems !== undefined ? { deduction_items: deductionItems } : {}),
       },
+    },
+  );
+}
+
+/** 判错原因批注：AI 生成/重生成（单题或整卷），同步返回完整 wrong_annotations */
+export async function generateWrongAnnotation(
+  folderName: string,
+  filename: string,
+  engine: GradingEngine,
+  questionKey?: string,
+): Promise<{
+  ok: boolean;
+  wrong_annotations: WrongAnnotationsMap;
+  generated: WrongAnnotationsMap;
+  marks_with_wrong_notes_filename?: string | null;
+  image_marks_with_wrong_notes?: string | null;
+  annotated_with_wrong_notes_filename?: string | null;
+  image_annotated_with_wrong_notes?: string | null;
+}> {
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/wrong-annotation/generate`,
+    {
+      method: "POST",
+      body: {
+        filename,
+        engine,
+        ...(questionKey ? { question_key: questionKey } : {}),
+      },
+    },
+  );
+}
+
+/** 判错原因批注：保存老师编辑/手写/删除后的整体映射（轻量，不重画留痕） */
+export async function saveWrongAnnotations(
+  folderName: string,
+  filename: string,
+  engine: GradingEngine,
+  wrongAnnotations: WrongAnnotationsMap,
+): Promise<{
+  ok: boolean;
+  wrong_annotations: WrongAnnotationsMap;
+  marks_with_wrong_notes_filename?: string | null;
+  image_marks_with_wrong_notes?: string | null;
+  annotated_with_wrong_notes_filename?: string | null;
+  image_annotated_with_wrong_notes?: string | null;
+}> {
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/wrong-annotation/save`,
+    {
+      method: "POST",
+      body: { filename, engine, wrong_annotations: wrongAnnotations },
+    },
+  );
+}
+
+/** 首页作业判错批注：整体覆盖保存 */
+export async function saveHomeWrongAnnotations(
+  jobId: string,
+  wrongAnnotations: WrongAnnotationsMap,
+): Promise<{ ok: boolean; wrong_annotations: WrongAnnotationsMap }> {
+  return gradingFetch(
+    `/grading/home/${encodeURIComponent(jobId)}/wrong-annotation/save`,
+    {
+      method: "POST",
+      body: { wrong_annotations: wrongAnnotations },
+    },
+  );
+}
+
+/** 首页作业判错批注：AI 生成/重生成（带 questionKey 单题覆盖，不带整卷补齐） */
+export async function generateHomeWrongAnnotation(
+  jobId: string,
+  questionKey?: string,
+): Promise<{
+  ok: boolean;
+  wrong_annotations: WrongAnnotationsMap;
+  generated: WrongAnnotationsMap;
+}> {
+  return gradingFetch(
+    `/grading/home/${encodeURIComponent(jobId)}/wrong-annotation/generate`,
+    {
+      method: "POST",
+      body: { ...(questionKey ? { question_key: questionKey } : {}) },
     },
   );
 }
@@ -1780,6 +2095,7 @@ export async function applyScoringConfig(
   majorOrder?: string[] | null,
   majorTitles?: Record<string, string> | null,
   paperSubs?: Record<string, { num: string; score: number }[]> | null,
+  pushDingtalk: boolean = true,
 ): Promise<{
   ok: boolean;
   message?: string;
@@ -1798,6 +2114,7 @@ export async function applyScoringConfig(
         major_order: majorOrder ?? undefined,
         major_titles: majorTitles ?? undefined,
         paper_subs: paperSubs ?? undefined,
+        push_dingtalk: pushDingtalk,
       },
     },
   );
@@ -2200,4 +2517,104 @@ export async function flowArbitrate(
     method: "POST",
     body: payload,
   });
+}
+
+/** 修正/复核记账明细行（台账查看页） */
+export type CorrectionLedgerRow = {
+  id?: string | null;
+  created_at?: string | null;
+  paper_name?: string | null;
+  folder_safe?: string | null;
+  engine?: string | null;
+  index?: string | null;
+  sub_index?: string | null;
+  source?: string | null;
+  was_result?: string | null;
+  new_result?: string | null;
+  was_comment?: string | null;
+  new_comment?: string | null;
+  was_score?: number | null;
+  new_score?: number | null;
+  subject_family?: string | null;
+  voided?: boolean;
+};
+
+/** 改分/评语台账明细：GET /grading/correction-ledger */
+export async function fetchCorrectionLedger(opts?: {
+  days?: number;
+  includeVoided?: boolean;
+  limit?: number;
+}): Promise<{
+  rows: CorrectionLedgerRow[];
+  count: number;
+  window_days: number;
+  include_voided: boolean;
+}> {
+  const params = new URLSearchParams();
+  if (opts?.days != null) params.set("days", String(opts.days));
+  if (opts?.includeVoided) params.set("include_voided", "true");
+  if (opts?.limit != null) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  // 端点包 ApiResponse{code,message,data}；按项目惯例在此拆信封（tolerant：裸 JSON 原样回）
+  const json = await gradingFetch<{
+    data?: {
+      rows: CorrectionLedgerRow[];
+      count: number;
+      window_days: number;
+      include_voided: boolean;
+    };
+    rows?: CorrectionLedgerRow[];
+  }>(`/grading/correction-ledger${qs ? `?${qs}` : ""}`);
+  return (json?.data ?? json) as {
+    rows: CorrectionLedgerRow[];
+    count: number;
+    window_days: number;
+    include_voided: boolean;
+  };
+}
+
+/** 改分/评语台账矩阵统计：GET /grading/correction-stats */
+export async function fetchCorrectionStats(opts?: {
+  days?: number;
+  includeVoided?: boolean;
+}): Promise<{
+  matrix: Array<{
+    source?: string | null;
+    subject_family?: string | null;
+    was?: string | null;
+    new?: string | null;
+    count?: number;
+  }>;
+  totals_by_source: Record<string, number>;
+  window_days: number;
+}> {
+  const params = new URLSearchParams();
+  if (opts?.days != null) params.set("days", String(opts.days));
+  if (opts?.includeVoided) params.set("include_voided", "true");
+  const qs = params.toString();
+  // 同 fetchCorrectionLedger：端点包 ApiResponse 信封，在此拆掉（tolerant）
+  const json = await gradingFetch<{
+    data?: {
+      matrix: Array<{
+        source?: string | null;
+        subject_family?: string | null;
+        was?: string | null;
+        new?: string | null;
+        count?: number;
+      }>;
+      totals_by_source: Record<string, number>;
+      window_days: number;
+    };
+  }>(`/grading/correction-stats${qs ? `?${qs}` : ""}`);
+  return (json?.data ?? json) as {
+    matrix: Array<{
+      source?: string | null;
+      subject_family?: string | null;
+      was?: string | null;
+      new?: string | null;
+      count?: number;
+    }>;
+    totals_by_source: Record<string, number>;
+    window_days: number;
+  };
 }

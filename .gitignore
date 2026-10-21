@@ -31,6 +31,8 @@ _zyk_legacy_backup_*/
 
 # ===== 日志 =====
 *.log
+*.log.out*
+*.log.err*
 
 # ===== 调试图片 / 一次性输出 =====
 _lines.png
@@ -41,3 +43,13 @@ _strip_*.png
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ===== 部署包 / 调试杂项（2026-10-21 新增，不进库）=====
+*.tar.gz
+backend/_choice_*.jpg
+backend/_choice_*.png
+backend/choice_*.jpg
+backend/full_*.jpg
+backend/temp_*.png
+_tmp_*.pdf
+BrowserMetrics-*

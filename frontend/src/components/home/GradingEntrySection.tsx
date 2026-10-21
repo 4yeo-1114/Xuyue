@@ -28,8 +28,12 @@ import {
   getHomeGradeDetail,
   listHomeRecentGrades,
   gradingImageUrl,
+  saveHomeWrongAnnotations,
+  generateHomeWrongAnnotation,
   type HomeRecentItem,
+  type WrongAnnotationsMap,
 } from "@/services/gradingApi";
+import { WrongAnnotationCard } from "@/components/grading/WrongAnnotationCard";
 import type { GradingJobItem } from "@/services/api";
 import { toast } from "sonner";
 import { useGlobalPrintPrefs } from "@/hooks/useGlobalPrintPrefs";
@@ -103,6 +107,113 @@ export function GradingEntrySection({
     () => parseAiResultBlocks(detail?.result || "", t),
     [detail?.result, t],
   );
+  const [wrongAnnotations, setWrongAnnotations] = useState<WrongAnnotationsMap>(
+    {},
+  );
+  const [wrongAnnoRegenerating, setWrongAnnoRegenerating] = useState<
+    string | null
+  >(null);
+
+  // 打开/刷新详情时同步批注（轻量：保存后直接把返回映射写回 detail）
+  useEffect(() => {
+    setWrongAnnotations(detail?.wrong_annotations ?? {});
+  }, [detail?.id, detail?.wrong_annotations]);
+
+  const persistHomeWrongAnnotations = async (next: WrongAnnotationsMap) => {
+    if (!detail) return;
+    try {
+      const r = await saveHomeWrongAnnotations(detail.id, next);
+      const saved = r.wrong_annotations ?? next;
+      setWrongAnnotations(saved);
+      setDetail((d) => (d ? { ...d, wrong_annotations: saved } : d));
+    } catch (e: any) {
+      toast.error(e?.message || "批注保存失败");
+    }
+  };
+
+  const handleHomeWrongAnnoEdit = (questionKey: string, text: string) => {
+    const prev = wrongAnnotations[questionKey];
+    const next: WrongAnnotationsMap = { ...wrongAnnotations };
+    if (!text) {
+      delete next[questionKey];
+    } else {
+      next[questionKey] =
+        prev?.source === "ai"
+          ? { ...prev, text, edited: true }
+          : { text, source: "manual", edited: true };
+    }
+    setWrongAnnotations(next);
+    void persistHomeWrongAnnotations(next);
+  };
+
+  const handleHomeWrongAnnoRegenerate = async (questionKey: string) => {
+    if (!detail || wrongAnnoRegenerating) return;
+    setWrongAnnoRegenerating(questionKey);
+    try {
+      const r = await generateHomeWrongAnnotation(detail.id, questionKey);
+      if (r.ok) {
+        const saved = r.wrong_annotations ?? wrongAnnotations;
+        setWrongAnnotations(saved);
+        setDetail((d) => (d ? { ...d, wrong_annotations: saved } : d));
+        if (!r.generated || !Object.keys(r.generated).length) {
+          toast.error("生成失败，请稍后重试或手动编写");
+        }
+      }
+    } catch (e: any) {
+      toast.error(e?.message || "批注生成失败");
+    } finally {
+      setWrongAnnoRegenerating(null);
+    }
+  };
+
+  const handleHomeWrongAnnoMarkManual = (questionKey: string) => {
+    const before = wrongAnnotations[questionKey];
+    if (!before) return;
+    const next: WrongAnnotationsMap = {
+      ...wrongAnnotations,
+      [questionKey]: {
+        text: before.text || "",
+        source: "manual",
+        edited: true,
+        ...(before.generated_at ? { generated_at: before.generated_at } : {}),
+      },
+    };
+    setWrongAnnotations(next);
+    void persistHomeWrongAnnotations(next);
+  };
+
+  const handleHomeWrongAnnoDelete = (questionKey: string) => {
+    const { [questionKey]: _removed, ...rest } = wrongAnnotations;
+    setWrongAnnotations(rest);
+    void persistHomeWrongAnnotations(rest);
+  };
+
+  /** 块底部批注卡：有批注，或错/半对/未作答时显示（全对且无批注不显示） */
+  const renderHomeWrongAnnoForBlock = (b: AiResultBlock) => {
+    const qKey = b.key || b.subItems?.find((s) => s.key)?.key || "";
+    if (!qKey) return null;
+    const statuses = (b.subItems || []).map((s) => s.status);
+    const wrongLike =
+      statuses.includes("wrong") || statuses.includes("partial");
+    const blankLike = statuses.includes("blank");
+    const anno = wrongAnnotations[qKey];
+    if (!anno && !wrongLike && !blankLike) return null;
+    return (
+      <div className="mt-2">
+        <WrongAnnotationCard
+          questionKey={qKey}
+          annotation={anno}
+          wrong={wrongLike}
+          regenerating={wrongAnnoRegenerating === qKey}
+          muted={!wrongLike && !blankLike}
+          onEditText={(text) => handleHomeWrongAnnoEdit(qKey, text)}
+          onRegenerate={() => void handleHomeWrongAnnoRegenerate(qKey)}
+          onMarkManual={() => handleHomeWrongAnnoMarkManual(qKey)}
+          onDelete={() => handleHomeWrongAnnoDelete(qKey)}
+        />
+      </div>
+    );
+  };
   const renderAiStatusCounts = (b: AiResultBlock) => {
     if (!b.subItems || b.subItems.length === 0) return null;
 
@@ -558,6 +669,7 @@ export function GradingEntrySection({
                             </p>
                           )}
                         </div>
+                        {renderHomeWrongAnnoForBlock(b)}
                       </div>
                     ))}
                   </div>
