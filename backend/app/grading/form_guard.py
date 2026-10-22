@@ -28,6 +28,10 @@ EMPTY_INK_RATIO = 0.002  # 作答区暗像素占比低于此视为无笔迹
 SUSPICIOUS_INK_RATIO = 0.01  # 作答区暗像素占比高于此视为有笔迹
 _INK_BBOX_PAD = 4  # bbox 外扩像素，防 handwritingArea 贴太紧漏检笔迹
 _RESULT_CODES = {"对": 1, "错": 2, "未作答": 3, "半对": 4}
+# 反向闸阈值同 reference_vlm_grading._BLANK_INK_STU_MAX：真笔迹下限；
+# 空白只有印刷线时实测 0.028–0.073。
+UNANSWERED_INK_MIN = 0.12
+_UNANSWERED_INK_REASON = "作答区有笔迹但机改判未作答，待人工确认"
 
 
 def _norm_result(result: Any) -> str:
@@ -55,7 +59,11 @@ def _answer_bbox(block: dict) -> Optional[list]:
 
 
 def ink_ratio(image: Image.Image, bbox: list) -> float:
-    """作答区暗像素占比：裁剪 → 灰度 → 暗 = 灰度 < 局部背景 - 18（同 _load_dark 思路）。"""
+    """作答区暗像素占比：裁剪 → 灰度 → 暗 = 灰度 < 局部背景 - 18（同 _load_dark 思路）。
+
+    ⚠️ 墨迹占比 >30% 时背景分位会塌进墨里（bg≈墨色）→ 恒返回 0，
+    密集手写会被误判成纯空白——调用方需用 dark_fraction 复核（2026-10-22）。
+    """
     w, h = image.size
     x1 = max(0, int(bbox[0]) - _INK_BBOX_PAD)
     y1 = max(0, int(bbox[1]) - _INK_BBOX_PAD)
@@ -73,6 +81,24 @@ def ink_ratio(image: Image.Image, bbox: list) -> float:
     bg = float(np.percentile(a, 70))
     dark = a < (bg - 18)
     return float(dark.mean())
+
+
+def dark_fraction(image: Image.Image, bbox: list) -> float:
+    """绝对暗像素比（灰度<200）：不依赖背景分位，墨迹再密也量得出。"""
+    w, h = image.size
+    x1 = max(0, int(bbox[0]) - _INK_BBOX_PAD)
+    y1 = max(0, int(bbox[1]) - _INK_BBOX_PAD)
+    x2 = min(w, int(bbox[2]) + _INK_BBOX_PAD)
+    y2 = min(h, int(bbox[3]) + _INK_BBOX_PAD)
+    if x2 <= x1 or y2 <= y1:
+        return 0.0
+    if image.mode != "L":
+        image = image.convert("L")
+    gray = image.crop((x1, y1, x2, y2))
+    a = np.asarray(gray).astype(np.float32)
+    if a.size == 0:
+        return 0.0
+    return float((a < 200.0).mean())
 
 
 def apply_form_guard(image_path: str, blocks: list) -> list:
@@ -102,7 +128,13 @@ def apply_form_guard(image_path: str, blocks: list) -> list:
                 continue
             ratio = ink_ratio(image, bbox)
             result = _norm_result(blk.get("result"))
-            if result in ("对", "错", "半对") and ratio < EMPTY_INK_RATIO:
+            # 双复核：ink_ratio 在墨迹>30% 时塌成 0（背景分位落进墨里），密集
+            # 手写会被误降成未作答 → 绝对暗像素比再说一遍「有墨不降」
+            if (
+                result in ("对", "错", "半对")
+                and ratio < EMPTY_INK_RATIO
+                and dark_fraction(image, bbox) < 0.05
+            ):
                 blk["result"] = "未作答"
                 blk["comment"] = ""
                 blk["partial_ratio"] = None
@@ -142,4 +174,59 @@ def apply_form_guard(image_path: str, blocks: list) -> list:
                         "ink_ratio": round(ratio, 5),
                     }
                 )
+    return changes
+
+
+def apply_unanswered_ink_guard(image_path: str, blocks: list) -> list:
+    """反向闸：判「未作答」但作答区有手写笔迹 → 改「待确认」（不画圈，交老师拍板）。
+
+    空白闸的反向缺口（同 reference_vlm_grading._apply_unanswered_ink_guard 语义）：
+    有字被判没作答 ≠ 学生没写，绝不能画空心圆压到字上。只对有真实作答区框的块
+    生效（baidu_handwriting_bbox 非空——百度笔迹检测确实框出了手写区）；bbox 兜底
+    成 questionArea 的块不适用：题干印刷字全算墨迹，量不准。人工终态/已降级不动。
+    """
+    if not blocks:
+        return []
+    try:
+        image = Image.open(image_path)
+    except Exception:
+        return []
+    if image.mode != "L":
+        image = image.convert("L")
+    changes: list = []
+    with image:
+        for blk in blocks:
+            if not isinstance(blk, dict):
+                continue
+            if _norm_result(blk.get("result")) != "未作答":
+                continue
+            guard = blk.get("form_guard")
+            if isinstance(guard, dict) and guard.get("action") in ("downgraded", "pending_high_ink"):
+                continue
+            box = blk.get("baidu_handwriting_bbox")
+            if not (isinstance(box, (list, tuple)) and len(box) >= 4):
+                continue
+            try:
+                ratio = ink_ratio(image, [float(v) for v in box[:4]])
+            except Exception:
+                continue
+            if ratio < UNANSWERED_INK_MIN:
+                continue
+            blk["result"] = "待确认"
+            blk["comment"] = _UNANSWERED_INK_REASON
+            blk["partial_ratio"] = None
+            blk["baidu_correct_result"] = 5  # 待确认（同 reference_vlm PENDING 码）
+            blk["form_guard"] = {
+                "action": "pending_high_ink",
+                "ink_ratio": round(ratio, 5),
+                "was_result": "未作答",
+            }
+            changes.append(
+                {
+                    "index": blk.get("index"),
+                    "sub_index": blk.get("sub_index"),
+                    "action": "pending_high_ink",
+                    "ink_ratio": round(ratio, 5),
+                }
+            )
     return changes

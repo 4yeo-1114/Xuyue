@@ -255,6 +255,37 @@ def _circle_center_in_bbox(bbox, img_w: int, img_h: int) -> tuple[int, int]:
     return max(0, min(cx, img_w - 1)), max(0, min(cy, img_h - 1))
 
 
+def _circle_clean_spot(source_gray, bbox, glyph_size: int):
+    """未作答圈落点验墨：正中优先，脏了退框内下方；都脏返回 None（宁缺勿串）。
+
+    2026-10-22 汪小燕_1：假未作答的空心圆画到学生手写字上。落点窗口墨迹
+    ≥0.12（真笔迹下限，同 form_guard.UNANSWERED_INK_MIN）视为压字——「有作答
+    不压字」优先于「空白必须标」，圈绝不盖到字上。ink_ratio 在墨迹>30% 时
+    塌成 0（背景分位落进墨里），配 dark_fraction 绝对暗像素比双复核。
+    """
+    from app.grading.form_guard import UNANSWERED_INK_MIN, dark_fraction, ink_ratio
+
+    x1, y1, x2, y2 = (float(v) for v in bbox[:4])
+    radius = max(8, int(glyph_size * 0.30))
+    half = radius + 4
+    candidates = [
+        _circle_center_in_bbox(bbox, 1 << 30, 1 << 30),
+        (int(round((x1 + x2) / 2)), int(round(y1 + (y2 - y1) * 0.85))),
+    ]
+    for cx, cy in candidates:
+        window = [cx - half, cy - half, cx + half, cy + half]
+        try:
+            dirty = (
+                float(ink_ratio(source_gray, window)) >= UNANSWERED_INK_MIN
+                or float(dark_fraction(source_gray, window)) >= 0.25
+            )
+        except Exception:
+            return cx, cy  # 量不出来 fail-open：按原落点画
+        if not dirty:
+            return cx, cy
+    return None
+
+
 def _draw_result_mark(
     draw,
     check_x: int,
@@ -268,6 +299,7 @@ def _draw_result_mark(
     *,
     check_cross_scale: float = 1.0,
     bbox: list | None = None,
+    source_gray=None,
 ) -> None:
     """在作答区旁绘制对错（√/×）；未作答画空心圆 ○；待确认不画任何标记。
 
@@ -275,6 +307,7 @@ def _draw_result_mark(
     待确认是 AI 拿不准（交老师拍板），仍不画，免得被当成已判。
     2026-10-19：空心圆改画在 bbox 正中（答题区内）——沿用 √/× 的右缘落点
     会圈到题干上。bbox 缺失时退回原 check 落点。
+    2026-10-22：传入 source_gray（原卷灰度）时圈落点先验墨，压字宁缺勿串。
     """
     result = str(item.get("result") or "")
     if result == "待确认":
@@ -289,7 +322,13 @@ def _draw_result_mark(
         box = bbox if isinstance(bbox, (list, tuple)) and len(bbox) == 4 else item.get("bbox")
         if isinstance(box, (list, tuple)) and len(box) == 4:
             try:
-                cx, cy = _circle_center_in_bbox(box, 1 << 30, 1 << 30)
+                if source_gray is not None:
+                    spot = _circle_clean_spot(source_gray, box, glyph_size)
+                    if spot is None:
+                        return  # 落点全是墨：宁缺勿串，不画
+                    cx, cy = spot
+                else:
+                    cx, cy = _circle_center_in_bbox(box, 1 << 30, 1 << 30)
             except (TypeError, ValueError):
                 pass
         _draw_vector_circle(draw, cx, cy, glyph_size, fill_color, line_w)
@@ -767,7 +806,7 @@ def _draw_manual_total_score_mark(draw, w: int, h: int, score_total) -> None:
     )
 
 
-def _draw_manual_result_mark(draw, image_width: int, image_height: int, item: dict) -> None:
+def _draw_manual_result_mark(draw, image_width: int, image_height: int, item: dict, *, source_gray=None) -> None:
     """Draw one manual-grading mark using the live UI's size and placement."""
     bbox = item.get("bbox")
     if not bbox or len(bbox) != 4:
@@ -788,7 +827,13 @@ def _draw_manual_result_mark(draw, image_width: int, image_height: int, item: di
     # 未作答画空心圆（2026-10-16：没填答案不能什么都不标）；待确认仍不画（交老师拍板）
     # 2026-10-19：圈画在答题区正中——右缘落点会圈到题干上
     if result == "未作答":
-        cx, cy = _circle_center_in_bbox((x1, y1, x2, y2), image_width, image_height)
+        if source_gray is not None:
+            spot = _circle_clean_spot(source_gray, (x1, y1, x2, y2), int(round(size)))
+            if spot is None:
+                return  # 落点全是墨：宁缺勿串，不画
+            cx, cy = spot
+        else:
+            cx, cy = _circle_center_in_bbox((x1, y1, x2, y2), image_width, image_height)
         _draw_vector_circle(
             draw,
             cx,
@@ -944,6 +989,8 @@ def draw_real_marks_and_save(
     w, h = img.size
     img.save(original_path, quality=95)
     draw = ImageDraw.Draw(img)
+    # 未作答圈落点验墨用原卷灰度（画布已带批改笔迹，不能拿它量墨）
+    source_gray = Image.open(path).convert("L")
     font_size, offsets, margin_x, margin_y = _adaptive_mark_params(w, h)
     mark_font = _mark_font(font_size)
     outline_color, fill_color = "#CC0000", "#FF0000"  # 大红色（政府红头红），更醒目
@@ -953,7 +1000,7 @@ def draw_real_marks_and_save(
         if not item.get("is_question"):
             continue
         if manual_style:
-            _draw_manual_result_mark(draw, w, h, item)
+            _draw_manual_result_mark(draw, w, h, item, source_gray=source_gray)
             continue
         bbox = item.get("bbox")
         if not bbox or len(bbox) != 4:
@@ -974,7 +1021,7 @@ def draw_real_marks_and_save(
         _draw_result_mark(
             draw, check_x, check_y, font_size, item, mark_font,
             outline_color, fill_color, offsets, check_cross_scale=check_cross_scale,
-            bbox=bbox,
+            bbox=bbox, source_gray=source_gray,
         )
     if score_total is not None:
         _draw_manual_total_score_mark(draw, w, h, score_total)
@@ -1009,6 +1056,8 @@ def draw_marks_only_and_save(
     img_ref.close()
     img = Image.new("RGB", (w, h), color=(255, 255, 255))
     draw = ImageDraw.Draw(img)
+    # 未作答圈落点验墨用原卷灰度（本画布是纯白留痕图，量不出纸面墨迹）
+    source_gray = Image.open(path).convert("L")
     font_size, offsets, margin_x, margin_y = _adaptive_mark_params(w, h)
     mark_font = _mark_font(font_size)
     outline_color, fill_color = "#CC0000", "#FF0000"  # 大红色（政府红头红），更醒目
@@ -1018,7 +1067,7 @@ def draw_marks_only_and_save(
         if not item.get("is_question"):
             continue
         if manual_style:
-            _draw_manual_result_mark(draw, w, h, item)
+            _draw_manual_result_mark(draw, w, h, item, source_gray=source_gray)
             continue
         bbox = item.get("bbox")
         if not bbox or len(bbox) != 4:
@@ -1038,7 +1087,7 @@ def draw_marks_only_and_save(
         _draw_result_mark(
             draw, check_x, check_y, font_size, item, mark_font,
             outline_color, fill_color, offsets, check_cross_scale=check_cross_scale,
-            bbox=bbox,
+            bbox=bbox, source_gray=source_gray,
         )
     if score_total is not None:
         _draw_manual_total_score_mark(draw, w, h, score_total)

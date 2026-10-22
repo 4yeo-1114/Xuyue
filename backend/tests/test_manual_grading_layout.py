@@ -83,7 +83,8 @@ def test_manual_layout_persists_scores_and_scales_boxes(tmp_path, monkeypatch):
     assert [block["max_score"] for block in blocks] == [3.0, 2.0]
 
 
-def test_manual_decisions_enforce_scores_and_completion(monkeypatch):
+def test_manual_decisions_enforce_scores_and_completion(tmp_path, monkeypatch):
+    monkeypatch.setattr(grading_router, "grading_history_dir", lambda: tmp_path / "history")
     persisted: list[dict] = []
     monkeypatch.setattr(
         grading_router,
@@ -109,14 +110,19 @@ def test_manual_decisions_enforce_scores_and_completion(monkeypatch):
         "s4": {"status": "partial", "score": 0.5},
     }
 
-    saved = grading_router._save_manual_slot_decisions(
-        "exam",
-        item["name"],
-        item,
-        result,
-        decisions,
-        generate_marks=False,
-    )
+    saved = None
+    _token = grading_router.set_grading_user_id("u_test_manual")
+    try:
+        saved = grading_router._save_manual_slot_decisions(
+            "exam",
+            item["name"],
+            item,
+            result,
+            decisions,
+            generate_marks=False,
+        )
+    finally:
+        grading_router.reset_grading_user_id(_token)
     parsed = json.loads(saved["result"])
     assert parsed["manual_status"] == "graded"
     assert parsed["score_total"] == 4.5
@@ -131,7 +137,8 @@ def test_manual_decisions_enforce_scores_and_completion(monkeypatch):
     assert persisted
 
 
-def test_manual_decisions_remain_ungraded_until_every_slot_is_done(monkeypatch):
+def test_manual_decisions_remain_ungraded_until_every_slot_is_done(tmp_path, monkeypatch):
+    monkeypatch.setattr(grading_router, "grading_history_dir", lambda: tmp_path / "history")
     monkeypatch.setattr(grading_router, "_persist_grading_success", lambda *_args, **_kwargs: None)
     result = {
         "type": "manual_analyze",
@@ -143,14 +150,19 @@ def test_manual_decisions_remain_ungraded_until_every_slot_is_done(monkeypatch):
     }
     item = {"name": "学生甲_1.jpg", "result": json.dumps(result)}
 
-    saved = grading_router._save_manual_slot_decisions(
-        "exam",
-        item["name"],
-        item,
-        result,
-        {"s1": {"status": "correct"}, "s2": {"status": "ungraded"}},
-        generate_marks=False,
-    )
+    saved = None
+    _token = grading_router.set_grading_user_id("u_test_manual")
+    try:
+        saved = grading_router._save_manual_slot_decisions(
+            "exam",
+            item["name"],
+            item,
+            result,
+            {"s1": {"status": "correct"}, "s2": {"status": "ungraded"}},
+            generate_marks=False,
+        )
+    finally:
+        grading_router.reset_grading_user_id(_token)
     parsed = json.loads(saved["result"])
     assert parsed["manual_status"] == "ungraded"
     assert saved["score_total"] is None
@@ -273,7 +285,8 @@ def test_parse_paper_cut_skips_name_header_but_keeps_questions():
         ]
     }
     blocks = manual_grading.parse_paper_cut_result(raw)
-    assert [block["index"] for block in blocks] == [2]
+    # 题号=印刷题号（题干印「1.」→1），不是百度返回顺序号；姓名栏跳过后不占号
+    assert [block["index"] for block in blocks] == [1]
     assert blocks[0]["text"] == "做功"
     assert all("魏梓熙" not in block["text"] for block in blocks)
 

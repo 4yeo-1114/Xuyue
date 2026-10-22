@@ -12059,24 +12059,47 @@ def api_correction_stats(
 def api_correction_ledger(
     days: int = Query(30, description="回溯天数（created_at 窗口）"),
     include_voided: bool = Query(False, description="true 则包含已作废（re-grade 重跑）行"),
-    limit: int = Query(200, description="返回条数上限（1-500）"),
+    source: Optional[str] = Query(None, description="来源分类精确匹配（human_ai_correct/form_guard/vl_ink/…）"),
+    folder: Optional[str] = Query(None, description="考试文件夹（folder_safe）精确匹配"),
+    change_kind: Optional[str] = Query(None, description="改动类型：result 改判定 / score 改分 / comment 改评语"),
+    q: Optional[str] = Query(None, description="关键词模糊搜：学生卷名/考试名/评语"),
+    page: int = Query(1, description="页码（1 起）"),
+    page_size: Optional[int] = Query(None, description="每页条数（1-200，默认 50）"),
+    limit: Optional[int] = Query(None, description="兼容旧参数：等价 page_size（旧前端只传 limit）"),
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user_id),
 ):
-    """修正/复核记账明细（只读 SELECT）：台账查看页逐行列表。
+    """修正/复核记账明细（只读 SELECT）：台账查看页逐行列表，支持分类/搜索/分页。
 
-    与 /correction-stats 同窗口同过滤；rows 含时间/学生卷/题号/改动前后/来源。
+    成千上万条时按 page+page_size 翻页；total 为过滤后总条数；
+    source_counts/folder_counts 为分类 chip/下拉的计数（各自不含自身维度过滤）。
     """
-    window_days = max(1, days)
-    from app.grading.correction_ledger import correction_ledger_rows
+    window_days = max(1, days) if isinstance(days, int) else 30
+    from app.grading.correction_ledger import correction_ledger_page
 
-    rows = correction_ledger_rows(
-        db, user_id, days=window_days, include_voided=include_voided, limit=limit
+    # isinstance 防御：端点直调测试绕过 FastAPI 时默认值可能是 Query 对象
+    size = page_size if isinstance(page_size, int) else (limit if isinstance(limit, int) else 50)
+    data = correction_ledger_page(
+        db,
+        user_id,
+        days=window_days,
+        include_voided=include_voided if isinstance(include_voided, bool) else False,
+        source=source,
+        folder=folder,
+        change_kind=change_kind,
+        q=q,
+        page=page if isinstance(page, int) else 1,
+        page_size=size,
     )
     return ApiResponse(
         data={
-            "rows": rows,
-            "count": len(rows),
+            "rows": data["rows"],
+            "count": data["total"],  # 兼容旧字段语义升级：过滤后总条数（分页母数）
+            "total": data["total"],
+            "page": data["page"],
+            "page_size": data["page_size"],
+            "source_counts": data["source_counts"],
+            "folder_counts": data["folder_counts"],
             "window_days": window_days,
             "include_voided": include_voided,
         }

@@ -2539,39 +2539,85 @@ export type CorrectionLedgerRow = {
   voided?: boolean;
 };
 
-/** 改分/评语台账明细：GET /grading/correction-ledger */
+/** 台账分类 chip/考试下拉的计数（各自维度不含自身过滤） */
+export type CorrectionLedgerFacets = {
+  source_counts?: Record<string, number>;
+  folder_counts?: Array<{ folder?: string | null; count?: number }>;
+};
+
+/** 改分/评语台账明细：GET /grading/correction-ledger（分类/搜索/分页） */
 export async function fetchCorrectionLedger(opts?: {
   days?: number;
   includeVoided?: boolean;
+  /** 来源分类精确匹配（human_ai_correct/form_guard/vl_ink/…） */
+  source?: string;
+  /** 考试文件夹（folder_safe）精确匹配 */
+  folder?: string;
+  /** 改动类型：result 改判定 / score 改分 / comment 改评语 */
+  changeKind?: string;
+  /** 关键词模糊搜：学生卷名/考试名/评语 */
+  q?: string;
+  page?: number;
+  pageSize?: number;
+  /** 兼容旧调用：等价 pageSize */
   limit?: number;
 }): Promise<{
   rows: CorrectionLedgerRow[];
+  /** 过滤后总条数（分页母数） */
   count: number;
+  total: number;
+  page: number;
+  page_size: number;
+  source_counts: Record<string, number>;
+  folder_counts: Array<{ folder?: string | null; count?: number }>;
   window_days: number;
   include_voided: boolean;
 }> {
   const params = new URLSearchParams();
   if (opts?.days != null) params.set("days", String(opts.days));
   if (opts?.includeVoided) params.set("include_voided", "true");
-  if (opts?.limit != null) params.set("limit", String(opts.limit));
+  if (opts?.source) params.set("source", opts.source);
+  if (opts?.folder) params.set("folder", opts.folder);
+  if (opts?.changeKind) params.set("change_kind", opts.changeKind);
+  if (opts?.q) params.set("q", opts.q);
+  if (opts?.page != null) params.set("page", String(opts.page));
+  const size = opts?.pageSize ?? opts?.limit;
+  if (size != null) params.set("page_size", String(size));
   const qs = params.toString();
   // 端点包 ApiResponse{code,message,data}；按项目惯例在此拆信封（tolerant：裸 JSON 原样回）
   const json = await gradingFetch<{
-    data?: {
-      rows: CorrectionLedgerRow[];
-      count: number;
-      window_days: number;
-      include_voided: boolean;
-    };
+    data?: CorrectionLedgerResponse;
     rows?: CorrectionLedgerRow[];
   }>(`/grading/correction-ledger${qs ? `?${qs}` : ""}`);
-  return (json?.data ?? json) as {
-    rows: CorrectionLedgerRow[];
-    count: number;
-    window_days: number;
-    include_voided: boolean;
+  const raw = (json?.data ?? json) as Partial<CorrectionLedgerResponse> & {
+    rows?: CorrectionLedgerRow[];
+  };
+  const rows = raw.rows || [];
+  const total = raw.total ?? raw.count ?? rows.length;
+  return {
+    rows,
+    count: total,
+    total,
+    page: raw.page ?? 1,
+    page_size: raw.page_size ?? rows.length,
+    source_counts: raw.source_counts || {},
+    folder_counts: raw.folder_counts || [],
+    window_days: raw.window_days ?? 30,
+    include_voided: Boolean(raw.include_voided),
   };
 }
+
+type CorrectionLedgerResponse = {
+  rows: CorrectionLedgerRow[];
+  count: number;
+  total: number;
+  page: number;
+  page_size: number;
+  source_counts: Record<string, number>;
+  folder_counts: Array<{ folder?: string | null; count?: number }>;
+  window_days: number;
+  include_voided: boolean;
+};
 
 /** 改分/评语台账矩阵统计：GET /grading/correction-stats */
 export async function fetchCorrectionStats(opts?: {

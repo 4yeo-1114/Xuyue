@@ -50,6 +50,11 @@ import {
 } from "@/services/api";
 import { TargetedImportExamDialog } from "./targeted-improve/TargetedImportExamDialog";
 import { TargetedTaskList } from "./targeted-improve/TargetedTaskList";
+import {
+  SectionCollapse,
+  PhaseDivider,
+} from "./targeted-improve/SectionCollapse";
+import { WrongQuestionImageStrip } from "./targeted-improve/WrongQuestionImageStrip";
 import { PrivacyNoticeDialog } from "@/components/common/PrivacyNoticeDialog";
 import { AIGeneratedBadge } from "@/components/common/AIGeneratedBadge";
 import { toast } from "sonner";
@@ -338,23 +343,34 @@ function DiagnosisCard({
   report,
   loading,
   studentName,
+  embedded = false,
 }: {
   report?: TargetedReport | null;
   loading: boolean;
   studentName?: string;
+  /** true = 嵌进 SectionCollapse 折叠区（无卡片壳/无标题，避免双头） */
+  embedded?: boolean;
 }) {
   const { t } = useLocale();
   const diagnosis = report?.diagnosis || {};
   const source = report?.source_summary || {};
   return (
-    <Card className="min-w-[320px] flex-1 border-border/70 shadow-sm">
-      <CardHeader className="border-b bg-sky-50/70 pb-3">
-        <CardTitle className="flex items-center gap-2 text-lg">
-          <Stethoscope className="h-5 w-5 text-primary" />
-          {t("targeted.diagnosis.title")}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-5 p-5">
+    <Card
+      className={
+        embedded
+          ? "border-0 bg-transparent shadow-none"
+          : "min-w-[320px] flex-1 border-border/70 shadow-sm"
+      }
+    >
+      {embedded ? null : (
+        <CardHeader className="border-b bg-sky-50/70 pb-3">
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <Stethoscope className="h-5 w-5 text-primary" />
+            {t("targeted.diagnosis.title")}
+          </CardTitle>
+        </CardHeader>
+      )}
+      <CardContent className={cn("space-y-5", embedded ? "p-0" : "p-5")}>
         {loading ? (
           <div className="flex items-center justify-center py-12 text-muted-foreground">
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -447,24 +463,35 @@ function PlanCard({
   report,
   loading,
   studentName,
+  embedded = false,
 }: {
   report?: TargetedReport | null;
   loading: boolean;
   studentName?: string;
+  /** true = 嵌进 SectionCollapse 折叠区（无卡片壳/无标题，避免双头） */
+  embedded?: boolean;
 }) {
   const { t } = useLocale();
   const plan = report?.plan || {};
   const phases = Array.isArray(plan.phases) ? plan.phases : [];
   return (
-    <Card className="min-w-[320px] flex-1 border-border/70 shadow-sm">
-      <CardHeader className="border-b bg-violet-50/70 pb-3">
-        <CardTitle className="flex items-center gap-2 text-lg">
-          <Sparkles className="h-5 w-5 text-primary" />
-          {t("targeted.plan.title")}
-          <AIGeneratedBadge />
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-5 p-5">
+    <Card
+      className={
+        embedded
+          ? "border-0 bg-transparent shadow-none"
+          : "min-w-[320px] flex-1 border-border/70 shadow-sm"
+      }
+    >
+      {embedded ? null : (
+        <CardHeader className="border-b bg-violet-50/70 pb-3">
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <Sparkles className="h-5 w-5 text-primary" />
+            {t("targeted.plan.title")}
+            <AIGeneratedBadge />
+          </CardTitle>
+        </CardHeader>
+      )}
+      <CardContent className={cn("space-y-5", embedded ? "p-0" : "p-5")}>
         {loading ? (
           <div className="flex items-center justify-center py-12 text-muted-foreground">
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1196,6 +1223,9 @@ export function TargetedImprovePage({
   });
   const report = reportData?.report || null;
   const reportExamNames = report?.exam_names || [];
+  // 折叠条摘要用（点开前一行预览：层级/阶段数/目标）
+  const planObj = report?.plan || {};
+  const planPhases = Array.isArray(planObj.phases) ? planObj.phases : [];
 
   // 查询失败静默兜底：toast 提示
   useEffect(() => {
@@ -1347,42 +1377,32 @@ export function TargetedImprovePage({
         </div>
       </div>
 
-      <Card className="border-sky-200 bg-sky-50/70 shadow-sm">
-        <CardHeader className="pb-2">
-          <CardTitle className="flex items-center gap-2 text-base font-semibold text-sky-950">
-            <FileInput className="h-4 w-4 text-sky-700" />
-            {t("targeted.dataBasis")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {reportExamNames.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {reportExamNames.map((name) => (
-                <Badge
-                  key={name}
-                  variant="secondary"
-                  className="border border-sky-200 bg-white/80 px-2.5 py-1 text-sm text-sky-900"
-                >
-                  {name}
-                </Badge>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-sky-800/80">
-              {t("targeted.dataBasisEmpty")}
-            </p>
-          )}
-        </CardContent>
-      </Card>
+      {/* ── 时间轴：脊线 + 6 步骤节点 + 两段阶段分隔 ── */}
+      <div className="relative mt-2">
+        <div
+          className="absolute top-4 bottom-4 w-[2px] -translate-x-1/2 rounded-full bg-gradient-to-b from-sky-300/70 via-primary/25 to-indigo-300/70"
+          style={{ left: 21 }}
+        />
 
-      <Card className="border-border/70 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-base font-semibold">
-            <User className="h-4 w-4 text-primary" />
-            {t("targeted.selector.title")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
+        <PhaseDivider label={t("targeted.phase.diagnose")} />
+
+        {/* ① 选靶向对象（默认展开——主入口；点标题条可收起） */}
+        <SectionCollapse
+          step={1}
+          accent="sky"
+          icon={<User className="h-4 w-4" />}
+          title={t("targeted.selector.title")}
+          defaultOpen
+        summary={
+          selectedStudentName
+            ? t("targeted.section.selectedStudent", {
+                name: selectedStudentName,
+              })
+            : t("targeted.selectStudent")
+        }
+      >
+        <Card className="border-border/70 shadow-sm">
+          <CardContent className="space-y-4">
           <div className="relative">
             <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
             <Input
@@ -1621,43 +1641,133 @@ export function TargetedImprovePage({
             </div>
           </div>
         </CardContent>
-      </Card>
+        </Card>
+      </SectionCollapse>
 
-      <div className="flex flex-wrap gap-4">
-        <DiagnosisCard
-          report={report}
-          loading={reportLoading}
-          studentName={selectedStudentName}
-        />
+      {/* ② 数据根据（折叠：点一下才展开） */}
+      <SectionCollapse
+        step={2}
+        accent="cyan"
+        icon={<FileInput className="h-4 w-4" />}
+        title={t("targeted.dataBasis")}
+        summary={
+          reportExamNames.length > 0
+            ? reportExamNames.join("、")
+            : t("targeted.section.noExam")
+        }
+      >
+        <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4">
+          {reportExamNames.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {reportExamNames.map((name) => (
+                <Badge
+                  key={name}
+                  variant="secondary"
+                  className="border border-sky-200 bg-white/80 px-2.5 py-1 text-sm text-sky-900"
+                >
+                  {name}
+                </Badge>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-sky-800/80">
+              {t("targeted.dataBasisEmpty")}
+            </p>
+          )}
+        </div>
+      </SectionCollapse>
+
+      {/* ③ AI 深度诊断（折叠）：错题图集 + 诊断文本，图先文后 */}
+      <SectionCollapse
+        step={3}
+        accent="violet"
+        icon={<Stethoscope className="h-4 w-4" />}
+        title={t("targeted.diagnosis.title")}
+        summary={
+          report
+            ? `${report?.diagnosis?.level || t("targeted.diagnosis.followUp")} · ${t("targeted.diagnosis.wrongCount", { count: report?.source_summary?.wrong_question_count ?? 0 })}`
+            : t("targeted.section.noReport")
+        }
+      >
+        <div className="space-y-4">
+          {report && selectedStudentName ? (
+            <WrongQuestionImageStrip
+              classId={selectedClass}
+              studentName={selectedStudentName}
+              subject={subject}
+            />
+          ) : null}
+          <DiagnosisCard
+            report={report}
+            loading={reportLoading}
+            studentName={selectedStudentName}
+            embedded
+          />
+        </div>
+      </SectionCollapse>
+
+      <PhaseDivider label={t("targeted.phase.improve")} />
+
+      {/* ④ AI 提升方案（折叠） */}
+      <SectionCollapse
+        step={4}
+        accent="amber"
+        icon={<Sparkles className="h-4 w-4" />}
+        title={t("targeted.plan.title")}
+        rightExtra={<AIGeneratedBadge />}
+        summary={
+          report
+            ? planObj.goal ||
+              t("targeted.section.phaseCount", { count: planPhases.length })
+            : t("targeted.section.noReport")
+        }
+      >
         <PlanCard
           report={report}
           loading={reportLoading}
           studentName={selectedStudentName}
+          embedded
         />
-      </div>
+      </SectionCollapse>
 
-      {/* 客户功能 #15：未掌握知识点 → 个性化学习任务清单（勾完成 / 进度跟踪） */}
-      <TargetedTaskList
-        classId={selectedClass}
-        subject={subject}
-        students={students}
-        selectedStudentName={selectedStudentName}
-        reportId={report?.id}
-      />
-
-      <div className="flex flex-wrap gap-4">
-        <ContentRecommendationList
+      {/* ⑤ 学习任务清单（折叠）：客户功能 #15，勾完成 / 进度跟踪 */}
+      <SectionCollapse
+        step={5}
+        accent="emerald"
+        icon={<Check className="h-4 w-4" />}
+        title={t("targeted.section.tasks")}
+      >
+        <TargetedTaskList
           classId={selectedClass}
           subject={subject}
-          studentId={selectedStudent?.id || ""}
-          hasReport={Boolean(report)}
+          students={students}
+          selectedStudentName={selectedStudentName}
+          reportId={report?.id}
         />
-        <ReEvaluateButton
-          classId={selectedClass}
-          subject={subject}
-          studentId={selectedStudent?.id || ""}
-          disabled={!selectedStudent}
-        />
+      </SectionCollapse>
+
+      {/* ⑥ 内容推荐与复测（折叠） */}
+      <SectionCollapse
+        step={6}
+        accent="indigo"
+        icon={<BookOpen className="h-4 w-4" />}
+        title={t("targeted.section.recommend")}
+      >
+        <div className="flex flex-wrap gap-4">
+          <ContentRecommendationList
+            classId={selectedClass}
+            subject={subject}
+            studentId={selectedStudent?.id || ""}
+            hasReport={Boolean(report)}
+          />
+          <ReEvaluateButton
+            classId={selectedClass}
+            subject={subject}
+            studentId={selectedStudent?.id || ""}
+            disabled={!selectedStudent}
+          />
+        </div>
+      </SectionCollapse>
       </div>
 
       <TargetedImportExamDialog

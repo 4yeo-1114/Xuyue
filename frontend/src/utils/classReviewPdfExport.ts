@@ -1,12 +1,13 @@
 /**
  * 课堂讲评 PDF 导出：讲评方案/二次巩固文字内容 + 可选「错题原卷」附录。
  * 在离屏 DOM 中单独排版后生成 PDF，与页面上的图片预览区域无关。
- * 错题原卷图 URL 与网页预览同源（report.pre_class.all_wrong_images + gradingImageUrl）。
+ * 错题原卷图 URL 来自 report.pre_class.all_wrong_images。导出前把图源换成同源相对路径
+ * （exportImageSrc）：跨域直链 html2canvas 会整张跳过不画（导出全是空白框），同源图无此限制；
+ * 同时连续内容块攒批截图（captureBlocksToCanvases），避免上百张错题卡逐块截图把导出拖到几分钟。
  */
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import type { ClassReviewReport } from "@/services/api";
-import { gradingImageUrl } from "@/services/gradingApi";
 import { readGlobalPrintPrefs } from "@/lib/globalPrintPrefs";
 
 const BOOK_FONT =
@@ -32,6 +33,25 @@ const BLOCK_GAP_MM = 4;
 const PDF_MARGIN_X = 18;
 const PDF_MARGIN_TOP = 22;
 const PDF_MARGIN_BOTTOM = 18;
+
+/**
+ * 导出截图用图源：把本服务 API 的绝对地址剥成同源相对路径（/api/v1/...），html2canvas 才肯画。
+ * 页面在 :6889、API 在 :6888 时，绝对直链属跨域，会被整张跳过（空白框）；
+ * 相对路径在开发环境走 Vite 代理、生产本来就同源。data:/blob:/相对路径/外部链接原样返回。
+ */
+export function exportImageSrc(path: string | undefined | null): string {
+  const raw = String(path ?? "").trim();
+  if (!raw) return "";
+  if (!/^https?:\/\//i.test(raw)) return raw;
+  try {
+    const url = new URL(raw);
+    return url.pathname.startsWith("/api/")
+      ? `${url.pathname}${url.search}${url.hash}`
+      : raw;
+  } catch {
+    return raw;
+  }
+}
 
 // ── 课堂讲评导出偏好（localStorage，惯例对齐 globalPrintPrefs / printWrongNotes）──
 export const CLASS_REVIEW_EXPORT_PREFS_KEY = "class_review_export_prefs_v1";
@@ -361,11 +381,11 @@ export function hasConsolidationContent(report: ClassReviewReport | null | undef
   return false;
 }
 
-/** 错题原卷单题卡片：原卷图 + 作答区域图（URL 取法与网页预览一致） */
+/** 错题原卷单题卡片：原卷图 + 作答区域图（URL 经 exportImageSrc 转同源，html2canvas 才画） */
 function renderWrongPaperCard(img: WrongPaperImage) {
   const title = escapeHtml(img.title || "错题");
-  const questionUrl = img.image_url ? gradingImageUrl(img.image_url) : "";
-  const answerUrl = img.answer_url ? gradingImageUrl(img.answer_url) : "";
+  const questionUrl = img.image_url ? exportImageSrc(img.image_url) : "";
+  const answerUrl = img.answer_url ? exportImageSrc(img.answer_url) : "";
   const questionHtml = questionUrl
     ? `<img class="wrong-img" src="${escapeHtml(questionUrl)}" alt="${title}" />`
     : `<p class="wrong-empty">暂无图片</p>`;
@@ -419,8 +439,13 @@ function renderWrongPaperSection(images: unknown) {
   return parts.join("");
 }
 
-/** 等离屏 DOM 内图片加载完成再截图，避免 html2canvas 拍到空白图框 */
+/** 等离屏 DOM 内图片加载完成再截图，避免 html2canvas 拍到空白图框；字体就绪再量高度，防文字排版漂移 */
 async function waitForImages(root: HTMLElement) {
+  try {
+    await document.fonts.ready;
+  } catch {
+    // 个别浏览器无 fonts API，忽略
+  }
   const imgs = Array.from(root.querySelectorAll("img"));
   await Promise.all(
     imgs.map(
@@ -575,13 +600,95 @@ function appendTallCanvasToPdf(
   }
 }
 
-async function captureBlockCanvas(block: HTMLElement) {
-  return html2canvas(block, {
-    scale: CANVAS_SCALE,
-    useCORS: false,
-    logging: false,
-    backgroundColor: "#ffffff",
-  });
+/** 攒批截图：单次 html2canvas 最多覆盖的 CSS 高度（约 8~10 张错题卡），把调用次数压一个量级 */
+const CAPTURE_BATCH_MAX_PX = 2800;
+
+/**
+ * 切点吸附：在 y 附近找最近的一整行空白像素。html2canvas 克隆排版与实测有细小漂移，
+ * 硬按块边界切会把「建议讲评时长」这类贴边文字行拦腰切成两块（各带半个字）；
+ * 吸附到空白行后两边文字都完整。找不到空白行（如错题卡相邻的描边）就按原位切。
+ */
+function snapCutToBlankRow(canvas: HTMLCanvasElement, y: number, search = 40): number {
+  const h = canvas.height;
+  const target = Math.max(1, Math.min(h - 1, Math.round(y)));
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return target;
+  const top = Math.max(1, target - search);
+  const bottom = Math.min(h - 1, target + search);
+  const win = ctx.getImageData(0, top, canvas.width, bottom - top + 1).data;
+  const w = canvas.width;
+  const blankAt = (row: number) => {
+    const base = (row - top) * w * 4;
+    for (let i = 0; i < w * 4; i += 4) {
+      if (win[base + i] < 245 || win[base + i + 1] < 245 || win[base + i + 2] < 245) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (blankAt(target)) return target;
+  for (let d = 1; d <= search; d++) {
+    if (target - d >= top && blankAt(target - d)) return target - d;
+    if (target + d <= bottom && blankAt(target + d)) return target + d;
+  }
+  return target;
+}
+
+/**
+ * 连续内容块攒批截图：每批对 sheet 裁一条横带一次成图，再按块切出与逐块截图等价的画布。
+ * 逐块调用 html2canvas 时每次都要克隆整棵 DOM 并把全部图片重解一遍，上百张错题卡会拖到几分钟。
+ * 截完的块顺手移出离屏 DOM，越往后克隆越小；克隆树只留导出根（页面本体的大图预览不进克隆）。
+ * 切点用 snapCutToBlankRow 吸附空白行，宁可少切一截留白，也不把文字行切成两半。
+ */
+async function captureBlocksCanvases(
+  sheet: HTMLElement,
+  blocks: HTMLElement[],
+  exportRoot: HTMLElement,
+): Promise<HTMLCanvasElement[]> {
+  const out: HTMLCanvasElement[] = [];
+  const queue = [...blocks];
+  while (queue.length) {
+    const batch: HTMLElement[] = [];
+    let batchH = 0;
+    while (queue.length) {
+      const h = queue[0].getBoundingClientRect().height;
+      if (batch.length && batchH + h > CAPTURE_BATCH_MAX_PX) break;
+      batchH += h;
+      batch.push(queue.shift()!);
+    }
+    const sheetRect = sheet.getBoundingClientRect();
+    const rects = batch.map((el) => el.getBoundingClientRect());
+    const canvas = await html2canvas(sheet, {
+      scale: CANVAS_SCALE,
+      useCORS: false,
+      logging: false,
+      backgroundColor: "#ffffff",
+      x: rects[0].left - sheetRect.left,
+      y: rects[0].top - sheetRect.top,
+      width: rects[0].width,
+      height: rects[rects.length - 1].bottom - rects[0].top,
+      ignoreElements: (el) => el.parentElement === document.body && el !== exportRoot,
+    });
+    const cuts: number[] = [0];
+    for (let i = 1; i < rects.length; i++) {
+      const y = Math.round((rects[i].top - rects[0].top) * CANVAS_SCALE);
+      cuts.push(Math.max(cuts[i - 1], snapCutToBlankRow(canvas, y)));
+    }
+    cuts.push(canvas.height);
+    for (let i = 0; i < rects.length; i++) {
+      const y0 = cuts[i];
+      const y1 = Math.max(y0 + 1, cuts[i + 1]);
+      const slice = document.createElement("canvas");
+      slice.width = canvas.width;
+      slice.height = y1 - y0;
+      slice
+        .getContext("2d")
+        ?.drawImage(canvas, 0, y0, canvas.width, slice.height, 0, 0, canvas.width, slice.height);
+      out.push(slice);
+    }
+    for (const el of batch) el.remove();
+  }
+  return out;
 }
 
 /**
@@ -593,14 +700,14 @@ async function renderElementToPdf(element: HTMLElement, filename: string, docTit
   const sheet = element.querySelector<HTMLElement>("[data-export-sheet]") || element;
   const blocks = Array.from(sheet.querySelectorAll<HTMLElement>("[data-export-block]"));
 
-  // 错题原卷附录带 <img>，先等图加载再逐块截图
+  // 错题原卷附录带 <img>，先等图加载再攒批截图
   await waitForImages(sheet);
+  const canvases = await captureBlocksCanvases(sheet, blocks, element);
 
   let y = 0;
   let hasPage = false;
 
-  for (const block of blocks) {
-    const canvas = await captureBlockCanvas(block);
+  for (const canvas of canvases) {
     const imgWidth = layout.contentWidth;
     const blockHeightMm = (canvas.height * imgWidth) / canvas.width;
     const imgData = canvas.toDataURL("image/jpeg", JPEG_QUALITY);

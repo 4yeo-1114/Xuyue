@@ -6,8 +6,7 @@
  */
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
-import { gradingImageUrl } from "@/services/gradingApi";
-import { parseWrongPaperSortKey } from "@/utils/classReviewPdfExport";
+import { exportImageSrc, parseWrongPaperSortKey } from "@/utils/classReviewPdfExport";
 import { readGlobalPrintPrefs } from "@/lib/globalPrintPrefs";
 
 const BOOK_FONT =
@@ -41,7 +40,7 @@ export type WrongSheetItem = {
   /** 展示题号：real_number / display_title / question_key */
   title: string;
   questionText?: string;
-  /** 原题裁图 URL（相对路径，渲染时经 gradingImageUrl 转绝对） */
+  /** 原题裁图 URL（相对路径，渲染时经 exportImageSrc 转同源——跨域直链 html2canvas 会整张跳过） */
   imageUrl?: string;
   /** 作答区裁图 URL */
   answerImageUrl?: string;
@@ -435,7 +434,7 @@ function renderQuestionBlock(item: WrongSheetItem, index: number) {
   const stem = item.questionText
     ? `<p class="wq-q-stem">${escapeHtml(item.questionText)}</p>`
     : "";
-  const imgUrl = item.imageUrl ? gradingImageUrl(item.imageUrl) : "";
+  const imgUrl = item.imageUrl ? exportImageSrc(item.imageUrl) : "";
   const imageHtml = imgUrl
     ? `<img class="wq-q-image" src="${escapeHtml(imgUrl)}" alt="${title}" />`
     : `<p class="wq-q-empty">暂无原题图，请结合题干作答</p>`;

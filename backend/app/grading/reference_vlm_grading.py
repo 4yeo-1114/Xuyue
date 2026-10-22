@@ -3617,6 +3617,12 @@ def _build_slot_qwen_prompt(
         "- OBJECTIVE STRICT: the student's selected option set, true/false value, fixed answer, matching, "
         "or ordering must be exactly the same as the highlighted standard answer. Any different, missing, "
         "or extra option/value is wrong. Do not accept alternative answers, synonyms, partial correctness, "
+        "MULTI-SELECT EXCEPTION (standard answer has 2+ option letters like AD): if the student's letter set "
+        "equals the standard set, mark 对 (correctResult=1); if ANY picked letter is outside the standard set, "
+        "mark 错 (correctResult=2) with NO credit even when some correct letters were also picked; if picks are "
+        "a non-empty subset of the standard set (only missing, no wrong picks), mark 半对 (correctResult=4) "
+        "with partial_ratio = (correct letters picked) / (total standard letters). "
+        "Missing-only is NOT wrong for multi-select. "
         "or a plausible answer that differs from the standard answer. Compare answer identity rather than handwriting style.\n"
     )
     subjective_rule = (
@@ -3921,6 +3927,12 @@ def _build_batch_qwen_prompt(
         "- OBJECTIVE STRICT: every student's selected option, true/false value, fixed answer, matching, "
         "or ordering must be exactly the same as the corresponding labeled slot standard answer. Any different, "
         "missing, or extra option/value is wrong.\n"
+        "MULTI-SELECT EXCEPTION (standard answer has 2+ option letters like AD): if the student's letter set "
+        "equals the standard set, mark 对 (correctResult=1); if ANY picked letter is outside the standard set, "
+        "mark 错 (correctResult=2) with NO credit even when some correct letters were also picked; if picks are "
+        "a non-empty subset of the standard set (only missing, no wrong picks), mark 半对 (correctResult=4) "
+        "with partial_ratio = (correct letters picked) / (total standard letters). "
+        "Missing-only is NOT wrong for multi-select.\n"
     )
     subjective_rule = (
         "- SUBJECTIVE SEMANTIC: understand the standard answer's conclusion, key ideas, reasoning, and "

@@ -180,24 +180,21 @@ def _records_incomplete(folder_names: list[str]) -> Optional[tuple[int, int]]:
 
     批改完成标记（grading_history 的 completed）会先于错题记录（ct/records）异步落盘。
     自动推送若在记录尚未写全时导入，会出现「有效学生 N 但每题仅 M 人作答、准确率异常」。
+    只有 AI 批改（智能/参照答案批改，default 历史）会产错题记录；自主阅卷系
+    （manual/manual_reference/manual_paper 共用 __manual.json）和作文批改（__essay.json）
+    根本不产记录——这两类不计入分母，否则导入永远卡在「批改记录仍在生成中」。
     返回 (completed, recorded) 表示 recorded < completed（记录未全），None 表示已完整。
     """
-    from app.grading.router import _read_essay_history, _read_grading_history
+    from app.grading.router import _read_grading_history
 
     completed_total = 0
     recorded_total = 0
     for safe in folder_names:
         names: set[str] = set()
-        for engine in ("default", "manual"):
-            data = _read_grading_history(safe, engine)
-            comp = data.get("completed")
-            if isinstance(comp, dict):
-                for filename in comp.keys():
-                    names.add(_paper_stem(str(filename)))
-        essay = _read_essay_history(safe)
-        ecomp = essay.get("completed")
-        if isinstance(ecomp, dict):
-            for filename in ecomp.keys():
+        data = _read_grading_history(safe, "default")
+        comp = data.get("completed")
+        if isinstance(comp, dict):
+            for filename in comp.keys():
                 names.add(_paper_stem(str(filename)))
         completed_total += len(names)
 

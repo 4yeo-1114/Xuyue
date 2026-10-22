@@ -427,33 +427,42 @@ def test_non_baidu_blocks_untouched(tmp_path):
 def test_question_item_id_parsed_for_veto(tmp_path):
     # QUESTION 整题项必须解析出 answer_location（回归：_as_id 会收成 Q 致 location 恒空）。
     # 无证据 + elsewhere → 过保护阀进终审（若解析失败会 1 次调用就停）。
-    blocks = [_blk(sub_index=1, result="未作答", bbox=[20, 20, 80, 80])]
+    # 2026-10-22 起单槽题整体跳过（选择题括号误剔回归），改用双槽题走判定链。
+    blocks = [
+        _blk(sub_index=1, result="未作答", bbox=[20, 20, 80, 80]),
+        _blk(sub_index=2, result="未作答", bbox=[100, 20, 160, 80]),
+    ]
     client = FakeClient(
         contents=[
-            _combined([("A", "stem", False)], location="elsewhere"),
+            _combined([("A", "stem", False), ("B", "stem", False)], location="elsewhere"),
             _visual("stem", 0.95),
-            _repair([("A", "stem", False)]),
+            _visual("stem", 0.95),
+            _repair([("A", "stem", False), ("B", "stem", False)]),
         ]
     )
     changes = filter_stem_slots(_image(tmp_path), blocks, client=client)
-    assert [c["action"] for c in changes] == ["removed_stem"]
+    assert [c["action"] for c in changes] == ["removed_stem", "removed_stem"]
     assert len(blocks) == 0
-    assert client.calls == 3
+    assert client.calls == 4
 
 
 def test_mixed_location_allows_cleanup(tmp_path):
-    # mixed 与 elsewhere 同待遇：无证据也过保护阀
-    blocks = [_blk(sub_index=1, result="未作答", bbox=[20, 20, 80, 80])]
+    # mixed 与 elsewhere 同待遇：无证据也过保护阀（双槽题，单槽已整体跳过）
+    blocks = [
+        _blk(sub_index=1, result="未作答", bbox=[20, 20, 80, 80]),
+        _blk(sub_index=2, result="未作答", bbox=[100, 20, 160, 80]),
+    ]
     client = FakeClient(
         contents=[
-            _combined([("A", "stem", False)], location="mixed"),
+            _combined([("A", "stem", False), ("B", "stem", False)], location="mixed"),
             _visual("stem", 0.95),
-            _repair([("A", "stem", False)]),
+            _visual("stem", 0.95),
+            _repair([("A", "stem", False), ("B", "stem", False)]),
         ]
     )
     changes = filter_stem_slots(_image(tmp_path), blocks, client=client)
-    assert [c["action"] for c in changes] == ["removed_stem"]
-    assert client.calls == 3
+    assert [c["action"] for c in changes] == ["removed_stem", "removed_stem"]
+    assert client.calls == 4
 
 
 def test_questions_gated_separately(tmp_path):
@@ -462,6 +471,7 @@ def test_questions_gated_separately(tmp_path):
         _blk(index=3, sub_index=1, bbox=[20, 20, 80, 80], baidu_original=6),
         _blk(index=3, sub_index=2, bbox=[100, 20, 160, 80], baidu_original=6),
         _blk(index=2, sub_index=1, bbox=[200, 200, 260, 260], baidu_original=5),
+        _blk(index=2, sub_index=2, bbox=[300, 200, 360, 260], baidu_original=5),
     ]
     client = FakeClient(
         contents=[
@@ -469,12 +479,14 @@ def test_questions_gated_separately(tmp_path):
             _visual("stem", 0.95),
             _visual("stem", 0.95),
             _repair([("A", "stem", False), ("B", "stem", False)]),  # 题1 闸b终审
-            _combined([("A", "answer", False)], location="on_items"),  # 题2 → 阀拦
+            _combined(
+                [("A", "answer", False), ("B", "answer", False)], location="on_items"
+            ),  # 题2 → 阀拦
         ]
     )
     changes = filter_stem_slots(_image(tmp_path), blocks, client=client)
     assert [c["action"] for c in changes] == ["removed_stem", "removed_stem"]
-    assert len(blocks) == 1 and blocks[0]["index"] == 2
+    assert len(blocks) == 2 and all(b["index"] == 2 for b in blocks)
     assert client.calls == 5
 
 
@@ -663,3 +675,23 @@ def test_clipped_crop_boxes_pad_and_clip():
         [[100, 100, 168, 168], [150, 150, 300, 300]]
     )[0]
     assert left == 80 and top == 80 and right == 168 and bottom == 168
+
+
+def test_single_slot_question_never_removed(tmp_path):
+    # 2026-10-22 测试14「选择题没批改」回归：Q1/Q2 作答括号是题内唯一作答区，
+    # 小裁剪一对印刷括号被三层判成 stem → 唯一块被剔 → 整题从报告/留痕消失。
+    # 单槽题一律不动、不问 VL（假块是成片的，单槽无从成片）。
+    blocks = [
+        _blk(index=1, sub_index=1, result="未作答", bbox=[1088, 635, 1144, 684], baidu_original=2),
+    ]
+    client = FakeClient(
+        contents=[
+            _combined([("A", "stem", False)], location="elsewhere"),
+            _visual("stem", 0.95),
+            _repair([("A", "stem", False)]),
+        ]
+    )
+    changes = filter_stem_slots(_image(tmp_path), blocks, client=client)
+    assert changes == []
+    assert len(blocks) == 1
+    assert client.calls == 0  # 单槽题直接跳过，不发 VL

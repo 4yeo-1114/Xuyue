@@ -38,7 +38,12 @@ bbox 就收住（防邻块串扰：Q3 卡片留边 20px 会把下方填空手写
     （2026-10-12 Q2 回归：组合调用对「该圈没圈」的圈选目标会闪变 stem，题内有
     证据时直接剔把真作答区清了——纯印刷观感的块到底是要圈的目标还是分类素材，
     只有题目语义分得出，必须带上下文二审）。
-  整题会被清空时全部保留（fail-safe）。任何缺报/VL/解析失败 fail-open 不动块。
+  单槽题保护（2026-10-22 测试14）：题内只有一个作答区时一律不动块、不问 VL——
+    选择题作答括号的小裁剪就是一对印刷括号，三层判定都会把它读成「题干素材」，
+    剔掉唯一块=整题从报告/留痕消失（用户看到「选择题没批改」）。假块是成片的
+    （比例护栏原话），单槽无从成片；多槽题逻辑不变。
+  整题会被清空时全部保留（fail-safe，仅已判块走此闸；纯未作答假卡组整组剔是常态）。
+    任何缺报/VL/解析失败 fail-open 不动块。
   剔除后同题剩余 sub_index 连续化。
 范围仅百度切题产物（baidu_is_slot 且带 baidu_original_index）。env：
 SLOT_ROLE_FILTER=0 关闭（默认开）；SLOT_ROLE_MAX_PER_PAPER 每卷候选上限（默认 60）。
@@ -447,6 +452,13 @@ def filter_stem_slots(image_path: str, blocks: list, *, client=None) -> list:
             groups.setdefault(blk.get("baidu_original_index"), []).append(blk)
 
         for _q_key, group in groups.items():
+            # 单槽题一律不动（2026-10-22 测试14「选择题没批改」根因）：选择题作答
+            # 括号常是题内唯一作答区，小裁剪只有一对印刷括号，组合/视觉/终审三层都
+            # 会把它读成「题干素材」→ 唯一块被剔 → 整题从报告/留痕消失。本闸的原理
+            # 是「假块是成片的」（分一分的卡片行），单槽无从成片；误剔只会让整题消失，
+            # 比留一行噪音严重得多 → 直接跳过（顺带省 VL 调用）。
+            if len(group) == 1:
+                continue
             slot_bboxes = [_answer_bbox(b) for b in group]
             # 取图用修剪框：小框被大框重叠时收缩出大框范围（防邻区笔迹/内容污染）
             crop_bboxes = _trim_overlaps(slot_bboxes)

@@ -672,6 +672,11 @@ def _parse_baidu_grade_result(result_json: dict, task_id: str) -> Tuple[str, lis
                             "baidu_correct_result": s_cr,
                             "baidu_question_bbox": q_bbox,
                             "baidu_is_slot": True,
+                            # 百度笔迹检测框：非空=引擎确实看到手写。保留下来给
+                            # ink_evidence 当仲裁证据——VL 说「无笔迹」时不许强降级
+                            # （2026-10-22 汪小燕_1：VL 误报无笔迹把判「对」的两题
+                            # 降成未作答，空心圆画到字上）。
+                            "baidu_handwriting_bbox": _bbox_from_area(area) if area else None,
                         }
                     )
             else:
@@ -688,6 +693,7 @@ def _parse_baidu_grade_result(result_json: dict, task_id: str) -> Tuple[str, lis
                         "baidu_correct_result": q_cr,
                         "baidu_question_bbox": q_bbox,
                         "baidu_is_slot": False,
+                        "baidu_handwriting_bbox": None,
                     }
                 )
 
@@ -698,12 +704,31 @@ def _parse_baidu_grade_result(result_json: dict, task_id: str) -> Tuple[str, lis
     return _summarize_result(result_json, blocks_with_result), blocks_with_result, result_json
 
 
+def _apply_post_parse_guards(parsed: Tuple[str, list, dict], image_path: Optional[str]) -> Tuple[str, list, dict]:
+    """判后反向闸：「未作答」但作答区有手写笔迹 → 「待确认」（不画圈）。
+
+    判分变了则摘要文本按新 blocks 重算，避免文本还写「未作答」。
+    """
+    if not image_path:
+        return parsed
+    try:
+        from app.grading.form_guard import apply_unanswered_ink_guard
+
+        _text, blocks, raw = parsed
+        if apply_unanswered_ink_guard(image_path, blocks):
+            return _summarize_result(raw, blocks), blocks, raw
+    except Exception:
+        return parsed
+    return parsed
+
+
 def _poll_pending_tasks(
     pending: Dict[str, Tuple[str, str]],
     results: Dict[str, Tuple[str, list, dict]],
     errors: Dict[str, Exception],
     stop_event: Optional[threading.Event] = None,
     on_result: Optional[OnBaiduResultCallback] = None,
+    image_by_key: Optional[Dict[str, str]] = None,
 ) -> bool:
     """轮询 pending 中所有 task；pending: uid -> (结果键, task_id)。"""
     progressed = False
@@ -724,6 +749,7 @@ def _poll_pending_tasks(
         try:
             _check_baidu_api_error(data)
             parsed = _parse_baidu_grade_result(data, task_id)
+            parsed = _apply_post_parse_guards(parsed, (image_by_key or {}).get(key))
             results[key] = parsed
             if on_result:
                 on_result(key, parsed, None)
@@ -762,6 +788,7 @@ def baidu_grade_batch(
         return results, errors
 
     result_keys = [k for k, _ in keyed_items]
+    image_by_key = {k: p for k, p in keyed_items}
     if len(result_keys) != len(set(result_keys)):
         dupes = {k for k in result_keys if result_keys.count(k) > 1}
         print(f"警告：批量批改存在重复结果键 {dupes}，可能导致漏批，请检查文件名")
@@ -828,7 +855,8 @@ def baidu_grade_batch(
         )
         if pending and ready_to_poll:
             progressed = _poll_pending_tasks(
-                pending, results, errors, stop_event=stop_event, on_result=on_result
+                pending, results, errors, stop_event=stop_event, on_result=on_result,
+                image_by_key=image_by_key,
             )
             if pending and not progressed:
                 time.sleep(max(0.1, poll_idle_sleep))
@@ -847,7 +875,8 @@ def baidu_grade_batch(
                     time.sleep(wait_left)
             else:
                 progressed = _poll_pending_tasks(
-                    pending, results, errors, stop_event=stop_event, on_result=on_result
+                    pending, results, errors, stop_event=stop_event, on_result=on_result,
+                    image_by_key=image_by_key,
                 )
                 if pending and not progressed:
                     time.sleep(max(0.1, poll_idle_sleep))
@@ -864,7 +893,8 @@ def baidu_grade_single(image_path: str, stop_event: Optional[threading.Event] = 
     """
     task_id = submit_task(image_path, stop_event=stop_event)
     result_json = wait_result(task_id, stop_event=stop_event)
-    return _parse_baidu_grade_result(result_json, task_id)
+    parsed = _parse_baidu_grade_result(result_json, task_id)
+    return _apply_post_parse_guards(parsed, image_path)
 
 
 # 智能模型批改（baidu）勾叉使用更轻的留痕尺寸，避免打印时过粗、遮挡作答区。

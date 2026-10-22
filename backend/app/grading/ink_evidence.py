@@ -13,6 +13,10 @@ form_guard 只治「真空白槽」（ink≈0）；印刷插图槽 ink 恒 0.21�
 - 有笔迹 → 不动。
 
 fail-safe：VL 异常 / JSON 解析空 / 图打不开 → 该批候选一律不动（fail-open）。
+仲裁（2026-10-22 汪小燕_1）：块带 baidu_handwriting_bbox（百度笔迹检测已框出
+手写区）时，VL「无笔迹」不许强降级，只标 suspicious——真笔迹被误报无笔迹、
+对→未作答会把空心圆画到字上。细长条作答区切段拼格（_split_readable_segments），
+否则缩成细线 VL 看不清笔迹必误报。
 ⛔ 不用多图一次请求（多图编号归属不可靠，串号=误降级）——只发单张合成网格图，
 每面板烧录角标编号，>20 候选分片多次调用。ai-correct 人工修正不接此复核。
 
@@ -45,6 +49,11 @@ _PANEL_LONG_SIDE = 400
 _GRID_COLS = 5
 _GRID_ROWS = 4
 _BATCH_SIZE = _GRID_COLS * _GRID_ROWS  # 单张网格图 ≤20 面板
+# 细长条切段：作答区长宽比超过此值时，400px 格里缩成细线 VL 看不清笔迹
+# （2026-10-22 汪小燕_1：1966×141 的手写条缩到 396×43，VL 误报「无笔迹」），
+# 沿长边切段后拼进同一格，段间小重叠防切断笔画。
+_SEG_MAX_ASPECT = 2.5
+_SEG_OVERLAP = 0.08
 # 裁剪留边：学生圈选/连线常画在紧 bbox 外面（插图 bbox 只框印刷图），
 # 留边太小 VL 只看得到印刷插图内部 → 有圈也被判无笔迹。按槽尺寸 30% 自适应，8~40px 封顶。
 _CROP_PAD_MIN = 8
@@ -115,6 +124,31 @@ def _json_array_from_text(text: str) -> list:
     return data if isinstance(data, list) else []
 
 
+def _split_readable_segments(crop: Image.Image) -> list:
+    """细长条切段（长宽比 > _SEG_MAX_ASPECT）：沿长边切 k 段拼格，让 VL 看得清笔迹。"""
+    if crop.width <= 0 or crop.height <= 0:
+        return [crop]
+    aspect = max(crop.width, crop.height) / max(1, min(crop.width, crop.height))
+    if aspect <= _SEG_MAX_ASPECT:
+        return [crop]
+    k = math.ceil(aspect / _SEG_MAX_ASPECT)
+    long_side = crop.width if crop.width >= crop.height else crop.height
+    seg_len = math.ceil(long_side / k)
+    overlap = max(4, int(seg_len * _SEG_OVERLAP))
+    segments: list = []
+    pos = 0
+    while pos < long_side:
+        end = min(long_side, pos + seg_len)
+        if crop.width >= crop.height:
+            segments.append(crop.crop((pos, 0, end, crop.height)))
+        else:
+            segments.append(crop.crop((0, pos, crop.width, end)))
+        if end >= long_side:
+            break
+        pos = end - overlap
+    return segments or [crop]
+
+
 def _compose_labeled_crops(
     image: Image.Image, bboxes: list, *, labels: list | None = None, pad: int | None = None
 ) -> Optional[Image.Image]:
@@ -150,21 +184,33 @@ def _compose_labeled_crops(
         cell = Image.new("RGB", (_PANEL_LONG_SIDE, _PANEL_LONG_SIDE), "white")
         if x2 > x1 and y2 > y1:
             crop = image.crop((x1, y1, x2, y2))
-            scale = _PANEL_LONG_SIDE / max(crop.width, crop.height)
-            crop = crop.resize(
-                (
-                    max(1, int(crop.width * scale)),
-                    max(1, int(crop.height * scale)),
-                ),
-                getattr(Image, "LANCZOS", Image.BILINEAR),
-            )
-            cell.paste(
-                crop,
-                (
-                    (_PANEL_LONG_SIDE - crop.width) // 2,
-                    (_PANEL_LONG_SIDE - crop.height) // 2,
-                ),
-            )
+            segments = _split_readable_segments(crop)
+            # 横条切段竖着叠、竖条切段横着排；同一编号整格共用（角标只烧一次）。
+            # 多段时顶部留 34px 白带给角标，防编号框盖住第一段笔迹。
+            top_band = 34 if len(segments) > 1 else 0
+            if crop.width >= crop.height:
+                cols, rows = 1, len(segments)
+            else:
+                cols, rows = len(segments), 1
+            sub_w = _PANEL_LONG_SIDE // cols
+            sub_h = (_PANEL_LONG_SIDE - top_band) // rows
+            resample = getattr(Image, "LANCZOS", Image.BILINEAR)
+            for i, seg in enumerate(segments):
+                scale = min(sub_w / max(1, seg.width), sub_h / max(1, seg.height))
+                seg = seg.resize(
+                    (
+                        max(1, int(seg.width * scale)),
+                        max(1, int(seg.height * scale)),
+                    ),
+                    resample,
+                )
+                cell.paste(
+                    seg,
+                    (
+                        (i % cols) * sub_w + (sub_w - seg.width) // 2,
+                        top_band + (i // cols) * sub_h + (sub_h - seg.height) // 2,
+                    ),
+                )
         panels.append(cell)
     if not panels:
         return None
@@ -309,7 +355,26 @@ def verify_handwriting_with_vl(
                     "was_result": was_result,
                     "confirmed": True,
                 }
-                if confidence > GRAY_MAX:
+                if confidence > GRAY_MAX and blk.get("baidu_handwriting_bbox"):
+                    # 仲裁：百度笔迹检测已框出手写区（handwritingArea 非空），
+                    # VL「无笔迹」只当看走眼，绝不能强降级——2026-10-22 汪小燕_1
+                    # 两题真笔迹被误报无笔迹、对→未作答，空心圆画到字上。只标记。
+                    blk["ink_evidence"] = {
+                        "action": "flagged",
+                        "suspicious": True,
+                        "reason": "引擎已检测到笔迹，VL 判无",
+                        **trace,
+                    }
+                    changes.append(
+                        {
+                            "index": blk.get("index"),
+                            "sub_index": blk.get("sub_index"),
+                            "action": "flagged",
+                            "reason": "引擎已检测到笔迹，VL 判无",
+                            **trace,
+                        }
+                    )
+                elif confidence > GRAY_MAX:
                     # 强降级字段集与 form_guard 完全一致
                     blk["result"] = "未作答"
                     blk["comment"] = ""

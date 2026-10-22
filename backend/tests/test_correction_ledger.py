@@ -15,6 +15,7 @@ from app.grading import correction_ledger as cl
 from app.grading.correction_ledger import (
     _diff_ai_correct_blocks,
     _score_key_to_index_pair,
+    correction_ledger_page,
     correction_ledger_rows,
     correction_stats,
     diff_note_rows,
@@ -430,6 +431,98 @@ def test_correction_ledger_rows_detail_and_filters(db_env):
         session.close()
 
 
+def test_correction_ledger_rows_classify_search_paginate(db_env):
+    """分类（source/folder/change_kind）+ 关键词搜索 + offset 分页。"""
+    _insert(
+        db_env,
+        index="1",
+        source="human_ai_correct",
+        was_result="错",
+        new_result="对",
+        was_score=0,
+        new_score=2,
+        paper_name="张三_1.jpg",
+        folder_safe="期中考试",
+    )
+    _insert(
+        db_env,
+        index="2",
+        source="vl_ink",
+        was_result="对",
+        new_result="对",
+        new_comment="笔迹复核通过",
+        paper_name="李四_1.jpg",
+        folder_safe="期中考试",
+    )
+    _insert(
+        db_env,
+        index="3",
+        source="form_guard",
+        was_result="错",
+        new_result="未作答",
+        paper_name="王五_1.jpg",
+        folder_safe="期末考试",
+    )
+
+    session = sessionmaker(bind=db_env)()
+    try:
+        # 来源分类
+        assert [r["index"] for r in correction_ledger_rows(session, "u1", days=30, source="vl_ink")] == ["2"]
+        # 考试分类
+        assert {r["index"] for r in correction_ledger_rows(session, "u1", days=30, folder="期中考试")} == {"1", "2"}
+        # 改动类型：改判定/改分/改评语（同一行可属多类）
+        assert {r["index"] for r in correction_ledger_rows(session, "u1", days=30, change_kind="result")} == {"1", "3"}
+        assert {r["index"] for r in correction_ledger_rows(session, "u1", days=30, change_kind="score")} == {"1"}
+        assert {r["index"] for r in correction_ledger_rows(session, "u1", days=30, change_kind="comment")} == {"2"}
+        assert correction_ledger_rows(session, "u1", days=30, change_kind="bogus") == []  # 未知类型不回全量
+        # 关键词搜索：学生卷名 / 考试名 / 评语
+        assert [r["index"] for r in correction_ledger_rows(session, "u1", days=30, q="张三")] == ["1"]
+        assert {r["index"] for r in correction_ledger_rows(session, "u1", days=30, q="期中考试")} == {"1", "2"}
+        assert [r["index"] for r in correction_ledger_rows(session, "u1", days=30, q="笔迹复核")] == ["2"]
+        # LIKE 通配符不被当元字符：搜 "张三_1" 只命中字面量
+        assert [r["index"] for r in correction_ledger_rows(session, "u1", days=30, q="张三_1")] == ["1"]
+        # 组合过滤
+        assert (
+            correction_ledger_rows(session, "u1", days=30, source="vl_ink", folder="期末考试") == []
+        )
+        # offset 分页
+        page1 = correction_ledger_rows(session, "u1", days=30, limit=2, offset=0)
+        page2 = correction_ledger_rows(session, "u1", days=30, limit=2, offset=2)
+        assert len(page1) == 2 and len(page2) == 1
+        assert {r["index"] for r in page1}.isdisjoint({r["index"] for r in page2})
+    finally:
+        session.close()
+
+
+def test_correction_ledger_page_total_and_facets(db_env):
+    """correction_ledger_page：total 是过滤后总数，facets 各自不吃自身维度过滤。"""
+    _insert(db_env, index="1", source="human_ai_correct", was_result="错", new_result="对", paper_name="s1.jpg", folder_safe="f1")
+    _insert(db_env, index="2", source="human_ai_correct", was_result="对", new_result="错", paper_name="s2.jpg", folder_safe="f1")
+    _insert(db_env, index="3", source="vl_ink", was_result="对", new_result="未作答", paper_name="s3.jpg", folder_safe="f2")
+
+    session = sessionmaker(bind=db_env)()
+    try:
+        data = correction_ledger_page(session, "u1", days=30, page=1, page_size=2)
+        assert data["total"] == 3
+        assert len(data["rows"]) == 2  # 分页截断
+        assert data["page"] == 1 and data["page_size"] == 2
+        assert data["source_counts"] == {"human_ai_correct": 2, "vl_ink": 1}
+        assert {f["folder"]: f["count"] for f in data["folder_counts"]} == {"f1": 2, "f2": 1}
+
+        # source 过滤时 total 收窄，但 source_counts 仍给全量分类计数（chip 上要看到别的类有多少）
+        scoped = correction_ledger_page(session, "u1", days=30, source="vl_ink")
+        assert scoped["total"] == 1 and len(scoped["rows"]) == 1
+        assert scoped["source_counts"] == {"human_ai_correct": 2, "vl_ink": 1}
+
+        # 翻到第二页
+        p2 = correction_ledger_page(session, "u1", days=30, page=2, page_size=2)
+        assert len(p2["rows"]) == 1 and p2["total"] == 3
+
+        assert correction_ledger_page(session, "u2", days=30)["total"] == 0  # 用户隔离
+    finally:
+        session.close()
+
+
 # ── B4 端点 FakeDb ─────────────────────────────────────────────────────
 
 
@@ -484,11 +577,34 @@ def test_correction_stats_endpoint_empty():
 
 
 class _FakeLedgerDb:
+    """按 query() 实体形状分流：整行 / count 标量 / (列, count) 分面。"""
+
     def __init__(self, rows):
         self._rows = rows
 
-    def query(self, *_entities):
-        return _FakeLedgerChain(self._rows)
+    def query(self, *entities):
+        if len(entities) == 1 and entities[0] is CorrectionLedger:
+            return _FakeLedgerChain(self._rows)
+        if len(entities) == 1:  # func.count(...)
+            return _FakeCountChain(len(self._rows))
+        # (列, func.count)：按列分组计数（source_counts / folder_counts）
+        key = getattr(entities[0], "key", None)
+        counts: dict = {}
+        for r in self._rows:
+            v = getattr(r, key, None)
+            counts[v] = counts.get(v, 0) + 1
+        return _FakeLedgerChain([(v, c) for v, c in counts.items()])
+
+
+class _FakeCountChain:
+    def __init__(self, n):
+        self._n = n
+
+    def filter(self, *_args, **_kwargs):
+        return self
+
+    def scalar(self):
+        return self._n
 
 
 class _FakeLedgerChain:
@@ -499,6 +615,12 @@ class _FakeLedgerChain:
         return self
 
     def order_by(self, *_args, **_kwargs):
+        return self
+
+    def offset(self, *_args, **_kwargs):
+        return self
+
+    def group_by(self, *_args, **_kwargs):
         return self
 
     def limit(self, *_args, **_kwargs):
@@ -538,18 +660,16 @@ def test_correction_ledger_endpoint_shapes():
     ).data
 
     assert data["window_days"] == 7
-    assert data["count"] == 1
+    assert data["total"] == 1 and data["count"] == 1  # count=total 兼容字段
+    assert data["page"] == 1 and data["page_size"] == 50  # limit 兼容成 page_size
     assert data["rows"][0]["paper_name"] == "s1.jpg"
     assert data["rows"][0]["was_result"] == "错" and data["rows"][0]["new_result"] == "对"
     assert data["rows"][0]["source"] == "human_ai_correct"
     assert data["rows"][0]["created_at"].startswith("2026-10-01")
+    assert "source_counts" in data and "folder_counts" in data
 
     empty = api_correction_ledger(
         db=_FakeLedgerDb([]), user_id="u1", days=30, include_voided=False, limit=200
     ).data
-    assert empty == {
-        "rows": [],
-        "count": 0,
-        "window_days": 30,
-        "include_voided": False,
-    }
+    assert empty["rows"] == [] and empty["total"] == 0 and empty["count"] == 0
+    assert empty["window_days"] == 30 and empty["include_voided"] is False

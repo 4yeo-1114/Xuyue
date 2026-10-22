@@ -198,5 +198,75 @@ class MarkAnchorTests(unittest.TestCase):
         self.assertEqual(x, min(420 - 20 + 28, 1675 - 40 - int(48 * 0.4)))
 
 
+class UnansweredCircleInkGuardTests(unittest.TestCase):
+    """未作答圈落点验墨：压字宁缺勿串（2026-10-22 假未作答圈画到手写字上）。"""
+
+    BBOX = [60, 50, 340, 170]
+
+    def _draw(self, source_gray, item=None):
+        image = Image.new("RGB", (400, 200), "white")
+        _draw_result_mark(
+            ImageDraw.Draw(image),
+            200,
+            60,
+            48,
+            item or {"result": "未作答", "bbox": self.BBOX},
+            None,
+            "#CC0000",
+            "#FF0000",
+            [(0, 0)],
+            check_cross_scale=0.2,
+            bbox=self.BBOX,
+            source_gray=source_gray,
+        )
+        return image
+
+    def test_blank_paper_circle_stays_at_center(self):
+        src = Image.new("L", (400, 200), 255)
+        image = self._draw(src)
+        reds = [(px, py) for py in range(200) for px in range(400)
+                if image.getpixel((px, py)) == (255, 0, 0)]
+        self.assertTrue(reds)
+        # 圈心即 bbox 正中 (200, 110)
+        cx = sum(px for px, _ in reds) / len(reds)
+        cy = sum(py for _, py in reds) / len(reds)
+        self.assertAlmostEqual(cx, 200, delta=3)
+        self.assertAlmostEqual(cy, 110, delta=3)
+
+    def test_circle_never_lands_on_ink(self):
+        """正中一团墨（学生笔迹）→ 圈挪到下方干净处，红圈绝不压墨。"""
+        src = Image.new("L", (400, 200), 255)
+        d = ImageDraw.Draw(src)
+        d.rectangle([150, 80, 250, 120], fill=0)
+        image = self._draw(src)
+        reds = [(px, py) for py in range(200) for px in range(400)
+                if image.getpixel((px, py)) == (255, 0, 0)]
+        self.assertTrue(reds)
+        for px, py in reds:
+            self.assertGreater(src.getpixel((px, py)), 200, f"红圈压墨: ({px},{py})")
+
+    def test_circle_skipped_when_no_clean_spot(self):
+        """作答区写满字：找不到干净落点 → 宁缺勿串，一个红像素都不画。"""
+        src = Image.new("L", (400, 200), 255)
+        d = ImageDraw.Draw(src)
+        for y in range(55, 166, 8):
+            d.line([(65, y), (335, y)], fill=0, width=3)
+        image = self._draw(src)
+        self.assertEqual(set(image.getdata()), {(255, 255, 255)})
+
+    def test_manual_style_circle_also_respects_ink(self):
+        src = Image.new("L", (400, 200), 255)
+        d = ImageDraw.Draw(src)
+        for y in range(55, 166, 8):
+            d.line([(65, y), (335, y)], fill=0, width=3)
+        image = Image.new("RGB", (400, 200), "white")
+        _draw_manual_result_mark(
+            ImageDraw.Draw(image), 400, 200,
+            {"result": "未作答", "bbox": self.BBOX},
+            source_gray=src,
+        )
+        self.assertEqual(set(image.getdata()), {(255, 255, 255)})
+
+
 if __name__ == "__main__":
     unittest.main()

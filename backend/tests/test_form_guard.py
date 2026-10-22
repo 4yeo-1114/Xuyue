@@ -8,6 +8,7 @@ from app.grading.form_guard import (
     EMPTY_INK_RATIO,
     SUSPICIOUS_INK_RATIO,
     apply_form_guard,
+    apply_unanswered_ink_guard,
     ink_ratio,
 )
 
@@ -211,6 +212,93 @@ class FormGuardScopeTests(unittest.TestCase):
 
     def test_empty_blocks_is_noop(self):
         self.assertEqual(apply_form_guard("whatever", []), [])
+
+
+class UnansweredInkGuardTests(unittest.TestCase):
+    """反向闸：判「未作答」但作答区有手写笔迹 → 「待确认」（不画圈）。"""
+
+    def _inked(self):
+        img = Image.new("L", (400, 200), 255)
+        d = ImageDraw.Draw(img)
+        for y in range(70, 140, 10):
+            d.line([(60, y), (340, y)], fill=0, width=6)
+        return img
+
+    def test_unanswered_with_handwriting_becomes_pending(self):
+        img_path = _save(self._inked())
+        try:
+            blocks = [{
+                "index": 1, "sub_index": 1, "baidu_is_slot": True,
+                "bbox": [50, 50, 350, 150],
+                "baidu_handwriting_bbox": [50, 50, 350, 150],
+                "result": "未作答", "comment": "", "baidu_correct_result": 3,
+            }]
+            changes = apply_unanswered_ink_guard(img_path, blocks)
+            self.assertEqual(len(changes), 1)
+            self.assertEqual(changes[0]["action"], "pending_high_ink")
+            self.assertEqual(blocks[0]["result"], "待确认")
+            self.assertEqual(blocks[0]["baidu_correct_result"], 5)
+            self.assertIn("笔迹", blocks[0]["comment"])
+        finally:
+            os.unlink(img_path)
+
+    def test_unanswered_blank_stays_unanswered(self):
+        img_path = _save(Image.new("L", (400, 200), 255))
+        try:
+            blocks = [{
+                "index": 1, "sub_index": 1, "baidu_is_slot": True,
+                "bbox": [50, 50, 350, 150],
+                "baidu_handwriting_bbox": [50, 50, 350, 150],
+                "result": "未作答", "comment": "", "baidu_correct_result": 3,
+            }]
+            self.assertEqual(apply_unanswered_ink_guard(img_path, blocks), [])
+            self.assertEqual(blocks[0]["result"], "未作答")
+        finally:
+            os.unlink(img_path)
+
+    def test_unanswered_without_handwriting_bbox_untouched(self):
+        """bbox 兜底成 questionArea 的块不适用：题干印刷字全算墨迹，量不准。"""
+        img_path = _save(self._inked())
+        try:
+            blocks = [{
+                "index": 1, "sub_index": 1, "baidu_is_slot": True,
+                "bbox": [50, 50, 350, 150],
+                "baidu_handwriting_bbox": None,
+                "result": "未作答", "comment": "", "baidu_correct_result": 3,
+            }]
+            self.assertEqual(apply_unanswered_ink_guard(img_path, blocks), [])
+            self.assertEqual(blocks[0]["result"], "未作答")
+        finally:
+            os.unlink(img_path)
+
+    def test_judged_and_downgraded_blocks_untouched(self):
+        img_path = _save(self._inked())
+        try:
+            judged = [{
+                "index": 1, "sub_index": 1, "baidu_is_slot": True,
+                "bbox": [50, 50, 350, 150],
+                "baidu_handwriting_bbox": [50, 50, 350, 150],
+                "result": "对", "comment": "", "baidu_correct_result": 1,
+            }]
+            self.assertEqual(apply_unanswered_ink_guard(img_path, judged), [])
+            self.assertEqual(judged[0]["result"], "对")
+
+            downgraded = [{
+                "index": 2, "sub_index": 1, "baidu_is_slot": True,
+                "bbox": [50, 50, 350, 150],
+                "baidu_handwriting_bbox": [50, 50, 350, 150],
+                "result": "未作答", "comment": "", "baidu_correct_result": 3,
+                "form_guard": {"action": "downgraded", "was_result": "错"},
+            }]
+            self.assertEqual(apply_unanswered_ink_guard(img_path, downgraded), [])
+            self.assertEqual(downgraded[0]["result"], "未作答")
+        finally:
+            os.unlink(img_path)
+
+    def test_missing_image_is_noop(self):
+        blocks = [{"index": 1, "sub_index": 1, "result": "未作答", "baidu_handwriting_bbox": [0, 0, 10, 10]}]
+        self.assertEqual(apply_unanswered_ink_guard("Z:\\not\\exist.png", blocks), [])
+        self.assertEqual(blocks[0]["result"], "未作答")
 
 
 if __name__ == "__main__":

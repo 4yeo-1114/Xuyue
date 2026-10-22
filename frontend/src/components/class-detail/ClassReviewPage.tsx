@@ -82,6 +82,7 @@ import {
   writeClassReviewExportPrefs,
   type ClassReviewPdfKind,
 } from "@/utils/classReviewPdfExport";
+import { exportClassReviewWord } from "@/utils/classReviewWordExport";
 import {
   WRONG_SHEET_EMPTY_SELECTION,
   assembleWrongSheetItems,
@@ -894,6 +895,10 @@ export function ClassReviewPage({
       return true;
     }
   });
+  /** 导出 Word（.doc，真文本可编辑）的加载态 */
+  const [exportingWord, setExportingWord] = useState<ClassReviewPdfKind | null>(
+    null,
+  );
 
   // ── 错题巩固卷：挑题多选 → 生成 PDF → 下发打印 ──
   /** 已勾选的 question_key 集合 */
@@ -1048,6 +1053,35 @@ export function ClassReviewPage({
     }
   };
 
+  const handleExportWord = async (kind: ClassReviewPdfKind) => {
+    if (!report || exportingWord || exportingKind) return;
+    if (kind === "review_plan" && !reviewPlanExportable) return;
+    if (kind === "consolidation" && !consolidationExportable) return;
+    setExportingWord(kind);
+    try {
+      // 错题图直链是 10 分钟短时票；导出前重取报告换新票，与 PDF 同口径
+      let reportForExport = report;
+      if (kind === "review_plan" && includeWrongPaper) {
+        const fresh = await refetch();
+        if (fresh.data?.report) reportForExport = fresh.data.report;
+      }
+      await exportClassReviewWord(kind, reportForExport, subject, {
+        includeWrongPaper,
+      });
+      toast.success(
+        kind === "review_plan"
+          ? t("classReview.export.reviewPlanWordSuccess")
+          : t("classReview.export.consolidationWordSuccess"),
+      );
+    } catch (err: any) {
+      toast.error(t("classReview.export.wordFailed"), {
+        description: err?.message || t("classReview.retry"),
+      });
+    } finally {
+      setExportingWord(null);
+    }
+  };
+
   const downloadPpt = (blob: Blob, baseName: string) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1186,6 +1220,37 @@ export function ClassReviewPage({
               <DropdownMenuItem
                 disabled={!consolidationExportable || !!exportingKind}
                 onClick={() => handleExportPdf("consolidation")}
+              >
+                {t("classReview.consolidation")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                disabled={!report || !!exportingWord || !!exportingKind}
+              >
+                {exportingWord ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <FileText className="h-4 w-4" />
+                )}
+                {t("classReview.exportWord")}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-40">
+              <DropdownMenuItem
+                disabled={!reviewPlanExportable || !!exportingWord}
+                onClick={() => handleExportWord("review_plan")}
+              >
+                {t("classReview.reviewPlan")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!consolidationExportable || !!exportingWord}
+                onClick={() => handleExportWord("consolidation")}
               >
                 {t("classReview.consolidation")}
               </DropdownMenuItem>

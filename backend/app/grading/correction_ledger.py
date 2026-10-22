@@ -21,7 +21,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from app.database import SessionLocal
 from app.grading.form_guard import _norm_result
@@ -478,17 +478,30 @@ def correction_stats(db, user_id: str, days: int = 30, include_voided: bool = Fa
     return matrix
 
 
-def correction_ledger_rows(
-    db, user_id: str, days: int = 30, include_voided: bool = False, limit: int = 200
-) -> list[dict]:
-    """修正/复核记账明细（只读 SELECT）：供台账查看页逐行列出。
+def _like_pattern(term: str) -> str:
+    """LIKE 模式：用户关键词转义 % _ \\ 后包 %…%（防通配符注入/误匹配）。"""
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
-    字段与 CorrectionLedger 列一一对应（时间/学生卷/题号/改动前后/来源）；
-    默认排除 voided，按 created_at 倒序，limit 防撑爆前端表格。
+
+def _ledger_conds(
+    user_id: str,
+    days: int,
+    include_voided: bool,
+    source: Optional[str] = None,
+    folder: Optional[str] = None,
+    change_kind: Optional[str] = None,
+    q: Optional[str] = None,
+) -> list:
+    """台账过滤条件（rows/total/facets 三处同口径复用）。
+
+    - source：来源分类精确匹配（human_ai_correct/form_guard/vl_ink/…）；
+    - folder：考试文件夹（folder_safe）精确匹配；
+    - change_kind：改动类型 result=改判定 / score=改分 / comment=改评语，
+      同一行可同时属于多类（判定+分数一起改是一行）；
+    - q：关键词模糊搜学生卷名/考试名/评语（学生名嵌在 paper_name 里）。
     """
     uid = str(user_id or "").strip()
-    if not uid:
-        return []
     since = datetime.now(timezone.utc) - timedelta(days=max(1, days))
     conds = [
         CorrectionLedger.user_id == uid,
@@ -496,39 +509,181 @@ def correction_ledger_rows(
     ]
     if not include_voided:
         conds.append(CorrectionLedger.voided.is_(False))
+    # isinstance 防御：端点直调测试绕过 FastAPI 时默认值可能是 Query 对象
+    src = source.strip() if isinstance(source, str) else ""
+    if src:
+        conds.append(CorrectionLedger.source == src)
+    fold = folder.strip() if isinstance(folder, str) else ""
+    if fold:
+        conds.append(CorrectionLedger.folder_safe == fold)
+    kind = change_kind.strip() if isinstance(change_kind, str) else ""
+    if kind == "result":
+        conds.append(
+            func.coalesce(CorrectionLedger.was_result, "") != func.coalesce(CorrectionLedger.new_result, "")
+        )
+    elif kind == "score":
+        conds.append(
+            func.coalesce(CorrectionLedger.was_score, -999999.0)
+            != func.coalesce(CorrectionLedger.new_score, -999999.0)
+        )
+    elif kind == "comment":
+        conds.append(
+            func.coalesce(CorrectionLedger.was_comment, "") != func.coalesce(CorrectionLedger.new_comment, "")
+        )
+    elif kind:
+        # 未知改动类型：宁可空列表也不误回全量
+        from sqlalchemy import false as _false
+
+        conds.append(_false())
+    term = q.strip() if isinstance(q, str) else ""
+    if term:
+        pat = _like_pattern(term)
+        conds.append(
+            or_(
+                CorrectionLedger.paper_name.ilike(pat, escape="\\"),
+                CorrectionLedger.folder_safe.ilike(pat, escape="\\"),
+                CorrectionLedger.was_comment.ilike(pat, escape="\\"),
+                CorrectionLedger.new_comment.ilike(pat, escape="\\"),
+            )
+        )
+    return conds
+
+
+def _ledger_row_dict(r) -> dict:
+    created = getattr(r, "created_at", None)
+    return {
+        "id": getattr(r, "id", None),
+        "created_at": created.isoformat() if created else None,
+        "paper_name": getattr(r, "paper_name", None),
+        "folder_safe": getattr(r, "folder_safe", None),
+        "engine": getattr(r, "engine", None),
+        "index": getattr(r, "index", None),
+        "sub_index": getattr(r, "sub_index", None),
+        "source": getattr(r, "source", None),
+        "was_result": getattr(r, "was_result", None),
+        "new_result": getattr(r, "new_result", None),
+        "was_comment": getattr(r, "was_comment", None),
+        "new_comment": getattr(r, "new_comment", None),
+        "was_score": getattr(r, "was_score", None),
+        "new_score": getattr(r, "new_score", None),
+        "subject_family": getattr(r, "subject_family", None),
+        "voided": bool(getattr(r, "voided", False)),
+    }
+
+
+def correction_ledger_rows(
+    db,
+    user_id: str,
+    days: int = 30,
+    include_voided: bool = False,
+    limit: int = 200,
+    offset: int = 0,
+    source: Optional[str] = None,
+    folder: Optional[str] = None,
+    change_kind: Optional[str] = None,
+    q: Optional[str] = None,
+) -> list[dict]:
+    """修正/复核记账明细（只读 SELECT）：供台账查看页逐行列出。
+
+    字段与 CorrectionLedger 列一一对应（时间/学生卷/题号/改动前后/来源）；
+    默认排除 voided，按 created_at 倒序（id 兜底稳定分页），limit+offset 分页。
+    """
+    uid = str(user_id or "").strip()
+    if not uid:
+        return []
+    conds = _ledger_conds(uid, days, include_voided, source=source, folder=folder, change_kind=change_kind, q=q)
     try:
         cap = max(1, min(int(limit or 200), 500))
     except (TypeError, ValueError):
         cap = 200
+    try:
+        off = max(0, int(offset or 0))
+    except (TypeError, ValueError):
+        off = 0
     rows = (
         db.query(CorrectionLedger)
         .filter(*conds)
-        .order_by(CorrectionLedger.created_at.desc())
+        .order_by(CorrectionLedger.created_at.desc(), CorrectionLedger.id.desc())
+        .offset(off)
         .limit(cap)
         .all()
     )
-    out: list[dict] = []
-    for r in rows or []:
-        created = getattr(r, "created_at", None)
-        created_iso = created.isoformat() if created else None
-        out.append(
-            {
-                "id": getattr(r, "id", None),
-                "created_at": created_iso,
-                "paper_name": getattr(r, "paper_name", None),
-                "folder_safe": getattr(r, "folder_safe", None),
-                "engine": getattr(r, "engine", None),
-                "index": getattr(r, "index", None),
-                "sub_index": getattr(r, "sub_index", None),
-                "source": getattr(r, "source", None),
-                "was_result": getattr(r, "was_result", None),
-                "new_result": getattr(r, "new_result", None),
-                "was_comment": getattr(r, "was_comment", None),
-                "new_comment": getattr(r, "new_comment", None),
-                "was_score": getattr(r, "was_score", None),
-                "new_score": getattr(r, "new_score", None),
-                "subject_family": getattr(r, "subject_family", None),
-                "voided": bool(getattr(r, "voided", False)),
-            }
+    return [_ledger_row_dict(r) for r in rows or []]
+
+
+def correction_ledger_page(
+    db,
+    user_id: str,
+    days: int = 30,
+    include_voided: bool = False,
+    source: Optional[str] = None,
+    folder: Optional[str] = None,
+    change_kind: Optional[str] = None,
+    q: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict:
+    """分页明细 + 匹配总数 + 分类计数（台账查看页成千上万条时的口径）。
+
+    - total：当前过滤条件下的总条数（分页母数）；
+    - source_counts：按来源分类计数（**不含 source 自身过滤**，供分类 chip 显示
+      「每类多少条」并可点选切换）；
+    - folder_counts：按考试文件夹计数（**不含 folder 自身过滤**，供考试下拉）。
+    两个 facets 都吃其余过滤（q/change_kind/voided/窗口），chip 数与列表口径一致。
+    """
+    uid = str(user_id or "").strip()
+    if not uid:
+        return {"rows": [], "total": 0, "page": 1, "page_size": 0, "source_counts": {}, "folder_counts": []}
+    try:
+        pg = max(1, int(page or 1))
+    except (TypeError, ValueError):
+        pg = 1
+    try:
+        size = max(1, min(int(page_size or 50), 200))
+    except (TypeError, ValueError):
+        size = 50
+
+    conds = _ledger_conds(uid, days, include_voided, source=source, folder=folder, change_kind=change_kind, q=q)
+    total = int(db.query(func.count(CorrectionLedger.id)).filter(*conds).scalar() or 0)
+    rows = correction_ledger_rows(
+        db,
+        uid,
+        days=days,
+        include_voided=include_voided,
+        limit=size,
+        offset=(pg - 1) * size,
+        source=source,
+        folder=folder,
+        change_kind=change_kind,
+        q=q,
+    )
+
+    # 分类计数：各自维度去掉自身过滤（点 chip 前先看到每类条数）
+    src_conds = _ledger_conds(uid, days, include_voided, folder=folder, change_kind=change_kind, q=q)
+    source_counts: dict[str, int] = {}
+    for src, cnt in (
+        db.query(CorrectionLedger.source, func.count(CorrectionLedger.id)).filter(*src_conds).group_by(CorrectionLedger.source).all()
+    ):
+        source_counts[str(src or "unknown")] = int(cnt or 0)
+
+    fold_conds = _ledger_conds(uid, days, include_voided, source=source, change_kind=change_kind, q=q)
+    folder_counts = [
+        {"folder": str(f or ""), "count": int(c or 0)}
+        for f, c in (
+            db.query(CorrectionLedger.folder_safe, func.count(CorrectionLedger.id))
+            .filter(*fold_conds)
+            .group_by(CorrectionLedger.folder_safe)
+            .order_by(func.count(CorrectionLedger.id).desc())
+            .limit(200)
+            .all()
         )
-    return out
+    ]
+
+    return {
+        "rows": rows,
+        "total": total,
+        "page": pg,
+        "page_size": size,
+        "source_counts": source_counts,
+        "folder_counts": folder_counts,
+    }

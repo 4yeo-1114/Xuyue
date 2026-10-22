@@ -296,6 +296,54 @@ def test_compose_labeled_crops_grid_and_label_boxes():
     assert _compose_labeled_crops(image, []) is None
 
 
+def test_wide_strip_split_readable_segments():
+    """细长条切段：整条缩进 400 格只剩细线（1966×141 → 43px 高），VL 看不清
+    笔迹必误报「无笔迹」；切段后每段保持原高、拼格时短边可读（2026-10-22）。"""
+    from app.grading.ink_evidence import _split_readable_segments
+
+    wide = Image.new("RGB", (1966, 141), "white")
+    segs = _split_readable_segments(wide)
+    assert len(segs) >= 3
+    for s in segs:
+        assert s.height == 141
+    # 近正方形不切
+    assert len(_split_readable_segments(Image.new("RGB", (100, 90), "white"))) == 1
+    # 竖条沿纵向切
+    tall = _split_readable_segments(Image.new("RGB", (120, 2000), "white"))
+    assert len(tall) >= 3 and all(s.width == 120 for s in tall)
+
+
+def test_wide_strip_panel_keeps_label_and_content_bands():
+    """宽条拼格：顶部留角标白带，段叠在下方且每段都有内容像素。"""
+    image = Image.new("RGB", (2200, 400), "white")
+    grid = _compose_labeled_crops(image, [[100, 100, 2066, 241]])
+    assert grid is not None
+    assert grid.size == (400, 400)
+    # 角标区白底黑字，没被第一段盖住
+    region = grid.crop((0, 0, 52, 30))
+    assert min(region.convert("L").getdata()) < 80
+
+
+def test_engine_saw_handwriting_blocks_strong_downgrade(tmp_path, monkeypatch):
+    """仲裁：块带 baidu_handwriting_bbox（百度笔迹检测已框出手写区）时，
+    VL「无笔迹」只标记不降级——2026-10-22 汪小燕_1 两题真笔迹被误报无笔迹、
+    对→未作答，空心圆画到字上。"""
+    monkeypatch.delenv("INK_EVIDENCE_VL", raising=False)
+    blk = _blk(result="对", bbox=[10, 10, 120, 120])
+    blk["baidu_handwriting_bbox"] = [10, 10, 120, 120]
+    client = FakeClient(
+        contents=[
+            '[{"id": 1, "has_handwriting": false, "confidence": 1.0}]',
+            '[{"id": 1, "has_handwriting": false, "confidence": 1.0}]',
+        ]
+    )
+    changes = verify_handwriting_with_vl(_image(tmp_path), [blk], client=client)
+    assert blk["result"] == "对"  # 不降级
+    assert blk["ink_evidence"]["action"] == "flagged"
+    assert changes[0]["action"] == "flagged"
+    assert changes[0]["reason"] == "引擎已检测到笔迹，VL 判无"
+
+
 def test_json_array_parser_tolerates_fences():
     assert _json_array_from_text('```json\n[{"id": 1}]\n```') == [{"id": 1}]
     assert _json_array_from_text("前置 [\"a\"] 后置") == ["a"]
