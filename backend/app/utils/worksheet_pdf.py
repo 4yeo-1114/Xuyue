@@ -16,8 +16,10 @@ Windows 系统字体优先（宋体/黑体），服务器上回退 wqy-zenhei，
 """
 from __future__ import annotations
 
+import base64
 import io
 import os
+import struct
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Iterable, Optional, Sequence
@@ -34,6 +36,7 @@ from reportlab.platypus import (
     BaseDocTemplate,
     Frame,
     FrameBreak,
+    Image as RLImage,
     KeepTogether,
     NextPageTemplate,
     PageTemplate,
@@ -946,6 +949,37 @@ QUESTION_TYPE_LABELS = {
 }
 
 
+def _png_size(data: bytes) -> tuple[int, int]:
+    """PNG 头取宽高（IHDR 紧跟签名），不依赖 PIL。"""
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not png")
+    w, h = struct.unpack(">II", data[16:24])
+    return int(w), int(h)
+
+
+def _figure_flowable(q: dict, column_w: float):
+    """题图（figure_img data URL）→ ReportLab Image；没有/坏图返回 None。"""
+    img_b64 = q.get("figure_img")
+    if not isinstance(img_b64, str) or not img_b64.startswith("data:image"):
+        return None
+    try:
+        raw = base64.b64decode(img_b64.split(",", 1)[1])
+        iw, ih = _png_size(raw)
+        if iw <= 0 or ih <= 0:
+            return None
+        w = float(column_w) * 0.82  # 留白，别顶满栏宽
+        h = w * ih / iw
+        max_h = 8 * cm  # 防极端竖图占满整页
+        if h > max_h:
+            h = max_h
+            w = iw * (h / ih)
+        img = RLImage(io.BytesIO(raw), width=w, height=h)
+        img.hAlign = "CENTER"
+        return img
+    except Exception:  # noqa: BLE001 - 图坏了当没图，不挡整卷
+        return None
+
+
 def _question_flowables(
     idx: int,
     q: dict,
@@ -999,6 +1033,12 @@ def _question_flowables(
             ),
         )
     )
+
+    # 题图（AI 出题 figure 规格渲染出的 figure_img）：贴在题干下方、选项之前
+    fig = _figure_flowable(q, spec.column_w)
+    if fig is not None:
+        blocks.append(fig)
+        blocks.append(Spacer(1, 3))
 
     # 选项（选择题 / 连线题左列 / 排序题乱序项）
     for i, opt in enumerate(options):

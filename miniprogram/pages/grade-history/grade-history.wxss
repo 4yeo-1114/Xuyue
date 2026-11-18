@@ -13,7 +13,7 @@
 
 .grade-item-name {
   font-size: 28rpx;
-  color: #1f2329;
+  color: #4a3f5c;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -22,7 +22,7 @@
 
 .grade-item-meta {
   font-size: 23rpx;
-  color: #9aa0a8;
+  color: #a89bc4;
 }
 
 .grade-item-right {
@@ -36,6 +36,6 @@
 .grade-item-del {
   margin-top: 12rpx;
   font-size: 23rpx;
-  color: #9aa0a8;
+  color: #a89bc4;
   padding: 4rpx 8rpx;
 }

@@ -3,12 +3,14 @@
 - 存储：grading_history item 级 ``wrong_annotations`` 映射（key=题号，与 question_notes 平级）：
   ``{"1": {"text": "错因：……", "source": "ai"|"manual", "edited": bool, "generated_at": "…"}}``
 - 生成：学生/标准答案文本齐全走文本 LLM；缺失（百度路径）按 bbox 裁图走 VL，复用错题库分析。
-- 生成失败静默留空，老师可手写或点重生成；已 edited / manual 的条目重生成不覆盖。
+- 生成失败先重试一次、再裁图走 VL，最后用机器评语/通用话术兜底——错题必有批注（2026-10-27）。
+  已 edited / manual 的条目重生成不覆盖。
 """
 from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -162,17 +164,22 @@ def generate_wrong_annotation_text(
         correct_answer=correct_answer or "（无标准答案）",
         comment=comment or "（无）",
     )
-    try:
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        completion = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            stream=False,
-            extra_body=get_llm_thinking_extra(base_url),
-        )
-        return _strip_wrapping(completion.choices[0].message.content or "")
-    except Exception:
-        return ""
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    # 2026-10-27 保底①：瞬时故障重试一次，减少「有的卷有批注有的没有」
+    for _attempt in (1, 2):
+        try:
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                stream=False,
+                extra_body=get_llm_thinking_extra(base_url),
+            )
+            return _strip_wrapping(completion.choices[0].message.content or "")
+        except Exception:
+            if _attempt >= 2:
+                return ""
+            time.sleep(1.0)
+    return ""
 
 
 def generate_wrong_annotation_from_images(
@@ -234,9 +241,12 @@ def generate_wrong_annotations_for_blocks(
     source_image_path: str = "",
     existing: Optional[dict] = None,
     only_keys: Optional[set] = None,
+    fill_missing_only: bool = False,
 ) -> dict[str, dict]:
     """为一批 blocks 里的错/半对题生成批注；existing 里 edited/manual 的条目不覆盖。
 
+    - ``fill_missing_only=True``：补齐模式，已有非空批注的题跳过（不重烧 LLM）。
+    - LLM/VL 都失败时用机器评语/通用话术兜底——错题必有批注（2026-10-27 用户要求）。
     返回增量映射 ``{题号: annotation}``（只含本次生成成功的）。
     """
     groups = collect_wrong_question_groups(blocks)
@@ -251,6 +261,8 @@ def generate_wrong_annotations_for_blocks(
         prev = existing.get(key)
         if prev and (prev.get("edited") or prev.get("source") == "manual"):
             continue  # 老师改过/手写的不覆盖
+        if fill_missing_only and prev and str(prev.get("text") or "").strip():
+            continue  # 补齐模式：已有批注不重复生成
         text = generate_wrong_annotation_text(
             question_content=group["question_content"],
             student_answer=group["student_answer"],
@@ -273,6 +285,18 @@ def generate_wrong_annotations_for_blocks(
                             "reason": group["comment"],
                         },
                     )
+        if not text:
+            # 保底②：LLM/VL 全失败也不留空——错题必有批注（机器评语或通用话术）
+            base = str(group.get("comment") or "").strip()
+            is_half = group.get("result") == "半对"
+            if not base:
+                base = (
+                    "答案不完整，对照参考答案把缺的部分补上。"
+                    if is_half
+                    else "这道题没做对，对照参考答案再想一想。"
+                )
+            prefix = "半对：" if is_half else "错因："
+            text = base if base.startswith(("错因", "半对")) else prefix + base
         if text:
             generated[key] = {
                 "text": text,

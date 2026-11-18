@@ -105,14 +105,36 @@ class GenerateTests(unittest.TestCase):
         self.assertEqual(set(generated), {"1"})
         self.assertEqual(generated["1"]["text"], "错因：覆盖1")
 
-    def test_generation_failure_leaves_entry_out(self):
-        blocks = [{"index": 1, "result": "错", "student_answer": "A"}]
+    def test_generation_failure_falls_back_not_blank(self):
+        """2026-10-27 保底：LLM/VL 全失败也不留空——错题必有批注（机器评语/通用话术）。"""
+        blocks = [
+            {"index": 1, "result": "错", "student_answer": "A", "comment": "计算错了"},
+            {"index": 2, "result": "半对", "student_answer": "B"},
+        ]
         with patch(
             "app.grading.wrong_annotations.generate_wrong_annotation_text",
             return_value="",
         ):
             generated = generate_wrong_annotations_for_blocks(blocks, existing={})
-        self.assertEqual(generated, {})
+        self.assertEqual(set(generated), {"1", "2"})
+        self.assertEqual(generated["1"]["text"], "错因：计算错了")
+        self.assertTrue(generated["2"]["text"].startswith("半对："))
+        for v in generated.values():
+            self.assertTrue(v["text"].strip())
+
+    def test_fill_missing_only_skips_existing_texts(self):
+        """补齐模式：已有非空批注不重复生成，只补缺的（重试/改判后补齐路径）。"""
+        blocks = [
+            {"index": 1, "result": "错", "student_answer": "A"},
+            {"index": 2, "result": "错", "student_answer": "B"},
+        ]
+        existing = {"1": {"text": "错因：已有", "source": "ai", "edited": False}}
+        with self._patch_text({"A": "错因：不该覆盖", "B": "错因：补的新稿"}):
+            generated = generate_wrong_annotations_for_blocks(
+                blocks, existing=existing, fill_missing_only=True
+            )
+        self.assertEqual(set(generated), {"2"})
+        self.assertEqual(generated["2"]["text"], "错因：补的新稿")
 
 
 if __name__ == "__main__":

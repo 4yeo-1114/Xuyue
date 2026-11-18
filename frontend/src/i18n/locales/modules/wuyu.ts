@@ -32,6 +32,15 @@ export const wuyuZh: TranslationDict = {
   "wuyu.classOverview.tier": "档位",
   "wuyu.classOverview.rank": "排名",
   "wuyu.classOverview.dataStatus": "数据状态",
+  "wuyu.classOverview.clickHint": "点击看大图",
+  "wuyu.classOverview.detailTitle": "五维表现详情",
+  "wuyu.classOverview.chartCaption":
+    "柱高为综合分（校内标准分 0-100），悬停查看明细；数据不足的维度显示为灰色",
+  "wuyu.classOverview.compositeScore": "综合分",
+  "wuyu.classOverview.rawScore": "成长分",
+  "wuyu.classOverview.percentile": "班级百分位",
+  "wuyu.classOverview.activityCount": "活跃次数",
+  "wuyu.classOverview.dataInsufficient": "数据不足",
 
   "wuyu.tab.overview": "画像总览",
   "wuyu.tab.dossier": "综评档案",
@@ -291,6 +300,15 @@ export const wuyuEn: TranslationDict = {
   "wuyu.classOverview.tier": "Tier",
   "wuyu.classOverview.rank": "Rank",
   "wuyu.classOverview.dataStatus": "Data Status",
+  "wuyu.classOverview.clickHint": "Click to enlarge",
+  "wuyu.classOverview.detailTitle": "Five-Domain Detail",
+  "wuyu.classOverview.chartCaption":
+    "Bar height is the composite score (school-normalized, 0-100); hover for details. Dimensions without data are gray.",
+  "wuyu.classOverview.compositeScore": "Composite",
+  "wuyu.classOverview.rawScore": "Growth Pts",
+  "wuyu.classOverview.percentile": "Class Percentile",
+  "wuyu.classOverview.activityCount": "Activities",
+  "wuyu.classOverview.dataInsufficient": "Insufficient data",
 
   "wuyu.tab.overview": "Overview",
   "wuyu.tab.dossier": "Dossier",

@@ -1,0 +1,57 @@
+<view class="page admin-page">
+
+  <view wx:if="{{loading}}" class="empty">正在加载…</view>
+
+  <!-- 无权限 -->
+  <view wx:elif="{{denied}}" class="empty">
+    <text class="empty-emoji">🔒</text>
+    仅管理员可查看账号总览
+    <view class="admin-retry" bindtap="onRetry">重新试试</view>
+  </view>
+
+  <view wx:elif="{{error}}" class="empty">
+    <text class="empty-emoji">😕</text>
+    {{error}}
+    <view class="admin-retry" bindtap="onRetry">重试</view>
+  </view>
+
+  <block wx:else>
+    <!-- 汇总卡片 -->
+    <view class="admin-hero">
+      <view class="admin-hero-title">👥 账号总览</view>
+      <view class="admin-hero-sub">共 {{totalAccounts}} 个账号{{scopeNote ? ' · ' + scopeNote : ''}}</view>
+    </view>
+
+    <view class="admin-stats">
+      <view class="admin-stat">
+        <view class="admin-stat-num num-purple">{{summary.totalGradeLifetime}}</view>
+        <view class="admin-stat-label">累计批改</view>
+      </view>
+      <view class="admin-stat">
+        <view class="admin-stat-num num-mint">{{summary.totalUploadLifetime}}</view>
+        <view class="admin-stat-label">累计上传</view>
+      </view>
+    </view>
+
+    <!-- 按邮箱域名分组的账号文件夹 -->
+    <view class="admin-group" wx:for="{{groups}}" wx:for-item="g" wx:key="name">
+      <view class="admin-group-head">
+        <text class="admin-group-icon">📁</text>
+        <text class="admin-group-name">{{g.name}}</text>
+        <text class="admin-group-count">{{g.count}}</text>
+      </view>
+      <view class="admin-row" wx:for="{{g.rows}}" wx:for-item="row" wx:key="key">
+        <view class="admin-row-main">
+          <view class="admin-row-name">{{row.name}}</view>
+          <view class="admin-row-meta">{{row.email}}{{row.role ? ' · ' + row.role : ''}}</view>
+        </view>
+        <view class="admin-row-side">
+          <view class="admin-row-grade">批改 {{row.gradeLife}}</view>
+        </view>
+      </view>
+    </view>
+
+    <view class="admin-foot">统计口径：近 {{windowDays}} 天窗口，累计数为全生命周期</view>
+  </block>
+
+</view>

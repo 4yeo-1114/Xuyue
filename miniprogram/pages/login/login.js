@@ -1,6 +1,15 @@
 const api = require('../../utils/api')
 const config = require('../../utils/config')
 
+// 全角→半角：手机中文输入法容易把邮箱/密码打成全角（＠１２３），服务端认不出来
+function toHalfWidth(s) {
+  return String(s || '')
+    .replace(/[！-～]/g, function (c) {
+      return String.fromCharCode(c.charCodeAt(0) - 0xfee0)
+    })
+    .replace(/　/g, ' ')
+}
+
 Page({
   data: {
     appName: config.appName,
@@ -24,9 +33,13 @@ Page({
     this.setData({ password: e.detail.value })
   },
 
+  onGoRegister: function () {
+    wx.navigateTo({ url: '/pages/register/register' })
+  },
+
   onSubmit: function () {
-    const email = this.data.email.trim()
-    const password = this.data.password
+    const email = toHalfWidth(this.data.email).trim()
+    const password = toHalfWidth(this.data.password)
 
     if (!email) {
       wx.showToast({ title: '请输入账号', icon: 'none' })

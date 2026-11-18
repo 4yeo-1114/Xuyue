@@ -80,6 +80,7 @@ import {
   listKnowledgeData,
   listExamTemplates,
   SmartExamPaperRecord,
+  ExamHeaderFields,
   ExamTemplate,
   UnitRow,
   KPRow,
@@ -122,6 +123,8 @@ export interface ExamQuestion {
   analysis?: string; // 解析（从题库带入）
   knowledge_point?: string; // 知识点（从题库带入）
   difficulty?: number; // 难度 1-5（从题库带入）
+  figure?: Record<string, unknown> | null; // AI 出题图形规格（figure_render 渲染）
+  figure_img?: string | null; // 配图 data URL（后端按 figure 规格画出，展示/打印直接用）
 }
 
 const EXAM_SUBJECTS = [
@@ -210,6 +213,16 @@ const isExamQuestion = (value: unknown): value is ExamQuestion => {
 
 const toExamQuestions = (value: unknown): ExamQuestion[] =>
   Array.isArray(value) ? value.filter(isExamQuestion) : [];
+
+// 卷头可编辑输入框宽度估算（11.9-2）：全角按 14px、半角按 8px 估，带最小宽。
+// 打印/导出 PDF 走同一 DOM，宽度不准会截字，宁可略宽。
+const estimateHeaderFieldWidth = (text: string): number => {
+  const width = [...text].reduce(
+    (sum, ch) => sum + (ch.charCodeAt(0) > 0x2e80 ? 14 : 8),
+    0,
+  );
+  return Math.max(96, width + 20);
+};
 
 // 判断题目是否为「空占位」：题干/内容/选项/子题均未填写。
 // AI 组卷优先填充这些占位题，而非另起新题。
@@ -543,11 +556,14 @@ export function ExamGenPage({
   const handleSaveExam = async () => {
     try {
       const questionsToSave = normalizeExamQuestions(questions, localSubject);
+      // 卷头可编辑字段（11.9-2）：空对象存 null，回读按默认文案兜底
+      const headerToSave = Object.keys(headerFields).length ? headerFields : null;
       if (activeExamId) {
         const res = await updateExamPaper(activeExamId, {
           title: paperTitle,
           subject: localSubject,
           questions: questionsToSave,
+          header_fields: headerToSave,
         });
         if (!mountedRef.current) return;
         setQuestions(toExamQuestions(res.questions));
@@ -557,6 +573,7 @@ export function ExamGenPage({
           title: paperTitle,
           subject: localSubject,
           questions: toExamQuestions(res.questions),
+          headerFields: { ...headerFields },
         };
         toast.success(t("examGen.toast.updated"));
       } else {
@@ -564,6 +581,7 @@ export function ExamGenPage({
           title: paperTitle,
           subject: localSubject,
           questions: questionsToSave,
+          header_fields: headerToSave,
         });
         if (!mountedRef.current) return;
         setQuestions(toExamQuestions(res.questions));
@@ -574,6 +592,7 @@ export function ExamGenPage({
           title: paperTitle,
           subject: localSubject,
           questions: toExamQuestions(res.questions),
+          headerFields: { ...headerFields },
         };
         toast.success(t("examGen.toast.saved"));
       }
@@ -599,12 +618,13 @@ export function ExamGenPage({
   };
 
   const openEditor = (exam?: SmartExamPaperRecord) => {
-    // 记录进入编辑器时的已保存快照,作为脏数据判定的基准(paperTitle/localSubject/questions)
+    // 记录进入编辑器时的已保存快照,作为脏数据判定的基准(paperTitle/localSubject/questions/headerFields)
     const initialTitle = exam ? exam.title : defaultTitle;
     const initialSubject = exam ? exam.subject : selectedSubject || "语文";
     const initialQuestions = exam
       ? ensureUniqueQuestionIds(toExamQuestions(exam.questions))
       : [];
+    const initialHeader: ExamHeaderFields = exam?.header_fields ?? {};
     if (exam) {
       setActiveExamId(exam.id);
     } else {
@@ -613,10 +633,12 @@ export function ExamGenPage({
     setPaperTitle(initialTitle);
     setLocalSubject(initialSubject);
     setQuestions(initialQuestions);
+    setHeaderFields(initialHeader);
     savedSnapshotRef.current = {
       title: initialTitle,
       subject: initialSubject,
       questions: initialQuestions,
+      headerFields: { ...initialHeader },
     };
     setActiveQuestionId(null);
     setView("editor");
@@ -627,14 +649,17 @@ export function ExamGenPage({
   const [questions, setQuestions] = useState<ExamQuestion[]>([]);
   const [questionBankOpen, setQuestionBankOpen] = useState(false);
   const [activeQuestionId, setActiveQuestionId] = useState<string | null>(null);
+  // 卷头可编辑字段（11.9-2）：只存老师改过的键，缺省键=默认文案
+  const [headerFields, setHeaderFields] = useState<ExamHeaderFields>({});
 
   // ── 脏数据保护:已保存快照 + 未保存变更判定 ─────────────────────────────
-  // 进入编辑器时记录 paperTitle/localSubject/questions 的已保存状态,
+  // 进入编辑器时记录 paperTitle/localSubject/questions/headerFields 的已保存状态,
   // 当前 state 与快照不一致即视为"有未保存变更",用于返回/关闭前的确认提示。
   const savedSnapshotRef = useRef<{
     title: string;
     subject: string;
     questions: ExamQuestion[];
+    headerFields: ExamHeaderFields;
   } | null>(null);
 
   const isDirty = useMemo(() => {
@@ -643,9 +668,10 @@ export function ExamGenPage({
     return (
       snap.title !== paperTitle ||
       snap.subject !== localSubject ||
-      JSON.stringify(snap.questions) !== JSON.stringify(questions)
+      JSON.stringify(snap.questions) !== JSON.stringify(questions) ||
+      JSON.stringify(snap.headerFields ?? {}) !== JSON.stringify(headerFields)
     );
-  }, [paperTitle, localSubject, questions]);
+  }, [paperTitle, localSubject, questions, headerFields]);
 
   // 返回列表主路径保护:有未保存变更时先确认,避免静默丢弃。
   const handleBackToOverview = () => {
@@ -1207,6 +1233,15 @@ export function ExamGenPage({
     (sum, q) => sum + (Number(q.score) || 0),
     0,
   );
+
+  // 卷头可编辑字段（11.9-2）：改过的用老师文本；没改过的走默认文案（总分默认随题目联动）
+  const headerClassText = headerFields.class ?? t("examGen.paperClass");
+  const headerNameText = headerFields.name ?? t("examGen.paperName");
+  const headerNumberText = headerFields.number ?? t("examGen.paperNumber");
+  const headerTotalText =
+    headerFields.totalScore ?? t("examGen.paperTotalScore", { score: totalScore });
+  const setHeaderField = (key: keyof ExamHeaderFields, value: string) =>
+    setHeaderFields((prev) => ({ ...prev, [key]: value }));
 
   /** 预览/打印/PDF 使用规范化后的题目（数学等学科去除 LaTeX） */
   const previewQuestions = useMemo(
@@ -1857,6 +1892,17 @@ export function ExamGenPage({
                     )}
                   </div>
 
+                  {activeQuestion.figure_img && (
+                    <div className="space-y-2">
+                      <Label>题图</Label>
+                      <img
+                        src={activeQuestion.figure_img}
+                        alt="题图"
+                        className="max-w-[320px] w-full h-auto border rounded-md"
+                      />
+                    </div>
+                  )}
+
                   {(activeQuestion.type === "choice" ||
                     activeQuestion.type === "matching" ||
                     activeQuestion.type === "ordering" ||
@@ -1872,41 +1918,50 @@ export function ExamGenPage({
                                 ? t("examGen.clozeOptionsLabel")
                                 : t("examGen.optionsLabel")}
                         </Label>
-                        {activeQuestion.options.map((opt, oIdx) => (
-                          <div key={oIdx} className="flex items-center gap-2">
-                            <span className="font-medium text-sm w-6">
-                              {String.fromCharCode(65 + oIdx)}.
-                            </span>
-                            <Input
-                              value={opt}
-                              onChange={(e) => {
-                                const newOpts = [...activeQuestion.options];
-                                newOpts[oIdx] = e.target.value;
-                                handleUpdateQuestion(activeQuestion.id, {
-                                  options: newOpts,
-                                });
-                              }}
-                              placeholder={t("examGen.optionPlaceholder", {
-                                letter: String.fromCharCode(65 + oIdx),
-                              })}
-                            />
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="text-destructive w-8 h-8 shrink-0"
-                              onClick={() => {
-                                const newOpts = activeQuestion.options.filter(
-                                  (_, i) => i !== oIdx,
-                                );
-                                handleUpdateQuestion(activeQuestion.id, {
-                                  options: newOpts,
-                                });
-                              }}
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        ))}
+                        {/* 选择题选项横着一排排（2 列网格）；匹配/排序/完形仍竖排列表 */}
+                        <div
+                          className={
+                            activeQuestion.type === "choice"
+                              ? "grid grid-cols-2 gap-2"
+                              : "space-y-2"
+                          }
+                        >
+                          {activeQuestion.options.map((opt, oIdx) => (
+                            <div key={oIdx} className="flex items-center gap-2">
+                              <span className="font-medium text-sm w-6">
+                                {String.fromCharCode(65 + oIdx)}.
+                              </span>
+                              <Input
+                                value={opt}
+                                onChange={(e) => {
+                                  const newOpts = [...activeQuestion.options];
+                                  newOpts[oIdx] = e.target.value;
+                                  handleUpdateQuestion(activeQuestion.id, {
+                                    options: newOpts,
+                                  });
+                                }}
+                                placeholder={t("examGen.optionPlaceholder", {
+                                  letter: String.fromCharCode(65 + oIdx),
+                                })}
+                              />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="text-destructive w-8 h-8 shrink-0"
+                                onClick={() => {
+                                  const newOpts = activeQuestion.options.filter(
+                                    (_, i) => i !== oIdx,
+                                  );
+                                  handleUpdateQuestion(activeQuestion.id, {
+                                    options: newOpts,
+                                  });
+                                }}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
                         {activeQuestion.options.length < 8 && (
                           <Button
                             variant="outline"
@@ -2107,12 +2162,21 @@ export function ExamGenPage({
                                 )}
                               </span>
                             )}
+                            {q.figure_img && (
+                              <div className="my-2">
+                                <img
+                                  src={q.figure_img}
+                                  alt="题图"
+                                  className="max-w-[380px] w-full h-auto"
+                                />
+                              </div>
+                            )}
                           </div>
                         </div>
                         {q.type === "choice" &&
                           q.options &&
                           q.options.length > 0 && (
-                            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 pl-6">
+                            <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 pl-6">
                               {q.options.map((opt, oIdx) => (
                                 <div key={oIdx} className="flex gap-2">
                                   <span className="font-medium">
@@ -2217,13 +2281,24 @@ export function ExamGenPage({
                       <h1 className="text-2xl font-bold tracking-wider">
                         {paperTitle || t("examGen.unnamedPaper")}
                       </h1>
+                      {/* 卷头四栏可编辑（11.9-2）：无边框输入框，打印/导出随预览同版 */}
                       <div className="flex items-center justify-center gap-8 text-sm">
-                        <span>{t("examGen.paperClass")}</span>
-                        <span>{t("examGen.paperName")}</span>
-                        <span>{t("examGen.paperNumber")}</span>
-                        <span>
-                          {t("examGen.paperTotalScore", { score: totalScore })}
-                        </span>
+                        {(
+                          [
+                            ["class", headerClassText],
+                            ["name", headerNameText],
+                            ["number", headerNumberText],
+                            ["totalScore", headerTotalText],
+                          ] as [keyof ExamHeaderFields, string][]
+                        ).map(([fieldKey, fieldText]) => (
+                          <input
+                            key={fieldKey}
+                            value={fieldText}
+                            onChange={(e) => setHeaderField(fieldKey, e.target.value)}
+                            style={{ width: estimateHeaderFieldWidth(fieldText) }}
+                            className="bg-transparent border-0 border-b border-dotted border-border/50 focus:border-primary focus:outline-none rounded-none px-1 py-0.5 print:border-border/30"
+                          />
+                        ))}
                       </div>
                     </div>
                   )}
@@ -2337,13 +2412,22 @@ export function ExamGenPage({
                                         </span>
                                       </>
                                     )}
+                                    {q.figure_img && (
+                                      <div className="my-2 break-inside-avoid print:break-inside-avoid">
+                                        <img
+                                          src={q.figure_img}
+                                          alt="题图"
+                                          className="max-w-[380px] w-full h-auto"
+                                        />
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
 
                                 {q.type === "choice" &&
                                   q.options &&
                                   q.options.length > 0 && (
-                                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 pl-6">
+                                    <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 pl-6">
                                       {q.options.map((opt, oIdx) => (
                                         <div key={oIdx} className="flex gap-2">
                                           <span className="font-medium">

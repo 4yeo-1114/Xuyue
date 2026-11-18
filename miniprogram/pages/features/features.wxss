@@ -1,0 +1,94 @@
+/* 全部功能 · 卡通软萌风 */
+
+.features-page {
+  padding-top: 24rpx;
+}
+
+/* ── 顶部横幅 ── */
+.feat-hero {
+  padding: 44rpx 40rpx;
+  background: linear-gradient(135deg, #ff9a8b, #8e7cff);
+  border-radius: 36rpx;
+  margin-bottom: 28rpx;
+  color: #fff;
+  box-shadow: 0 12rpx 28rpx rgba(142, 124, 255, 0.28);
+  animation: pop-in 0.25s ease-out;
+}
+
+.feat-hero-title {
+  font-size: 44rpx;
+  font-weight: 700;
+  letter-spacing: 2rpx;
+}
+
+.feat-hero-sub {
+  margin-top: 12rpx;
+  font-size: 24rpx;
+  opacity: 0.92;
+}
+
+/* ── 次级入口：糖果宫格 ── */
+.menu-group {
+  margin-bottom: 28rpx;
+}
+
+.menu-title {
+  display: inline-block;
+  background: #efeaff;
+  color: #7c6bff;
+  font-size: 22rpx;
+  font-weight: 700;
+  padding: 8rpx 22rpx;
+  border-radius: 999rpx;
+  margin: 4rpx 0 16rpx 8rpx;
+}
+
+.menu-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+}
+
+.menu-tile {
+  width: calc((100% - 48rpx) / 4);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 22rpx 8rpx 18rpx;
+  background: #fff;
+  border-radius: 28rpx;
+  box-shadow: 0 6rpx 18rpx rgba(124, 107, 255, 0.07);
+}
+
+.menu-tile:active {
+  transform: scale(0.92);
+}
+
+.menu-emoji {
+  width: 80rpx;
+  height: 80rpx;
+  line-height: 80rpx;
+  text-align: center;
+  font-size: 42rpx;
+  border-radius: 26rpx;
+  margin-bottom: 12rpx;
+  animation: floaty 3s ease-in-out infinite;
+}
+
+.menu-tile:nth-child(2) .menu-emoji { animation-delay: 0.4s; }
+.menu-tile:nth-child(3) .menu-emoji { animation-delay: 0.8s; }
+.menu-tile:nth-child(4) .menu-emoji { animation-delay: 1.2s; }
+
+.bg-purple { background: #efeaff; }
+.bg-mint   { background: #e2f8ef; }
+.bg-pink   { background: #ffe4ea; }
+.bg-yellow { background: #fff3d9; }
+.bg-blue   { background: #e4ecff; }
+
+.menu-label {
+  font-size: 22rpx;
+  color: #4a3f5c;
+  font-weight: 500;
+  text-align: center;
+}

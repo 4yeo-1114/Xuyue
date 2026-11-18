@@ -12,7 +12,9 @@ from PIL import Image, ImageDraw
 from app.grading import reference_vlm_grading
 from app.grading.router import _reference_standard_document
 from app.grading.reference_vlm_grading import (
+    CORRECT,
     PENDING,
+    WRONG,
     VlmGradingTask,
     VlmQuestion,
     VlmQuestionBatchTask,
@@ -354,7 +356,9 @@ def test_answer_location_uses_all_handwriting_boxes_and_marks_lower_right():
             (x, y)
             for y in range(marked.height)
             for x in range(marked.width)
-            if marked.getpixel((x, y))[0] > 170
+            # 20261109：左上角还有总分红字，断言只看题旁留痕区
+            if y >= 90
+            and marked.getpixel((x, y))[0] > 170
             and marked.getpixel((x, y))[1] < 130
             and marked.getpixel((x, y))[2] < 130
         ]
@@ -503,7 +507,9 @@ def test_draw_reference_vlm_marks_falls_back_to_question_lower_right():
             (x, y)
             for y in range(marked.height)
             for x in range(marked.width)
-            if marked.getpixel((x, y))[0] > 170
+            # 20261109：左上角还有总分红字，断言只看题旁留痕区
+            if y >= 250
+            and marked.getpixel((x, y))[0] > 170
             and marked.getpixel((x, y))[1] < 130
             and marked.getpixel((x, y))[2] < 130
         ]
@@ -918,7 +924,110 @@ def test_projected_template_prefers_matching_direct_handwriting_slot():
     assert tasks[0].has_handwriting_location is True
 
 
+def test_offtarget_matched_ink_cannot_replace_split_box():
+    # 20261109 用户令「严格按照切分的框」：同题号宽通道（≤0.35）会把订正注音
+    # 等框外墨迹配对进槽，但红框必须保持标准答题区投影框，且框外墨迹只当没写。
+    root = Path(tempfile.mkdtemp(prefix="reference_vlm_strict_box_"))
+    image_path = root / "paper.jpg"
+    Image.new("RGB", (1200, 800), "white").save(image_path)
+
+    standard_questions = [
+        _make_question(
+            question_id=1,
+            display_index=1,
+            answer_bboxes=[[600, 200, 700, 250]],
+            question_bbox=[100, 100, 900, 400],
+            printed_no="1",
+        )
+    ]
+    # 学生卷只有一条框外墨迹（订正注音：答题区上方的拼音框），题号同为 1
+    student_questions = [
+        _make_question(
+            question_id=1,
+            display_index=1,
+            answer_bboxes=[[700, 150, 800, 200]],
+            question_bbox=[200, 150, 1000, 450],
+            printed_no="1",
+        )
+    ]
+    template = build_reference_vlm_slot_template(
+        {
+            "__standard__": {
+                "questions": standard_questions,
+                "image_size": (1200, 800),
+            }
+        }
+    )
+
+    tasks = _build_grading_tasks(
+        standard_questions,
+        student_questions,
+        (1200, 800),
+        (1200, 800),
+        slot_template=template,
+    )
+
+    assert len(tasks) == 1
+    # 红框 = 标准答题区投影框 [700,250,800,300]，不是配对上的注音框
+    assert tasks[0].student_answer_bbox == [700, 250, 800, 300]
+    # 注音框在投影框外：只当没写，不标作答
+    assert tasks[0].has_handwriting_location is False
+    assert tasks[0].anchor_source == "standard_answer_projection"
+
+
+def test_recovered_ink_flags_answered_but_cannot_expand_split_box():
+    # 配对被框外墨迹占走后，框内/骑缝墨迹走恢复通道补「有作答」标记，
+    # 但红框仍保持投影框，绝不 _bbox_union 胀出答题区。
+    root = Path(tempfile.mkdtemp(prefix="reference_vlm_recover_no_expand_"))
+    image_path = root / "paper.jpg"
+    Image.new("RGB", (1200, 800), "white").save(image_path)
+
+    standard_questions = [
+        _make_question(
+            question_id=1,
+            display_index=1,
+            answer_bboxes=[[600, 200, 700, 250]],
+            question_bbox=[100, 100, 900, 400],
+            printed_no="1",
+        )
+    ]
+    # A=框外注音框（同号通道抢先配对）、B=骑缝真笔迹（投影框右上角外溢）
+    student_questions = [
+        _make_question(
+            question_id=1,
+            display_index=1,
+            answer_bboxes=[[700, 150, 800, 200], [720, 240, 860, 290]],
+            question_bbox=[200, 150, 1000, 450],
+            printed_no="1",
+        )
+    ]
+    template = build_reference_vlm_slot_template(
+        {
+            "__standard__": {
+                "questions": standard_questions,
+                "image_size": (1200, 800),
+            }
+        }
+    )
+
+    tasks = _build_grading_tasks(
+        standard_questions,
+        student_questions,
+        (1200, 800),
+        (1200, 800),
+        slot_template=template,
+    )
+
+    assert len(tasks) == 1
+    # 恢复的骑缝墨迹只补作答标记，红框不并入 B 的 860 外沿
+    assert tasks[0].student_answer_bbox == [700, 250, 800, 300]
+    assert tasks[0].has_handwriting_location is True
+    assert tasks[0].anchor_source == "baidu_direct"
+
+
 def test_template_merges_nested_baidu_boxes_without_duplicate_tasks():
+    # 20261109 严格按切分的框：同槽多块笔迹碎片不生重复任务，但红框保持
+    # 标准答题区投影框，碎片框不并入红框（并框会把红框胀出答题区）。
     root = Path(tempfile.mkdtemp(prefix="reference_vlm_nested_direct_"))
     image_path = root / "paper.jpg"
     Image.new("RGB", (1000, 800), "white").save(image_path)
@@ -974,7 +1083,8 @@ def test_template_merges_nested_baidu_boxes_without_duplicate_tasks():
 
     assert len(tasks) == 1
     assert tasks[0].standard_answer_bbox == [200, 150, 800, 300]
-    assert tasks[0].student_answer_bbox == [520, 180, 710, 280]
+    # 红框 = 投影框，不是两块笔迹碎片的并集 [520,180,710,280]
+    assert tasks[0].student_answer_bbox == [200, 150, 800, 300]
     assert tasks[0].anchor_source == "baidu_direct"
     assert tasks[0].has_handwriting_location is True
     assert tasks[0].template_slot_id == template[0].slot_id
@@ -983,6 +1093,7 @@ def test_template_merges_nested_baidu_boxes_without_duplicate_tasks():
 def test_draft_box_near_projected_slot_never_enters_red_box():
     # 草稿大框擦着答题区一个角就并进红框 = 草稿泄漏。
     # 判定必须按「墨迹有多少比例落在答题区内」，不是「重叠/小框」。
+    # 20261109 严格按切分的框：红框=投影框本身，真笔迹框也只标作答不顶红框。
     root = Path(tempfile.mkdtemp(prefix="reference_vlm_draft_merge_"))
     image_path = root / "paper.jpg"
     Image.new("RGB", (1000, 800), "white").save(image_path)
@@ -1034,7 +1145,8 @@ def test_draft_box_near_projected_slot_never_enters_red_box():
     )
 
     assert len(tasks) == 1
-    assert tasks[0].student_answer_bbox == [410, 205, 480, 245]
+    # 红框 = 投影框 [400,200,500,250]；真笔迹框只标作答，草稿框彻底出局
+    assert tasks[0].student_answer_bbox == [400, 200, 500, 250]
     assert tasks[0].anchor_source == "baidu_direct"
 
 
@@ -1749,6 +1861,21 @@ def test_build_blocks_non_slot_has_no_student_answer_identity():
     assert blocks[0]["correct_answer"] is None
 
 
+def test_ungraded_fragment_questions_produce_no_fake_rows():
+    # 20261109 严格按照切分的框：没框没任务、也从没判过的切题碎片题，
+    # 不再合成默认「错」假行（曾产出 2×2 飘边框+空讲解刷屏）。
+    stu = _make_question(
+        question_id=3,
+        display_index=3,
+        question_words="切题碎片",
+        answer_bboxes=[[10, 10, 50, 50]],
+    )
+    assert _build_blocks([stu]) == []
+    text = _summarize_result_text([stu])
+    assert "总题量：0" in text
+    assert "第3题" not in text
+
+
 # ---- C3 判分缓存：全命中 batch 零 VL / 部分命中 cache 值覆盖 VL 值 ----
 
 
@@ -2048,7 +2175,8 @@ def test_question_for_no_or_bbox_prefers_same_printed_no():
     assert _question_for_no_or_bbox([q1, q2], None, [10, 450, 200, 480], size) is q2
 
 
-def test_normalize_decision_read_guard_forces_pending_and_is_idempotent():
+def test_normalize_decision_uncertain_read_keeps_verdict_and_is_idempotent():
+    # 20261108 照批改君：读不清不再打待确认（手写宽容还原、判词定案），转写照留档
     data = {
         "question_id": 3,
         "correctResult": 2,
@@ -2060,17 +2188,16 @@ def test_normalize_decision_read_guard_forces_pending_and_is_idempotent():
         "confidence": 0.9,
     }
     first = _normalize_decision(data, 3)
-    assert first["correctResult"] == PENDING
-    assert first["result"] == "待确认"
-    assert first["read_uncertain"] is True
-    assert "待人工确认" in first["reason"]
-    assert "AI 读到" in first["reason"]
+    assert first["correctResult"] == WRONG
+    assert first["result"] == "错"
+    assert first["read_uncertain"] is False
+    assert "待人工确认" not in first["reason"]
+    assert first["transcription"] == "我[?]得"
     # 两遍归一化（_insert_sub_grading_result 会再跑一次）必须幂等
     second = _normalize_decision(first, 3)
-    assert second["correctResult"] == PENDING
-    assert second["read_uncertain"] is True
+    assert second["correctResult"] == WRONG
     assert second["reason"] == first["reason"]
-    assert second["result"] == "待确认"
+    assert second["result"] == "错"
 
 
 def test_normalize_decision_clean_transcription_keeps_verdict():
@@ -2090,8 +2217,9 @@ def test_normalize_decision_clean_transcription_keeps_verdict():
     assert "待人工确认" not in decision["reason"]
 
 
-def test_normalize_decision_pending_on_flagged_standard_answer():
-    # 标准答案本身识别不清 → 无法比对，强制待确认（不许蒙）
+def test_normalize_decision_flagged_standard_text_keeps_verdict():
+    # 20261108 照批改君：标准文本带 [?] 标记不再强制待确认——image 1 是权威，
+    # 模型照图判的判词定案（真正不可靠的表文本在进提示词前已落〈文本缺失〉哨兵）
     data = {
         "question_id": 5,
         "correctResult": 1,
@@ -2103,9 +2231,9 @@ def test_normalize_decision_pending_on_flagged_standard_answer():
         "confidence": 0.9,
     }
     decision = _normalize_decision(data, 5, standard_answer_text="参见[?]图")
-    assert decision["correctResult"] == PENDING
-    assert decision["read_uncertain"] is True
-    assert "标准答案识别不清" in decision["reason"]
+    assert decision["correctResult"] == CORRECT
+    assert decision["read_uncertain"] is False
+    assert "待人工确认" not in decision["reason"]
 
 
 _TABLE = (
@@ -2152,8 +2280,8 @@ def test_table_quote_mismatch_accepts_partial_slot_quotes():
     assert _table_quote_mismatch("第1题：肢休", 1, table) is not None
 
 
-def test_normalize_decision_table_quote_mismatch_forces_pending():
-    # 刘欣怡 4_1 复现：模型自称标准是「遏制」（表里是「扼制」），判学生错 → 应转待确认
+def test_normalize_decision_keeps_verdict_despite_quote_mismatch():
+    # 20261108 照批改君：表引文回验闸废除（引文字段只留档不校验），判词定案
     data = {
         "question_id": 7,
         "correctResult": 2,
@@ -2167,14 +2295,10 @@ def test_normalize_decision_table_quote_mismatch_forces_pending():
         "confidence": 0.9,
     }
     decision = _normalize_decision(data, 7, answer_table_text=_TABLE)
-    assert decision["correctResult"] == PENDING
-    assert decision["result"] == "待确认"
-    assert "标准引文" in decision["reason"]
-    assert "待人工确认" in decision["reason"]
-    # 引文正确时维持原判
-    data2 = dict(data, standard_quote="第4题：扼制 柳暗花明")
-    decision2 = _normalize_decision(data2, 7, answer_table_text=_TABLE)
-    assert decision2["correctResult"] == 2
+    assert decision["correctResult"] == WRONG
+    assert decision["result"] == "错"
+    assert decision["standard_quote"] == "第4题：遏制 柳暗花明"  # 留档不校验
+    assert "待人工确认" not in decision["reason"]
 
 
 def test_apply_conclusion_guard_conflicting_reason_forces_pending():
@@ -2289,7 +2413,7 @@ def test_aggregate_any_pending_makes_question_pending():
     )
     _insert_sub_grading_result(
         stu,
-        {"question_id": 2, "correctResult": 2, "result": "错", "transcription": "看[??]", "read_confidence": 0.3,
+        {"question_id": 2, "correctResult": PENDING, "result": "待确认",
          "reason": "r", "analysis": "a", "confidence": 0.5},
         task_id=2,
         sub_index=2,
@@ -2307,31 +2431,113 @@ def test_aggregate_any_pending_makes_question_pending():
 
 
 def test_draw_skips_pending_marks():
-    captured = {}
-
-    def _fake_real(image_path, mark_blocks, result_dir, file_stem, check_cross_scale=0.9):
-        captured["real"] = list(mark_blocks)
-        return "orig.jpg", "ann.jpg"
-
-    def _fake_marks(image_path, mark_blocks, result_dir, file_stem, check_cross_scale=0.9):
-        captured["marks"] = list(mark_blocks)
-        return "marks_only.jpg"
-
-    reference_vlm_grading.draw_real_marks_and_save = _fake_real
-    reference_vlm_grading.draw_marks_only_and_save = _fake_marks
-    try:
-        blocks = [
-            {"baidu_correct_result": PENDING, "has_mark_anchor": True, "bbox": [1, 1, 9, 9]},
-            {"baidu_correct_result": 3, "has_mark_anchor": True, "bbox": [1, 11, 9, 19]},
-            {"baidu_correct_result": 1, "has_mark_anchor": True, "bbox": [1, 21, 9, 29]},
+    """20261109 一题一枚：整组待确认不画（交人工拍板），其余题各画一个痕。"""
+    out_dir = Path(tempfile.mkdtemp(prefix="reference_vlm_pending_group_"))
+    image_path = out_dir / "paper.png"
+    Image.new("RGB", (800, 600), "white").save(image_path)
+    blocks = [
+        {"index": 1, "sub_index": 1, "baidu_correct_result": PENDING, "result": "待确认",
+         "is_question": True, "has_mark_anchor": True, "bbox": [50, 80, 150, 130]},
+        {"index": 2, "sub_index": 1, "baidu_correct_result": 3, "result": "未作答",
+         "is_question": True, "has_mark_anchor": True, "bbox": [50, 200, 150, 250]},
+        {"index": 3, "sub_index": 1, "baidu_correct_result": 1, "result": "对",
+         "is_question": True, "has_mark_anchor": True, "bbox": [50, 350, 150, 400]},
+    ]
+    _orig, _ann, marks_name = draw_reference_vlm_marks_and_save(
+        str(image_path), blocks, str(out_dir), "stem"
+    )
+    with Image.open(out_dir / marks_name).convert("RGB") as marks_img:
+        width, height = marks_img.size
+        reds = [
+            (px % width, px // width)
+            for px, color in enumerate(marks_img.getdata())
+            if color == (255, 0, 0)
         ]
-        draw_reference_vlm_marks_and_save("paper.jpg", blocks, tempfile.mkdtemp(), "stem")
-    finally:
-        import importlib
-        importlib.reload(reference_vlm_grading)
-    # 只有待确认不画；未作答要画空心圆（2026-10-16：没填答案不能什么都不标）
-    assert [b["bbox"] for b in captured["real"]] == [[1, 11, 9, 19], [1, 21, 9, 29]]
-    assert captured["marks"] == captured["real"]
+
+    def _in(box, pad=0):
+        x1, y1, x2, y2 = box
+        return [p for p in reds if x1 - pad <= p[0] <= x2 + pad and y1 - pad <= p[1] <= y2 + pad]
+
+    assert not _in([0, 60, 400, 150]), "待确认整题不画"
+    assert _in([30, 180, 340, 270]), "未作答要画椭圆"
+    assert _in([40, 330, 340, 430]), "对要画勾"
+
+
+def test_one_mark_per_question_group():
+    """20261109：一道题只在首个作答空旁留一个痕（不再一空一痕）。"""
+    out_dir = Path(tempfile.mkdtemp(prefix="reference_vlm_group_one_"))
+    image_path = out_dir / "paper.png"
+    Image.new("RGB", (800, 600), "white").save(image_path)
+    blocks = [
+        {"index": 1, "sub_index": 1, "baidu_correct_result": 1, "result": "对",
+         "is_question": True, "has_mark_anchor": True, "bbox": [50, 100, 180, 150]},
+        {"index": 1, "sub_index": 2, "baidu_correct_result": 1, "result": "对",
+         "is_question": True, "has_mark_anchor": True, "bbox": [50, 300, 180, 350]},
+    ]
+    _orig, _ann, marks_name = draw_reference_vlm_marks_and_save(
+        str(image_path), blocks, str(out_dir), "group-one"
+    )
+    with Image.open(out_dir / marks_name).convert("RGB") as marks_img:
+        width, height = marks_img.size
+        reds = [
+            (px % width, px // width)
+            for px, color in enumerate(marks_img.getdata())
+            if color == (255, 0, 0)
+        ]
+
+    def _in(box, pad=0):
+        x1, y1, x2, y2 = box
+        return [p for p in reds if x1 - pad <= p[0] <= x2 + pad and y1 - pad <= p[1] <= y2 + pad]
+
+    # 痕画在首个作答空旁（右缘外侧起笔），第二个空旁干干净净
+    assert _in([175, 85, 340, 175]), "痕要画在首个作答空旁"
+    assert not _in([175, 285, 340, 375]), "第二个空旁不能再有痕"
+
+
+def test_ghost_slot_filtered_and_score_text():
+    """20261109：幽灵槽（跨题投影错位）不参与判定，分数按标准题满分算。"""
+    out_dir = Path(tempfile.mkdtemp(prefix="reference_vlm_ghost_score_"))
+    image_path = out_dir / "paper.png"
+    Image.new("RGB", (800, 600), "white").save(image_path)
+    blocks = [
+        {"index": 1, "sub_index": 1, "baidu_correct_result": 1, "result": "对",
+         "is_question": True, "has_mark_anchor": True, "reference_vlm_template_slot_id": 6,
+         "bbox": [50, 100, 180, 150]},
+        # 幽灵：Q2 的槽飘进第 1 题行——不该画、更不该把分摊薄成 1.5
+        {"index": 1, "sub_index": 2, "baidu_correct_result": 3, "result": "未作答",
+         "is_question": True, "has_mark_anchor": True, "reference_vlm_template_slot_id": 8,
+         "bbox": [50, 300, 180, 350]},
+    ]
+    _orig, _ann, marks_name = draw_reference_vlm_marks_and_save(
+        str(image_path),
+        blocks,
+        str(out_dir),
+        "ghost-score",
+        template_slot_question={6: 1, 8: 2},
+        question_full_scores={1: 3.0, 2: 4.0},
+    )
+    with Image.open(out_dir / marks_name).convert("RGB") as marks_img:
+        width, height = marks_img.size
+        pixels = list(marks_img.getdata())
+    reds = [
+        (px % width, px // width)
+        for px, color in enumerate(pixels)
+        if color == (255, 0, 0)
+    ]
+    total_zone = [
+        (px % width, px // width)
+        for px, color in enumerate(pixels)
+        if color[0] > 170 and color[1] < 130 and color[2] < 130
+        and (px % width) <= 220 and (px // width) <= 110
+    ]
+
+    def _in(box, pad=0):
+        x1, y1, x2, y2 = box
+        return [p for p in reds if x1 - pad <= p[0] <= x2 + pad and y1 - pad <= p[1] <= y2 + pad]
+
+    assert _in([175, 85, 340, 175]), "首空旁要有勾"
+    assert not _in([175, 285, 340, 375]), "幽灵槽位置不能画未作答椭圆"
+    assert total_zone, "左上角要写总分（3/3 手写体红字）"
 
 
 def test_cache_entry_pending_roundtrip():
@@ -2339,7 +2545,8 @@ def test_cache_entry_pending_roundtrip():
     decision = _decision_from_cache_entry(hit, 9)
     assert decision["correctResult"] == PENDING
     assert decision["result"] == "待确认"
-    assert decision["read_uncertain"] is True
+    # 20261108 照批改君：read_uncertain 旗已废，待确认仍是待确认
+    assert decision["read_uncertain"] is False
 
 
 def test_prompts_carry_standard_answer_text_and_transcription_discipline():
@@ -2373,10 +2580,13 @@ def test_prompts_carry_standard_answer_text_and_transcription_discipline():
 
     batch = VlmQuestionBatchTask(batch_id=7, student_question=stu, standard_question=std, slots=[task])
     batch_prompt = _build_batch_qwen_prompt(batch, "学生.jpg")
-    assert "作答区 1_1：x=2" in batch_prompt
-    assert "〈文本缺失〉的槽以 image 1 对应红框为准" in batch_prompt
-    assert "or 4 for partially correct" in batch_prompt  # 批量提示词补齐半对
-    assert '"transcription":"..."' in batch_prompt
+    # 20261108 照批改君：标准答案随槽进元数据（不再是整表查号抄引文），判词三态
+    assert '"standard_answer_text": "x=2"' in batch_prompt
+    assert "STANDARD-ANSWER AUTHORITY" in batch_prompt
+    assert "image 1 is then the sole ground truth" in batch_prompt  # 〈文本缺失〉槽回退图1
+    assert "HANDWRITING TOLERANCE" in batch_prompt
+    assert "1 for correct, 2 for wrong, or 3 for blank/unanswered" in batch_prompt
+    assert '"student_answer":"..."' in batch_prompt
 
 
 def test_answer_table_slot_text_prefers_table_and_guards_cross_question():
@@ -2612,7 +2822,8 @@ def test_grade_paper_uses_answer_table_for_identity_and_prompt(monkeypatch, tmp_
                 "question_id": task.task_id,
                 "correctResult": 1,
                 "result": "对",
-                "transcription": "答案",
+                # 2026-11-17：新增确定性校验后，学生作答须与标准答案可接受地一致
+                "transcription": "标准表答案",
                 "read_confidence": 0.95,
                 "reason": "一致",
                 "analysis": "一致",
@@ -2657,16 +2868,12 @@ def test_grade_paper_uses_answer_table_for_identity_and_prompt(monkeypatch, tmp_
         folder_safe="answer-table-test",
         answer_table=answer_table,
     )
-    assert "标准表答案" in captured_prompts[0]
-    # 每槽不再给机器配对文本（folder8 实测：模型会照错配对判分），判分依据只在完整表
-    assert "作答区 1_1：标准表答案" not in captured_prompts[0]
-    assert "作答区 1_1：按该空所属印刷题号查【参考答案完整表】判分" in captured_prompts[0]
-    assert '"standard_answer_text_is_ground_truth": false' in captured_prompts[0]
-    assert '"code_pairing_hint_unreliable": true' in captured_prompts[0]
-    # 完整答案表整体进提示词（先认题号再对照本表）
-    assert "【参考答案完整表" in captured_prompts[0]
-    assert "第2题：标准表答案" in captured_prompts[0]
-    assert "先认图像2红框旁的印刷题号" in captured_prompts[0]
+    # 20261108 照批改君：表文本作为每槽标准答案文本随元数据进提示词（不再是整表查号）
+    assert '"standard_answer_text": "标准表答案"' in captured_prompts[0]
+    assert "【参考答案完整表" not in captured_prompts[0]
+    assert "standard_quote" not in captured_prompts[0]
+    assert "HANDWRITING TOLERANCE" in captured_prompts[0]
+    assert "Verify a proposed wrong decision a second time" in captured_prompts[0]
     assert blocks[0]["correct_answer"] == "标准表答案"
     assert blocks[0]["result"] == "对"
     assert blocks[0]["read_uncertain"] is False
@@ -3235,9 +3442,9 @@ def test_grade_paper_slot_text_follows_split_table_by_printed_no(monkeypatch, tm
     )
     # 按学生印刷题号取行：第2题拿 B（不是合并块兄弟拼接的 "D\nB"）
     assert blocks[0]["correct_answer"] == "B"
-    # 判分提示词里的完整表也是一题一行
-    assert "第1题：D" in captured_prompts[0]
-    assert "第2题：B" in captured_prompts[0]
+    # 每槽标准答案文本=拆条后的 B，兄弟行 D 不得漏进本批元数据
+    assert '"standard_answer_text": "B"' in captured_prompts[0]
+    assert '"standard_answer_text": "D"' not in captured_prompts[0]
 
 
 def test_grade_paper_correct_answer_realigns_from_judge_located_no(monkeypatch, tmp_path):
@@ -3401,12 +3608,14 @@ def test_prompt_with_answer_table_teaches_number_first():
 
     batch = VlmQuestionBatchTask(batch_id=7, student_question=stu, standard_question=std, slots=[task])
     batch_prompt = _build_batch_qwen_prompt(batch, "学生.jpg", answer_table_text="第1题：x=2")
-    assert "【参考答案完整表" in batch_prompt
-    # 每槽行不再带机器配对文本（防模型照错配对判分），改为指路完整表
-    assert "作答区 1_1：x=2" not in batch_prompt
-    assert "作答区 1_1：按该空所属印刷题号查【参考答案完整表】判分" in batch_prompt
-    assert '"standard_answer_text_is_ground_truth": false' in batch_prompt
-    assert "〈文本缺失〉的槽以 image 1 对应红框为准" in batch_prompt
+    # 20261108 照批改君：批量链整表查号抄引文协议废除——标准答案随槽进元数据
+    assert "【参考答案完整表" not in batch_prompt
+    assert "standard_quote" not in batch_prompt and "located_no" not in batch_prompt
+    assert '"standard_answer_text": "x=2"' in batch_prompt
+    assert "HANDWRITING TOLERANCE" in batch_prompt
+    assert "it MUST be graded correct" in batch_prompt  # 相同即判对，不许编差异
+    assert "Verify a proposed wrong decision a second time" in batch_prompt  # 判错前二次核对
+    assert "1 for correct, 2 for wrong, or 3 for blank/unanswered" in batch_prompt  # 三态判词
 
 
 def test_build_tasks_no_slot_standard_uses_question_bbox_as_red_box():
@@ -3831,4 +4040,65 @@ def test_save_answer_sheet_texts_aligns_signature_to_current_files(monkeypatch, 
         "1": "老师改过",
         "3": "手写补充",
     }
+
+
+def test_call_qwen_batch_reasks_once_on_bad_json_then_succeeds():
+    # 20261108 照批改君：坏 JSON/违约回复原地重问一次（只补格式不许借机改判），
+    # 再坏才抛给整卷重试；全程 temperature=0
+    std = _make_question(question_words="第1题", answer_words=["x=2"], answer_bboxes=[[10, 10, 50, 50]])
+    stu = _make_question(question_id=2, question_words="第1题", answer_words=["x=3"], answer_bboxes=[[10, 10, 50, 50]])
+    task = _slot_task(std, stu, standard_answer_text="x=2")
+    batch = VlmQuestionBatchTask(batch_id=7, student_question=stu, standard_question=std, slots=[task])
+    contents = [
+        '{"question_id":7,"slots":[]}',  # 缺槽违约 → 重问
+        '{"question_id":7,"slots":[{"slot_key":"1_1","correctResult":1,"result":"对",'
+        '"reason":"一致","analysis":"一致","confidence":0.9}]}',
+    ]
+    state = {"calls": 0, "messages": [], "temperatures": []}
+
+    def _create(**kwargs):
+        state["calls"] += 1
+        state["messages"].append(kwargs["messages"])
+        state["temperatures"].append(kwargs.get("temperature"))
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=contents[state["calls"] - 1]))]
+        )
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
+    decisions = reference_vlm_grading._call_qwen_for_question_batch(
+        client, "m", batch, "data:std", "data:stu", "学生.jpg"
+    )
+    assert state["calls"] == 2
+    assert state["temperatures"] == [0, 0]
+    assert decisions[task.task_id]["correctResult"] == 1
+    assert decisions[task.task_id]["result"] == "对"
+    # 重问=追加一条 user 纠错消息，不是重发整包
+    assert len(state["messages"][1]) == 2
+    assert "failed validation" in state["messages"][1][1]["content"]
+
+
+def test_call_qwen_batch_second_bad_json_raises_for_paper_retry():
+    # 两次都坏 → 抛出，交给整卷重试（router 层 retry×3 契约不变）
+    std = _make_question(question_words="第1题", answer_words=["x=2"], answer_bboxes=[[10, 10, 50, 50]])
+    stu = _make_question(question_id=2, question_words="第1题", answer_words=["x=3"], answer_bboxes=[[10, 10, 50, 50]])
+    task = _slot_task(std, stu, standard_answer_text="x=2")
+    batch = VlmQuestionBatchTask(batch_id=7, student_question=stu, standard_question=std, slots=[task])
+    state = {"calls": 0}
+
+    def _create(**_kwargs):
+        state["calls"] += 1
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="not json at all"))]
+        )
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
+    try:
+        reference_vlm_grading._call_qwen_for_question_batch(
+            client, "m", batch, "data:std", "data:stu", "学生.jpg"
+        )
+    except Exception:
+        pass
+    else:
+        raise AssertionError("两次坏回复必须抛出")
+    assert state["calls"] == 2
 

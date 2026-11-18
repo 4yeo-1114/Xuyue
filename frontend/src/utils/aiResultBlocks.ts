@@ -95,25 +95,30 @@ export function extractPartialRatio(content: string): number | undefined {
   return Math.min(1, Math.max(0, ratio));
 }
 
-/** 去掉字面量 \\u3000，并为【习作提升】补上真实段首缩进（两个全角空格） */
+/** 去掉字面量 \\u3000，并为【习作提升】补上段首行缩进（两个全角空格，只缩段首行） */
 export function normalizeEssayResultForDisplay(text: string): string {
-  let raw = (text || "").replace(/\\u3000+/g, "");
-  const marker = "【习作提升】";
-  const idx = raw.indexOf(marker);
-  if (idx === -1) return raw;
+  const raw = (text || "").replace(/\\u3000+/g, "");
+  // 习作提升板块标题偶发写作「写作提升」（11.11-7 台账原话），两种都认
+  const m = raw.match(/【(?:习作|写作)提升】/);
+  if (!m || m.index == null) return raw;
+  const marker = m[0];
+  const idx = m.index;
 
   const before = raw.slice(0, idx + marker.length);
-  let after = raw.slice(idx + marker.length);
+  const after = raw.slice(idx + marker.length);
   const nextIdx = after.indexOf("【");
   const rewrite = nextIdx === -1 ? after : after.slice(0, nextIdx);
   const rest = nextIdx === -1 ? "" : after.slice(nextIdx);
   const indent = "　　";
 
+  // 只缩段首行（前一行为空白），段内折行的续行不缩进（11.11-7 格式修正，与后端同口径）
   const rewritten = rewrite
     .split("\n")
-    .map((line) => {
+    .map((line, i, arr) => {
       const stripped = line.replace(/^[　 \t]+/, "");
-      return stripped ? indent + stripped : "";
+      if (!stripped) return "";
+      const prevBlank = i === 0 || !arr[i - 1].trim();
+      return prevBlank ? indent + stripped : stripped;
     })
     .join("\n");
 

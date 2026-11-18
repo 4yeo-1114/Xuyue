@@ -40,6 +40,8 @@ export type GlobalPrintPrefs = {
   custom_paper_width_mm: string;
   custom_paper_height_mm: string;
   print_mode: "single" | "double";
+  /** 11.13 台账 #2 翻页方式（双面时生效）：long=长边翻页（左右翻，像书本）/ short=短边翻页（上下翻，像台历） */
+  duplex_binding?: "long" | "short";
   paper_source: number;
   /** 打印兼容开关：standard=保持原打印行为，compat=注入打印优化样式 */
   printMode?: "standard" | "compat";
@@ -47,7 +49,7 @@ export type GlobalPrintPrefs = {
   marginMm?: number;
   /** 打印份数，1~10 */
   copies?: number;
-  /** 打印批注：开=用带错因批注的留痕图，关=普通留痕图（默认开） */
+  /** 打印批注：开=用带错因批注的留痕图（作文=旁批+分数），关=普通留痕图；作文关=只保留分数（11.13 台账 #3）（默认开） */
   printWrongNotes?: boolean;
 };
 
@@ -70,6 +72,7 @@ export function readGlobalPrintPrefs(): Partial<GlobalPrintPrefs> {
       custom_paper_height_mm:
         typeof j?.custom_paper_height_mm === "string" ? j.custom_paper_height_mm : undefined,
       print_mode: j?.print_mode === "single" || j?.print_mode === "double" ? j.print_mode : undefined,
+      duplex_binding: j?.duplex_binding === "short" ? "short" : j?.duplex_binding === "long" ? "long" : undefined,
       paper_source: typeof j?.paper_source === "number" ? j.paper_source : undefined,
       printMode: j?.printMode === "compat" ? "compat" : "standard",
       marginMm:
@@ -93,6 +96,7 @@ export function writeGlobalPrintPrefs(prefs: GlobalPrintPrefs): void {
         custom_paper_width_mm: prefs.custom_paper_width_mm,
         custom_paper_height_mm: prefs.custom_paper_height_mm,
         print_mode: prefs.print_mode,
+        duplex_binding: prefs.duplex_binding ?? "long",
         paper_source: prefs.paper_source > 0 ? prefs.paper_source : undefined,
         printMode: prefs.printMode,
         marginMm: prefs.marginMm,
@@ -152,6 +156,7 @@ export function defaultGlobalPrintPrefs(): GlobalPrintPrefs {
     custom_paper_width_mm: "210",
     custom_paper_height_mm: "297",
     print_mode: "single",
+    duplex_binding: "long",
     paper_source: 0,
     printMode: "standard",
     marginMm: 5,

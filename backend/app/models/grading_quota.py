@@ -1,7 +1,6 @@
-"""批改额度账户与充值流水（0924 需求一：充值入口 + 积分体系）。
+"""批改额度账户（0924 需求一；充值流水表随充值功能 20261111 移除）。
 
-- grading_quota：每账号一行，累计充值总面数 total_pages / 已用面数 used_pages。
-- grading_quota_recharge_logs：管理员手动加额流水（审计）。
+- grading_quota：每账号一行，额度总面数 total_pages / 已用面数 used_pages。
 """
 import uuid
 from datetime import date
@@ -21,23 +20,9 @@ class GradingQuota(Base):
 
     id = Column(String(36), primary_key=True, default=gen_uuid)
     user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
-    total_pages = Column(Integer, nullable=False, default=0)  # 累计充值总面数
+    total_pages = Column(Integer, nullable=False, default=0)  # 额度总面数（0 = 无限额）
     used_pages = Column(Integer, nullable=False, default=0)  # 已用面数（累计）
     used_today_pages = Column(Integer, nullable=False, default=0)  # 当天已用面数
     usage_date = Column(Date, nullable=True)  # used_today_pages 对应日期
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-
-class GradingQuotaRechargeLog(Base):
-    __tablename__ = "grading_quota_recharge_logs"
-
-    id = Column(String(36), primary_key=True, default=gen_uuid)
-    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    amount_yuan = Column(Integer, nullable=False, default=0)
-    base_pages = Column(Integer, nullable=False, default=0)
-    bonus_pages = Column(Integer, nullable=False, default=0)
-    total_pages = Column(Integer, nullable=False, default=0)
-    operator_id = Column(String(36), nullable=True)  # 管理员手动加额时的操作员；支付入账时为 None
-    source_order_id = Column(String(36), nullable=True, unique=True)  # 支付订单号（幂等：一笔订单只加一次面）
-    created_at = Column(DateTime(timezone=True), server_default=func.now())

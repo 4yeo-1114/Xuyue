@@ -34,7 +34,10 @@ _URL = "http://127.0.0.1:6888"
 
 
 def _run_uvicorn_blocking() -> None:
-    uvicorn.run(app, host="127.0.0.1", port=6888, reload=False)
+    # L2: 与 app/main.py 保持一致 —— 默认仅监听回环；局域网访问需 .env 显式 HOST=0.0.0.0
+    from app.config import settings
+
+    uvicorn.run(app, host=getattr(settings, "HOST", "127.0.0.1"), port=6888, reload=False)
 
 
 if __name__ == "__main__":

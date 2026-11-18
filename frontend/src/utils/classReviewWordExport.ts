@@ -8,9 +8,10 @@ import { fetchGradingFileBlob } from "@/services/gradingApi";
 import {
   type ClassReviewExportOptions,
   type ClassReviewPdfKind,
-  type WrongPaperImage,
-  groupWrongPaperImagesByStudent,
+  HIGH_FREQ_EXAMPLES_PER_QUESTION,
+  HIGH_FREQ_TOP_QUESTIONS,
   readClassReviewExportPrefs,
+  selectHighFrequencyWrongImages,
 } from "./classReviewPdfExport";
 
 function escapeHtml(value: unknown): string {
@@ -80,6 +81,7 @@ function wordStyles(): string {
     ol { margin: 4pt 0; padding-left: 22pt; }
     li { margin: 3pt 0; }
     img { max-width: 100%; }
+    table.wp-table { table-layout: fixed; }
   `;
 }
 
@@ -96,9 +98,50 @@ function wrapWordDocument(bodyHtml: string): string {
 </html>`;
 }
 
-/** 「错题原卷」附录：按学生分节，节内按题号排序；无图时返回空串 */
-async function buildWrongPaperSection(images: unknown): Promise<string> {
-  const groups = groupWrongPaperImagesByStudent(images);
+// ── 附录图版面盒：两图并排时总宽恒小于版心 ──
+// WPS 兼容模式只认 <img width/height> 属性、忽略 CSS 宽度（11.12「错题原卷看不完整」根因：
+// 大裁图按原尺寸撑爆表格，右半栏「作答区域」被裁出页面）。图必须带属性定版，小图不放大。
+const WP_IMG_MAX_W = 280;
+const WP_IMG_MAX_H = 420;
+
+/** 探 dataURL 原图尺寸；探不出返回 0（调用方按 4:3 兜底） */
+function probeImageSize(dataUrl: string): Promise<{ w: number; h: number }> {
+  return new Promise((resolve) => {
+    const im = new Image();
+    im.onload = () =>
+      resolve({ w: im.naturalWidth || 0, h: im.naturalHeight || 0 });
+    im.onerror = () => resolve({ w: 0, h: 0 });
+    im.src = dataUrl;
+  });
+}
+
+/** 等比缩进版面盒：大图压到盒内、小图原尺寸 */
+function fitImageBox(w: number, h: number): { w: number; h: number } {
+  if (!w || !h) return { w: WP_IMG_MAX_W, h: Math.round(WP_IMG_MAX_W * 0.75) };
+  const s = Math.min(1, WP_IMG_MAX_W / w, WP_IMG_MAX_H / h);
+  return { w: Math.max(1, Math.round(w * s)), h: Math.max(1, Math.round(h * s)) };
+}
+
+function wordImgTag(
+  dataUrl: string,
+  size: { w: number; h: number },
+  alt: string,
+): string {
+  const { w, h } = fitImageBox(size.w, size.h);
+  return `<img src="${dataUrl}" alt="${alt}" width="${w}" height="${h}" style="width: ${w}px; height: ${h}px" />`;
+}
+
+/**
+ * 「错题原卷」附录：按高频错题分节（错误人数最多的前 N 题，每题至多 M 名学生示例）。
+ * 客户 11.12 反馈「导出 151 页太多了，只需要展示几个高频错题就可以了」。
+ * 图用 width/height 属性定版（WPS 兼容模式不认 CSS 宽度），表格两栏恒 50%。
+ * 无图时返回空串。
+ */
+async function buildWrongPaperSection(
+  images: unknown,
+  questionAccuracy: unknown,
+): Promise<string> {
+  const groups = selectHighFrequencyWrongImages(images, questionAccuracy);
   if (!groups.length) return "";
   const paths: Array<string | undefined> = [];
   for (const group of groups) {
@@ -108,26 +151,36 @@ async function buildWrongPaperSection(images: unknown): Promise<string> {
     }
   }
   const dataUrls = await imagesToDataUrls(paths);
+  const sizes = await Promise.all(
+    dataUrls.map((u) => (u ? probeImageSize(u) : Promise.resolve({ w: 0, h: 0 }))),
+  );
   let k = 0;
   const parts: string[] = [
-    `<h2>错题原卷</h2><p class="muted">按学生汇总的错题原卷与作答区域，供课堂讲评对照使用。</p>`,
+    `<h2>错题原卷</h2><p class="muted">高频错题：错误人数最多的前 ${HIGH_FREQ_TOP_QUESTIONS} 题，每题展示至多 ${HIGH_FREQ_EXAMPLES_PER_QUESTION} 名学生示例，供课堂讲评对照使用。</p>`,
   ];
   for (const group of groups) {
-    parts.push(`<h3>学生：${escapeHtml(group.student)}</h3>`);
-    for (const img of group.items as WrongPaperImage[]) {
-      const qUrl = dataUrls[k++];
-      const aUrl = dataUrls[k++];
-      const title = escapeHtml(img.title || "错题");
+    parts.push(`<h3>${escapeHtml(group.title)}（错 ${group.wrongCount} 人）</h3>`);
+    for (const item of group.items) {
+      const qUrl = dataUrls[k];
+      const qSize = sizes[k];
+      k += 1;
+      const aUrl = dataUrls[k];
+      const aSize = sizes[k];
+      k += 1;
+      const title = escapeHtml(item.title || "错题");
+      const student = escapeHtml(
+        String(item.student_name || "").trim() || "未命名学生",
+      );
       const qImg = qUrl
-        ? `<img src="${qUrl}" alt="${title}" style="width: 320px" />`
+        ? wordImgTag(qUrl, qSize, title)
         : `<span class="muted">暂无图片</span>`;
       const aImg = aUrl
-        ? `<img src="${aUrl}" alt="${title} 作答" style="width: 320px" />`
+        ? wordImgTag(aUrl, aSize, `${title} 作答`)
         : `<span class="muted">暂无图片</span>`;
       parts.push(`
-        <p><b>${title}</b></p>
-        <table>
-          <tr><th style="width:50%">错题原卷</th><th>作答区域</th></tr>
+        <p><b>学生：${student} · ${title}</b></p>
+        <table class="wp-table">
+          <tr><th width="50%">错题原卷</th><th width="50%">作答区域</th></tr>
           <tr><td style="text-align:center">${qImg}</td><td style="text-align:center">${aImg}</td></tr>
         </table>
       `);
@@ -187,7 +240,10 @@ async function buildReviewPlanBody(
     : `<p class="muted">暂无讲评流程</p>`;
 
   const wrongPaperHtml = includeWrongPaper
-    ? await buildWrongPaperSection(preClass.all_wrong_images)
+    ? await buildWrongPaperSection(
+        preClass.all_wrong_images,
+        report.source_summary?.question_accuracy,
+      )
     : "";
 
   return `

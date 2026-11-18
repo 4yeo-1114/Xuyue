@@ -20,54 +20,6 @@ logger = logging.getLogger(__name__)
 _STAT_UPLOAD_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".pdf", ".doc", ".docx"}
 
 
-# ── 口径 B 计量旁路（docs/payment/payment-design.md §7.1）──────────────────────────
-# ⛔ 禁忌：本函数**绝不**放在 `_increment` 的 try 内、也**绝不**放进
-#    `record_graded_state_change` 的 `try/except: pass` 里 —— 那里吞异常且无日志，
-#    计费事件被吞 = 静默少收钱。因此：所有 `_emit_*` 调用点一律写在**吞异常区之外**，
-#    且 `emit_usage_event` 自己带 session 与异常处理（失败 logging.error 留痕，不阻塞主流程）。
-def _emit_usage(kind: str, user_id: str, folder_safe: str, subject_key: str,
-                delta: int, count: int = 1, occurrence: str = "") -> None:
-    """旁路投递口径 B 用量事件。失败只留痕，⛔ 绝不向批改主流程抛异常。"""
-    if not str(subject_key or "").strip():
-        # ⚠️ 实测（脚本与原始输出见交付报告，2026-09-24）：
-        #   · 空串路径**当前不可达**：两个调用点传的都是真实文件名
-        #     （`grading/router.py:859` `target_file.name` / `:3890` `save_name`），
-        #     `Path.name` 不可能为空。
-        #   · 但**纯空白 stem 可达**：`get_stat_student_key("   .jpg") == "   "`
-        #     （前后空格在 Windows/Linux 都是合法文件名），它同样落到本分支。
-        #   真发生时的后果：口径 A 的 `grading_daily_stats` **已经把这 1 份计进去了**
-        #   （实测 `upload_count=1`），口径 B 却不落 `usage_events` ⇒
-        #   **两边口径不一致 = 静默少收钱** —— 正是 §7.1 全篇要防的那个形态。
-        #   ⛔ 所以绝不静默 return：必须留痕（与同函数 except 分支同款）。
-        #   根治不在此处：placeholder 归并键属 ① 类业务口径，未擅自发明；
-        #   应在上游拒绝空/纯空白文件名，或 Phase 1 定 placeholder 规则。
-        logger.error(
-            "口径 B 计量丢弃：subject_key 为空/纯空白，本次不投用量事件"
-            "（口径 A 的 grading_daily_stats 可能已把这份计入）："
-            "kind=%s user_id=%s folder=%s subject=%r delta=%s",
-            kind, user_id, folder_safe, subject_key, delta,
-        )
-        return
-    try:
-        from app.services.payment.metering import emit_usage_events
-
-        emit_usage_events(
-            user_id=user_id,
-            kind=kind,
-            folder_safe=folder_safe,
-            subject_key=subject_key,
-            count=count,
-            delta=delta,
-            occurrence=occurrence,
-        )
-    except Exception:
-        # 连 import / 调用都没起来（如计量模块被误删）也必须留痕，⛔ 不静默
-        logger.error(
-            "口径 B 计量旁路调用失败：kind=%s user_id=%s folder=%s subject=%s delta=%s",
-            kind, user_id, folder_safe, subject_key, delta, exc_info=True,
-        )
-
-
 def display_folder_name(folder_safe: str) -> str:
     safe = str(folder_safe or "").strip()
     if safe.startswith("cls_") and "__" in safe:
@@ -225,8 +177,6 @@ def record_upload(
 ) -> None:
     n = max(1, int(count or 1))
     _increment(user_id, folder_safe, upload_delta=n)
-    # ↓ 旁路：在 _increment 的吞异常 try **之外**（§7.1 禁忌）
-    _emit_usage("upload", user_id, folder_safe, subject_key or "", +1, count=n, occurrence=occurrence)
 
 
 def record_upload_for_file(user_id: str, folder_safe: str, filename: str) -> None:
@@ -250,8 +200,6 @@ def record_grade(
 ) -> None:
     n = max(1, int(count or 1))
     _increment(user_id, folder_safe, grade_delta=n)
-    # ↓ 旁路：在 _increment 的吞异常 try **之外**（§7.1 禁忌）
-    _emit_usage("grade", user_id, folder_safe, subject_key or "", +1, count=n, occurrence=occurrence)
 
 
 def _decrement_field(user_id: str, folder_safe: str, field: str, amount: int = 1) -> None:
@@ -301,7 +249,6 @@ def record_upload_decrement(
 ) -> None:
     n = max(1, int(count or 1))
     _decrement_field(user_id, folder_safe, "upload_count", n)
-    _emit_usage("upload", user_id, folder_safe, subject_key or "", -1, count=n, occurrence=occurrence)
 
 
 def record_grade_decrement(
@@ -314,8 +261,6 @@ def record_grade_decrement(
 ) -> None:
     n = max(1, int(count or 1))
     _decrement_field(user_id, folder_safe, "grade_count", n)
-    # ↓ 旁路：口径 A 的扣减**不得**直接改账本（§3.3 I6）；账本只认 usage_events 的 delta
-    _emit_usage("grade", user_id, folder_safe, subject_key or "", -1, count=n, occurrence=occurrence)
 
 
 def record_paper_deleted_for_file(user_id: str, folder_safe: str, filename: str) -> None:
@@ -358,15 +303,6 @@ def remove_folder_stats(user_id: str, folder_safe: str) -> None:
         db.rollback()
     finally:
         db.close()
-    # ↓ 旁路：在吞异常的 try **之外**（§7.1 禁忌）
-    try:
-        from app.services.payment.metering import emit_folder_removed
-
-        emit_folder_removed(uid, folder)
-    except Exception:
-        logger.error(
-            "口径 B 文件夹冲正投递失败：user_id=%s folder=%s", uid, folder, exc_info=True
-        )
 
 
 def is_placeholder_completed_item(item: dict) -> bool:
@@ -437,17 +373,10 @@ def record_graded_state_change(
 
     if transition == 0:
         return
-    try:
-        from app.services.payment.metering import payload_occurrence
-
-        occurrence = payload_occurrence(new_entry)
-    except Exception:
-        occurrence = ""
-    # ↓ 旁路：在吞异常的 try **之外**（§7.1 禁忌）
     if transition > 0:
-        record_grade(user_id, folder_safe, 1, subject_key=key, occurrence=occurrence)
+        record_grade(user_id, folder_safe, 1, subject_key=key)
     else:
-        record_grade_decrement(user_id, folder_safe, 1, subject_key=key, occurrence=occurrence)
+        record_grade_decrement(user_id, folder_safe, 1, subject_key=key)
 
 
 def query_grading_stats(

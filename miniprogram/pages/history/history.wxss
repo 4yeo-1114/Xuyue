@@ -18,7 +18,7 @@
 }
 
 .job-meta {
-  color: #646a73;
+  color: #7d6f99;
   font-size: 25rpx;
   margin-bottom: 14rpx;
 }

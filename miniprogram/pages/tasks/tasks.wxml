@@ -1,0 +1,56 @@
+<view class="page">
+
+  <picker mode="selector" range="{{gradeLabels}}" value="{{gradeIndex}}" bindchange="onGradeChange">
+    <view class="card field">
+      <text class="field-label">年级</text>
+      <view class="field-value field-arrow">{{gradeLabels[gradeIndex] || '请选择年级'}}</view>
+    </view>
+  </picker>
+
+  <picker mode="selector" range="{{classLabels}}" value="{{classIndex}}" bindchange="onClassChange">
+    <view class="card field">
+      <text class="field-label">班级</text>
+      <view class="field-value field-arrow">{{classLabels[classIndex] || '请选择班级'}}</view>
+    </view>
+  </picker>
+
+  <picker mode="selector" range="{{subjectLabels}}" value="{{subjectIndex}}" bindchange="onSubjectChange">
+    <view class="card field">
+      <text class="field-label">学科</text>
+      <view class="field-value field-arrow">{{subjectLabels[subjectIndex]}}</view>
+    </view>
+  </picker>
+
+  <view wx:if="{{loading}}" class="empty">正在加载…</view>
+
+  <block wx:else>
+    <view wx:if="{{tasks.length > 0}}" class="progress-bar">
+      <view class="progress-text">已完成 {{done}} / {{total}}</view>
+      <view class="progress-track">
+        <view class="progress-fill" style="width: {{progressPct}}%"></view>
+      </view>
+    </view>
+
+    <view wx:if="{{tasks.length === 0}}" class="empty">
+      <text class="empty-emoji">🎯</text>
+      还没有靶向提升任务
+      <view class="muted">在网页版「错题原卷 · 靶向提升」生成后，这里同步可见</view>
+    </view>
+
+    <block wx:else>
+      <view class="card task-item {{item.is_done ? 'task-done' : ''}}" wx:for="{{tasks}}" wx:key="id">
+        <view class="task-check" data-index="{{index}}" bindtap="onToggle">
+          <view class="task-check-box {{item.is_done ? 'checked' : ''}}">{{item.is_done ? '✓' : ''}}</view>
+        </view>
+        <view class="task-main">
+          <view class="task-text">{{item.task_text}}</view>
+          <view class="task-meta">
+            <text wx:if="{{item.student_name}}" class="task-tag">{{item.student_name}}</text>
+            <text wx:if="{{item.stage_label}}" class="task-tag">{{item.stage_label}}</text>
+          </view>
+        </view>
+      </view>
+    </block>
+  </block>
+
+</view>

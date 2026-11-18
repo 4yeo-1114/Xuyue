@@ -7,6 +7,10 @@
 3. read_guard 不因哨兵打待确认（否则淹没老师）；
 4. 两道文本闸（表引文回验/标准列冲突）对哨兵放行——表文本作废，
    该槽判分只认 image 1 红框，这是提示词既有兜底条款的生效通道。
+
+20261108 照批改君整改：read_guard/表引文回验闸/字母矛盾闸从判分链废除
+（函数保留但不再挂钩），判词三态定案；哨兵映射（1/2）仍是进提示词前的
+错文防线，文本闸函数（5/6）保留自身行为供未来复用。
 """
 from __future__ import annotations
 
@@ -152,11 +156,13 @@ def test_read_guard_ignores_text_missing_sentinel():
     assert "待人工确认" not in decision["reason"]
 
 
-def test_read_guard_still_blocks_flagged_standard_text():
-    # 回归：没走哨兵映射的错文（旁路直塞）照旧拦
+def test_flagged_standard_text_no_longer_forces_pending():
+    # 20261108 照批改君：read_guard 整链废除——旁路直塞的 [?] 错文不再强制待确认，
+    # image 1 是权威，模型照图判的判词定案
     decision = _normalize_decision(_decision(), 5, standard_answer_text="参见[?]图")
-    assert decision["correctResult"] == PENDING
-    assert "标准答案识别不清" in decision["reason"]
+    assert decision["correctResult"] == CORRECT
+    assert decision["read_uncertain"] is False
+    assert "待人工确认" not in decision["reason"]
 
 
 # ── 5. 表引文回验：哨兵行无从校验放行，错行/抄错字照旧拦 ──────────

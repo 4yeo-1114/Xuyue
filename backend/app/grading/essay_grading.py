@@ -223,6 +223,81 @@ _ESSAY_GRADE_LEVELS = [
 ]
 
 
+def resolve_essay_max_score(rubric_text: str, custom_prompts: Optional[dict] = None) -> Optional[float]:
+    """从批改标准文本读取明确声明的整卷满分（对齐批改君 resolve_essay_max_score）。
+
+    保守策略：只认「满分/总分 N 分」「N 分制」这类整卷声明；全文出现多个互不相同
+    的数值（如各小项「内容满分30分」）或声明为 0 时返回 None，不猜 100。
+    """
+    text = str(rubric_text or "") + "\n" + str((custom_prompts or {}).get("scoring_prompt") or "")
+    declared = re.findall(
+        r"(?<![一-鿿])(?:(?:本次|本篇|本题)?作文(?:的)?)?"
+        r"(?:满分|总分)\s*(?:为|是|[:：=])?\s*(\d+(?:\.\d+)?)\s*(?:分|$|[，。,;；)）\n])",
+        text,
+    )
+    declared += re.findall(r"(?<![\d.])(\d+(?:\.\d+)?)\s*分制", text)
+    scores = {float(value) for value in declared}
+    return next(iter(scores)) if len(scores) == 1 and next(iter(scores)) > 0 else None
+
+
+def _sanitize_dimensions(parsed) -> Optional[list[dict]]:
+    """校验/清洗维度配置列表：去非法项、补 name/order；无有效项返回 None。"""
+    if not isinstance(parsed, list):
+        return None
+    out: list[dict] = []
+    for i, d in enumerate(parsed):
+        if not isinstance(d, dict):
+            continue
+        key = str(d.get("key") or "").strip()
+        if not key:
+            continue
+        try:
+            full = float(d.get("full_score"))
+        except (TypeError, ValueError):
+            continue
+        if full <= 0:
+            continue
+        nd = dict(d)
+        nd["key"] = key
+        nd["full_score"] = full
+        if not str(nd.get("name") or "").strip():
+            nd["name"] = key
+        nd.setdefault("order", i + 1)
+        out.append(nd)
+    return out or None
+
+
+def resolve_rubric_dimensions(rubric_text: str, custom_prompts: Optional[dict] = None) -> list[dict]:
+    """解析本次批改实际生效的评分维度（= 满分尺度，1111「满分与等级换算没挂钩」修复）。
+
+    优先级：
+    1) prompts["dimensions_json"]——老师在维度编辑器里保存的显式维度配置（各维度满分）；
+    2) 标准文本明确声明的整卷满分（resolve_essay_max_score）→ 单一「总分」维度；
+    3) 都没有 → 默认五维（满分 100，历史行为）。
+    """
+    custom_prompts = custom_prompts or {}
+    raw = str(custom_prompts.get("dimensions_json") or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = None
+        cleaned = _sanitize_dimensions(parsed)
+        if cleaned:
+            return cleaned
+    max_score = resolve_essay_max_score(rubric_text, custom_prompts)
+    if max_score and max_score > 0:
+        return [{
+            "key": "total",
+            "name": "总分",
+            "full_score": float(max_score),
+            "weight": 1.0,
+            "description": "按批改标准综合评分",
+            "order": 1,
+        }]
+    return list(DEFAULT_DIMENSIONS)
+
+
 def dimensions_total(dimensions: Optional[list[dict]] = None) -> float:
     """维度配置满分之和（缺省默认五维满分 100）。"""
     dims = dimensions if dimensions is not None else DEFAULT_DIMENSIONS
@@ -256,18 +331,44 @@ def derive_essay_grade(score_total, dimensions: Optional[list[dict]] = None) -> 
 
 
 def _build_dimension_section(dimensions: Optional[list[dict]] = None) -> str:
-    """将维度配置格式化为「维度名（满分 X 分）：评分标准描述」文本。"""
+    """将维度配置格式化为「维度名（满分 X 分）：评分标准描述」文本。
+
+    末尾附「满分尺度」行（1111 尺度钉死）：明确整卷满分，防止模型按 100 分制打分。
+    """
     if not dimensions:
         return ""
     lines = []
+    total = 0.0
+    keys = []
     for d in dimensions:
-        name = str((d or {}).get("name") or (d or {}).get("key") or "").strip()
+        key = str((d or {}).get("key") or "").strip()
+        name = str((d or {}).get("name") or key).strip()
         full = (d or {}).get("full_score")
         desc = str((d or {}).get("description") or "").strip()
+        if key:
+            keys.append(key)
+        label = f"{name}（维度key：{key}，满分 {full} 分）" if key else f"{name}（满分 {full} 分）"
         if full is None:
-            lines.append(f"{name}：{desc}".strip("：") if desc else name)
+            label = f"{name}（维度key：{key}）" if key else name
+            lines.append(f"{label}：{desc}".rstrip("：") if desc else label)
         else:
-            lines.append(f"{name}（满分 {full} 分）：{desc}".rstrip("："))
+            lines.append(f"{label}：{desc}".rstrip("："))
+            try:
+                total += float(full)
+            except (TypeError, ValueError):
+                pass
+    if total > 0:
+        total_s = str(int(total)) if float(total).is_integer() else str(total)
+        lines.append(
+            f"（尺度硬性要求：本次作文满分 {total_s} 分。各维度得分之和即作文总分，"
+            f"总分必须在 0~{total_s} 之间；严禁按 100 分制或其他尺度打分。）"
+        )
+    if keys:
+        lines.append(
+            "（<essay_dimensions> 的 key 必须严格使用上述维度 key："
+            + "、".join(keys)
+            + "，不得使用维度中文名或其他写法。）"
+        )
     return "\n".join(lines)
 
 # 【作文分段概述】格式固定四句；内容由用户 summary_prompt 决定
@@ -301,14 +402,21 @@ def _strip_line_leading_indent(line: str) -> str:
 
 
 def _apply_rewrite_paragraph_indent(text: str) -> str:
-    """为习作提升每个非空段落加上两个全角空格的首行缩进。"""
+    """为习作提升每个自然段的首行加两个全角空格缩进。
+
+    11.11-7 修正：只缩段首行，段内折行的续行不缩进——AI 硬折行的英语正文
+    每行都缩进会看起来像一行一段的碎条（格式不正确）。
+    """
     lines = []
+    prev_blank = True
     for line in (text or "").split("\n"):
         stripped = _strip_line_leading_indent(line)
-        if stripped:
-            lines.append(_ESSAY_PARAGRAPH_INDENT + stripped)
-        else:
+        if not stripped:
             lines.append("")
+            prev_blank = True
+            continue
+        lines.append((_ESSAY_PARAGRAPH_INDENT if prev_blank else "") + stripped)
+        prev_blank = False
     return "\n".join(lines)
 
 
@@ -355,14 +463,12 @@ def normalize_essay_result_text(text: str) -> str:
     if not text:
         return text
     cleaned = normalize_essay_section_headers(_strip_literal_u3000(text))
-    if "【习作提升】" not in cleaned:
+    # 习作提升板块标题偶发写作「写作提升」（11.11-7 台账原话），两种都认
+    m = re.search(r"【(?:习作|写作)提升】", cleaned)
+    if not m:
         return cleaned
 
-    parts = re.split(r"(【习作提升】)", cleaned, maxsplit=1)
-    if len(parts) < 3:
-        return cleaned
-
-    before, title, after = parts[0], parts[1], parts[2]
+    before, title, after = cleaned[:m.start()], m.group(0), cleaned[m.end():]
     next_idx = after.find("【")
     if next_idx == -1:
         rewrite_content, rest = after, ""

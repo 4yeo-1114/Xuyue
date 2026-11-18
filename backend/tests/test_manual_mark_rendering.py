@@ -2,7 +2,12 @@ import unittest
 
 from PIL import Image, ImageDraw
 
-from app.grading.pipeline import _draw_manual_result_mark, _draw_result_mark, _mark_check_x
+from app.grading.pipeline import (
+    _draw_manual_result_mark,
+    _draw_result_mark,
+    _mark_check_x,
+    _mark_font as _mark_font_for_test,
+)
 
 
 class ManualMarkRenderingTests(unittest.TestCase):
@@ -46,8 +51,11 @@ class ManualMarkRenderingTests(unittest.TestCase):
         self.assertIn((255, 0, 0), colors)
         self.assertNotIn((220, 38, 38), colors)
 
-    def test_pending_mark_draws_nothing(self):
-        """待确认仍不画任何标记（交老师拍板，别被当成已判）。"""
+    def test_pending_mark_draws_question_mark(self):
+        """待确认必须留可见痕迹（2026-11-17 用户反馈：不画=老师以为漏批）。
+
+        画红色「?」，与 √/×/○ 一眼可分；不再是"什么都不画"。
+        """
         image = Image.new("RGB", (1000, 600), "white")
 
         _draw_manual_result_mark(
@@ -57,7 +65,12 @@ class ManualMarkRenderingTests(unittest.TestCase):
             {"bbox": [100, 100, 500, 300], "result": "待确认"},
         )
 
-        self.assertEqual(set(image.getdata()), {(255, 255, 255)})
+        colors = set(image.getdata())
+        self.assertNotEqual(colors, {(255, 255, 255)}, "待确认不能什么都不画（老师会以为漏批）")
+        self.assertTrue(
+            any(c[0] > 150 and c[1] < 120 and c[2] < 120 for c in colors),
+            "待确认应画红色问号",
+        )
 
     def test_unanswered_result_draws_circle(self):
         image = Image.new("RGB", (400, 200), "white")
@@ -105,7 +118,8 @@ class ManualMarkRenderingTests(unittest.TestCase):
         # 旧落点（check_x=220 附近）必须是空白的
         self.assertEqual(image.getpixel((235, 90)), (255, 255, 255))
 
-    def test_pending_result_draws_nothing(self):
+    def test_pending_result_draws_question_mark(self):
+        """待确认画问号（2026-11-17：必须有可见痕迹，不许空白）。"""
         image = Image.new("RGB", (400, 200), "white")
 
         _draw_result_mark(
@@ -114,14 +128,15 @@ class ManualMarkRenderingTests(unittest.TestCase):
             60,
             48,
             {"result": "待确认"},
-            None,
+            _mark_font_for_test(),
             "#CC0000",
             "#FF0000",
             [(0, 0)],
             check_cross_scale=0.2,
         )
 
-        self.assertEqual(set(image.getdata()), {(255, 255, 255)})
+        colors = set(image.getdata())
+        self.assertNotEqual(colors, {(255, 255, 255)}, "待确认不能什么都不画（老师会以为漏批）")
 
 
 def test_reference_vlm_unanswered_slot_draws_circle(tmp_path):
@@ -170,9 +185,12 @@ def test_reference_vlm_unanswered_slot_draws_circle(tmp_path):
         if color == (255, 0, 0)
     ]
     assert red_xy, "marks_only 里也应有未作答红圈"
-    # 2026-10-19：红圈必须落在作答区 bbox 内（描边宽容差 8px），不圈到题干
+    # 2026-11-09 批改君式：空心椭圆圈住作答空（描边+留白 12px），得分「0」贴右缘；
+    # 仍不许圈到题干上
     for px, py in red_xy:
-        assert 200 - 8 <= px <= 600 + 8 and 300 - 8 <= py <= 360 + 8, f"红圈跑出答题区: ({px},{py})"
+        near_circle = 200 - 12 <= px <= 600 + 12 and 300 - 12 <= py <= 360 + 12
+        near_score = 600 <= px <= 600 + 150 and 300 - 12 <= py <= 360 + 12
+        assert near_circle or near_score, f"留痕跑出答题区: ({px},{py})"
 
 
 class MarkAnchorTests(unittest.TestCase):

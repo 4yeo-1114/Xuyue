@@ -1,0 +1,110 @@
+<view class="page">
+
+  <!-- 年级 / 班级 / 场次选择 -->
+  <picker mode="selector" range="{{gradeLabels}}" value="{{gradeIndex}}" bindchange="onGradeChange">
+    <view class="card field">
+      <text class="field-label">年级</text>
+      <view class="field-value field-arrow">{{gradeLabels[gradeIndex] || '请选择年级'}}</view>
+    </view>
+  </picker>
+
+  <picker mode="selector" range="{{classLabels}}" value="{{classIndex}}" bindchange="onClassChange">
+    <view class="card field">
+      <text class="field-label">班级</text>
+      <view class="field-value field-arrow">{{classLabels[classIndex] || '请选择班级'}}</view>
+    </view>
+  </picker>
+
+  <picker mode="selector" range="{{folderItems}}" range-key="display" value="{{folderIndex}}" bindchange="onFolderChange">
+    <view class="card field">
+      <text class="field-label">场次</text>
+      <view class="field-value field-arrow">{{folderItems.length ? folderItems[folderIndex].display : '暂无批改场次'}}</view>
+    </view>
+  </picker>
+
+  <!-- 统计 -->
+  <view class="stat-row">
+    <view class="stat-cell">
+      <view class="stat-num">{{stats.student_count}}</view>
+      <view class="stat-label">参与人数</view>
+    </view>
+    <view class="stat-cell">
+      <view class="stat-num">{{stats.question_count}}</view>
+      <view class="stat-label">收录题目</view>
+    </view>
+    <view class="stat-cell">
+      <view class="stat-num">{{stats.error_rate}}%</view>
+      <view class="stat-label">平均错误率</view>
+    </view>
+  </view>
+
+  <!-- 题目 / 学生 切换 -->
+  <view class="seg">
+    <view class="seg-item {{tab === 'questions' ? 'seg-on' : ''}}" data-tab="questions" bindtap="onTab">题目错情</view>
+    <view class="seg-item {{tab === 'students' ? 'seg-on' : ''}}" data-tab="students" bindtap="onTab">学生错情</view>
+  </view>
+
+  <view wx:if="{{loading}}" class="empty">正在加载…</view>
+
+  <!-- ── 题目错情 ── -->
+  <block wx:elif="{{tab === 'questions'}}">
+    <view wx:if="{{questions.length === 0}}" class="empty">
+      <text class="empty-emoji">📕</text>
+      该场次还没有错题数据
+    </view>
+    <block wx:else>
+      <view class="hint">按错/空占比从高到低看，点谁错得多直接讲评</view>
+      <view class="card q-card" wx:for="{{questions}}" wx:key="title">
+        <view class="q-title" style="margin-left: {{item.indent}}rpx">{{item.title}}</view>
+        <view class="q-meter">
+          <view class="q-meter-fill" style="width: {{item.errPct}}%"></view>
+        </view>
+        <view class="q-meta">
+          <text class="q-tag q-tag-wrong">错 {{item.wrong}}</text>
+          <text class="q-tag q-tag-blank">空 {{item.blank}}</text>
+          <text class="q-tag q-tag-ok">对 {{item.correct}}</text>
+          <text class="q-rate">错误率 {{item.errRate}}%</text>
+        </view>
+        <view class="q-names">错题名单：{{item.names}}</view>
+
+        <!-- 子题 -->
+        <view class="q-sub" wx:for="{{item.subItems}}" wx:for-item="sub" wx:key="title">
+          <view class="q-title q-title-sub" style="margin-left: {{sub.indent}}rpx">{{sub.title}}</view>
+          <view class="q-meta">
+            <text class="q-tag q-tag-wrong">错 {{sub.wrong}}</text>
+            <text class="q-tag q-tag-blank">空 {{sub.blank}}</text>
+            <text class="q-tag q-tag-ok">对 {{sub.correct}}</text>
+            <text class="q-rate">错误率 {{sub.errRate}}%</text>
+          </view>
+          <view class="q-names">错题名单：{{sub.names}}</view>
+        </view>
+      </view>
+    </block>
+  </block>
+
+  <!-- ── 学生错情 ── -->
+  <block wx:else>
+    <view wx:if="{{students.length === 0}}" class="empty">
+      <text class="empty-emoji">👥</text>
+      该场次还没有学生数据
+    </view>
+    <block wx:else>
+      <view class="hint">错题条越长，该生需要补的越多</view>
+      <view class="card s-card" wx:for="{{students}}" wx:key="name">
+        <view class="s-head">
+          <view class="s-name">{{item.name}}</view>
+          <view class="s-score">{{item.score}}<text class="s-score-unit">分</text></view>
+        </view>
+        <view class="s-meter">
+          <view class="s-meter-fill" style="width: {{item.wrongPct}}%"></view>
+        </view>
+        <view class="s-meta">
+          <text class="q-tag q-tag-ok">对 {{item.correct}}</text>
+          <text class="q-tag q-tag-wrong">错 {{item.wrong}}</text>
+        </view>
+        <view class="q-names" wx:if="{{item.wrongText}}">错题：{{item.wrongText}}</view>
+      </view>
+    </block>
+  </block>
+
+</view>

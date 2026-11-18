@@ -300,14 +300,38 @@ def _compress_normalized_image(rgb, ext: str) -> bytes:
     return buf.getvalue()
 
 
+def _force_portrait_turn() -> int:
+    """台账#8 横向扫描转正方向：1=顺时针 90°（rotate(-90)）、2=逆时针 90°（rotate(90)）、0=关。
+
+    环境变量 GRADING_UPLOAD_FORCE_PORTRAIT 优先（排障可临时覆盖）；未设置时读
+    config.settings（.env 里配的键 os.environ 看不见，必须走 Settings 兜底）。
+    """
+    raw = os.environ.get("GRADING_UPLOAD_FORCE_PORTRAIT", "")
+    if not str(raw).strip():
+        try:
+            from app.config import settings
+
+            raw = getattr(settings, "GRADING_UPLOAD_FORCE_PORTRAIT", "") or ""
+        except Exception:
+            raw = ""
+    value = str(raw).strip().lower()
+    if value in ("1", "true", "yes", "on", "cw"):
+        return 1
+    if value in ("2", "ccw"):
+        return 2
+    return 0
+
+
 def normalize_uploaded_image_orientation(path) -> bool:
     """
     手机/相机拍摄的 JPEG/PNG 常带 EXIF Orientation，未转正时像素仍是“横放”，浏览器与 Pillow 表现不一致，预览和批改留痕会横竖错乱。
 
     使用 Pillow ImageOps.exif_transpose 将 EXIF 方向落实到像素并写回文件。
 
-    可选：设置环境变量 GRADING_UPLOAD_FORCE_PORTRAIT=1 时，在 EXIF 转正后若仍满足 宽>高，再逆时针旋转 90°，
-    使整张图以竖向为主（适合竖版试卷被横拍、且 EXIF 仍显示为横向的情况；若确有横版文档请勿开启）。
+    可选：GRADING_UPLOAD_FORCE_PORTRAIT（环境变量优先，.env 配置走 config.settings 兜底）：
+    1=顺时针 90°、2=逆时针 90°、空/0=关。开启后在 EXIF 转正后若仍满足 宽>高，按方向转成竖向
+    （台账#8：复印机横扫竖版 A4 卷时上传即转正，留痕印记才不会相对内容歪 90°。
+    适合竖版试卷被横扫的情况；横版文档多请勿开启，方向反了把 1↔2 对调）。
 
     1016 进门压图：摆正后同尺寸重编码压缩（JPEG/WebP 质量由 GRADING_UPLOAD_JPEG_QUALITY 定，默认 85）。
     只在压缩真的变小时写回（压不小保留原文件字节，避免 JPEG 二次有损反而变大）；
@@ -336,11 +360,11 @@ def normalize_uploaded_image_orientation(path) -> bool:
             im = ImageOps.exif_transpose(im0)
             # EXIF 方向被落实到像素 = 画面动过，必须写回（顺带清掉方向标签）
             rotated = orientation_tag != 1
-            force = os.environ.get("GRADING_UPLOAD_FORCE_PORTRAIT", "").lower() in ("1", "true", "yes")
-            if force:
+            turn = _force_portrait_turn()
+            if turn:
                 w, h = im.size
                 if w > h:
-                    im = im.rotate(-90, expand=True)
+                    im = im.rotate(-90 if turn == 1 else 90, expand=True)
                     rotated = True
             # 倒置/侧放的扫描件（无 EXIF）自动摆正：按千问判定的方向旋转到正向
             deg = detect_image_orientation(im)

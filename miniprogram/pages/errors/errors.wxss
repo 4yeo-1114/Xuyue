@@ -1,0 +1,184 @@
+/* 错题本 */
+
+/* ── 统计三格 ── */
+.stat-row {
+  display: flex;
+  gap: 16rpx;
+  margin-bottom: 24rpx;
+}
+
+.stat-cell {
+  flex: 1;
+  background: #fff;
+  border-radius: 28rpx;
+  padding: 24rpx 12rpx;
+  text-align: center;
+  box-shadow: 0 2rpx 12rpx rgba(74, 63, 92, 0.05);
+}
+
+.stat-num {
+  font-size: 40rpx;
+  font-weight: 700;
+  color: #7c6bff;
+}
+
+/* 糖果三色 */
+.stat-cell:nth-child(1) .stat-num { color: #7c6bff; }
+.stat-cell:nth-child(2) .stat-num { color: #1fb384; }
+.stat-cell:nth-child(3) .stat-num { color: #ff6b8b; }
+
+.stat-cell:nth-child(1) .stat-label::before { content: "👧 "; }
+.stat-cell:nth-child(2) .stat-label::before { content: "📚 "; }
+.stat-cell:nth-child(3) .stat-label::before { content: "🎯 "; }
+
+.stat-label {
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  color: #a89bc4;
+}
+
+/* ── 切换 ── */
+.seg {
+  display: flex;
+  background: #f0ecff;
+  border-radius: 32rpx;
+  padding: 6rpx;
+  margin-bottom: 24rpx;
+}
+
+.seg-item {
+  flex: 1;
+  height: 68rpx;
+  line-height: 68rpx;
+  text-align: center;
+  border-radius: 22rpx;
+  font-size: 26rpx;
+  color: #7d6f99;
+}
+
+.seg-on {
+  background: #fff;
+  color: #7c6bff;
+  font-weight: 600;
+  box-shadow: 0 2rpx 8rpx rgba(74, 63, 92, 0.08);
+}
+
+/* ── 题目卡 ── */
+.q-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #4a3f5c;
+  line-height: 1.5;
+}
+
+.q-title-sub {
+  font-size: 26rpx;
+  font-weight: 500;
+  color: #4a3f5c;
+}
+
+.q-meter {
+  height: 12rpx;
+  background: #f0ecff;
+  border-radius: 999rpx;
+  overflow: hidden;
+  margin: 16rpx 0;
+}
+
+.q-meter-fill {
+  height: 100%;
+  background: #f2647c;
+  border-radius: 999rpx;
+}
+
+.q-meta {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  flex-wrap: wrap;
+}
+
+.q-tag {
+  font-size: 22rpx;
+  padding: 4rpx 14rpx;
+  border-radius: 999rpx;
+}
+
+.q-tag-wrong {
+  background: #ffe4ea;
+  color: #f2647c;
+}
+
+.q-tag-blank {
+  background: #fff3d9;
+  color: #e0870f;
+}
+
+.q-tag-ok {
+  background: #e2f8ef;
+  color: #1fb384;
+}
+
+.q-rate {
+  font-size: 22rpx;
+  color: #a89bc4;
+  margin-left: auto;
+}
+
+.q-names {
+  margin-top: 12rpx;
+  font-size: 24rpx;
+  color: #7d6f99;
+  line-height: 1.5;
+}
+
+.q-sub {
+  margin-top: 20rpx;
+  padding-top: 16rpx;
+  border-top: 1rpx dashed #f0ecff;
+}
+
+/* ── 学生卡 ── */
+.s-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.s-name {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: #4a3f5c;
+}
+
+.s-score {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: #7c6bff;
+}
+
+.s-score-unit {
+  font-size: 22rpx;
+  font-weight: 400;
+  color: #a89bc4;
+  margin-left: 4rpx;
+}
+
+.s-meter {
+  height: 12rpx;
+  background: #f0ecff;
+  border-radius: 999rpx;
+  overflow: hidden;
+  margin: 16rpx 0;
+}
+
+.s-meter-fill {
+  height: 100%;
+  background: #f2647c;
+  border-radius: 999rpx;
+}
+
+.s-meta {
+  display: flex;
+  gap: 12rpx;
+}

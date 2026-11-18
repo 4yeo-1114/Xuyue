@@ -10,18 +10,23 @@ import base64
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
+import sys
 import threading
 import traceback
+import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+from app.services.perf_tuning import env_workers
 
 try:
     from openai import OpenAI
@@ -46,8 +51,14 @@ from app.grading.baidu_grading import (
     _post_json,
 )
 from app.grading.doc_convert import enhance_for_ocr, ensure_image_path
-from app.grading.pipeline import draw_marks_only_and_save, draw_real_marks_and_save, draw_manual_annotations
-from app.grading.user_paths import correct_docs_dir, ct_root, grading_paths
+from app.grading.pipeline import (
+    draw_marks_only_and_save,
+    draw_real_marks_and_save,
+    draw_manual_annotations,
+    _adaptive_mark_params,
+    _mark_font,
+)
+from app.grading.user_paths import correct_docs_dir, ct_root, grading_paths, project_root
 from app.utils.qwen_settings import DEFAULT_QWEN_MODEL, QWEN_CHAT_EXTRA_BODY, get_qwen_config
 from app.grading.wrong_question_db import _infer_student_from_paper_name, _load_class_context
 
@@ -175,7 +186,7 @@ def _cn_numeral_to_int(token: str) -> Optional[int]:
     text = str(token or "").strip()
     if not text:
         return None
-    if text.isdigit():
+    if text.isdigit() and text.isascii():
         return int(text)
     if text in _CN_DIGITS:
         return _CN_DIGITS[text]
@@ -437,8 +448,17 @@ def build_reference_layout_page(
     page_no: int,
     filename: str,
     image_url: str,
+    printed_numbers: Optional[list[dict]] = None,
 ) -> dict[str, Any]:
-    """Convert Baidu's OCR questions into the editable frontend layout."""
+    """Convert Baidu's OCR questions into the editable frontend layout.
+
+    printed_numbers（可选）：[{num, bbox}] 卷面印刷题号（通用 OCR 识别）。
+    百度 only_split 返回里没有题干文字，display_index 只是返回顺序号，与卷面
+    印刷题号并不一致（同一页左侧「1–15 答题表格」会被当成第 1 题，导致后面
+    每道题整体错位一题、label「N_M」与标准答案键全对不上）。传入印刷题号后
+    按「题号中心点落在题目框内/框上沿附近」锚定 display_no；锚不到才退回顺序号。
+    同一题号只认领一次（防一行两题吸同一个号）。
+    """
     questions = document.get("questions") if isinstance(document, dict) else []
     raw_size = document.get("image_size") if isinstance(document, dict) else None
     image_size = (
@@ -446,10 +466,38 @@ def build_reference_layout_page(
         if isinstance(raw_size, (list, tuple)) and len(raw_size) >= 2
         else (0, 0)
     )
+    # 先拆「一框一题号」的答题表格，再锚定单题：表格里那排题号不能让整张表
+    # 认领成「第 N 题」，否则真正的第 N 题被挤到 N+1（整体错位一题）。
+    grid_units, grid_claimed = _split_answer_grids(questions, {}, printed_numbers)
+    rest_numbers = [
+        n for n in (printed_numbers or [])
+        if isinstance(n, dict) and int(n.get("num") or 0) not in grid_claimed
+    ]
+    anchors = _anchor_printed_numbers(
+        [q for q in questions if id(q) not in grid_units], rest_numbers, image_size
+    )
     output: list[dict[str, Any]] = []
-    for q in questions or []:
+    used_numbers: set[int] = set()
+    for order, q in enumerate(questions or [], start=1):
         if not isinstance(q, VlmQuestion):
             continue
+        if id(q) in grid_units:
+            # 答题表格题：一个百度块里横排 N 个作答框、每框上方印着各自题号
+            # → 拆成 N 道单框题，按框上方题号编号（否则整张表被当成第 1 题，
+            # 共用「1_1」标准答案，且后续所有题号错位）。
+            for num, box in grid_units[id(q)]:
+                if num in used_numbers:
+                    print(f"[reference-layout] 表格题号 {num} 重复，跳过该格 bbox={box}")
+                    continue
+                used_numbers.add(num)
+                output.append(_single_slot_question(num, box, image_size, q))
+            continue
+        display_no = anchors.get(id(q)) or q.display_index or order
+        if display_no in used_numbers:
+            # 顺序号与已锚定的印刷题号撞号：顺延到最近的空号，绝不覆盖已认领的题
+            while display_no in used_numbers:
+                display_no += 1
+        used_numbers.add(display_no)
         region_boxes = q.question_regions or [q.question_bbox]
         regions = []
         for region_index, box in enumerate(region_boxes):
@@ -458,8 +506,8 @@ def build_reference_layout_page(
                 continue
             regions.append(
                 {
-                    "region_id": f"q-{q.display_index}-r{region_index + 1}",
-                    "label": f"{q.display_index}-{chr(65 + region_index)}",
+                    "region_id": f"q-{display_no}-r{region_index + 1}",
+                    "label": f"{display_no}-{chr(65 + region_index)}",
                     "role": "question",
                     "order": region_index + 1,
                     "bbox": normalized,
@@ -472,8 +520,8 @@ def build_reference_layout_page(
                 continue
             slots.append(
                 {
-                    "slot_id": f"q-{q.display_index}-s{slot_index}",
-                    "label": f"{q.display_index}_{slot_index}",
+                    "slot_id": f"q-{display_no}-s{slot_index}",
+                    "label": f"{display_no}_{slot_index}",
                     "order": slot_index,
                     "regions": [{"bbox": normalized}],
                     "bbox": normalized,
@@ -482,8 +530,8 @@ def build_reference_layout_page(
             )
         output.append(
             {
-                "question_id": f"q-{q.display_index}",
-                "display_no": q.display_index,
+                "question_id": f"q-{display_no}",
+                "display_no": display_no,
                 "baidu_question_id": q.question_id,
                 "question_type": q.question_type,
                 "question_text": q.question_words,
@@ -498,6 +546,186 @@ def build_reference_layout_page(
         "image_size": [image_size[0], image_size[1]],
         "questions": output,
     }
+
+
+def _split_answer_grids(
+    questions: list, anchors: dict[int, int], printed_numbers: Optional[list[dict]]
+) -> tuple[dict[int, list[tuple[int, list]]], set[int]]:
+    """识别「一块多框、每框上方印着自己的题号」的答题表格题，拆成 [(题号, 框), ...]。
+
+    判定条件全部来自版式证据，不假设题号区间或空数：
+    - 该题未被印刷题号锚定（锚定的是单题，不是表格）；
+    - 作答框 >= 2 个；
+    - 每个框上方（底边到框顶 0~60px 内、水平中心落在框宽 ±6px 内）都有一个题号，
+      且题号互不重复。
+    返回 ({id(question): [(num, bbox), ...]}, 已占用题号集合)。
+    """
+    units: dict[int, list[tuple[int, list]]] = {}
+    claimed: set[int] = set()
+    if not printed_numbers:
+        return units, claimed
+    nums = []
+    for n in printed_numbers:
+        box = n.get("bbox") if isinstance(n, dict) else None
+        try:
+            x1, y1, x2, y2 = (float(v) for v in (box or [])[:4])
+            num = int(n.get("num"))
+        except (TypeError, ValueError):
+            continue
+        if x2 <= x1 or y2 <= y1:
+            continue
+        nums.append((num, x1, y1, x2, y2))
+    for q in questions:
+        if not isinstance(q, VlmQuestion) or id(q) in anchors:
+            continue
+        boxes = [b for b in (q.answer_bboxes or []) if isinstance(b, (list, tuple)) and len(b) >= 4]
+        if len(boxes) < 2:
+            continue
+        pairs: list[tuple[int, list]] = []
+        used: set[int] = set()
+        ok = True
+        for box in boxes:
+            bx1, by1, bx2, by2 = (float(v) for v in box[:4])
+            cx = (bx1 + bx2) / 2.0
+            # 只认「框正上方」的题号，且取水平中心最近者：答题表格里各列题号与
+            # 答案格严格上下对齐，按 x 中心配对才不会被 y 抖动打乱。
+            best_num = None
+            best_dx = None
+            for num, nx1, ny1, nx2, ny2 in nums:
+                if num in used:
+                    continue
+                if not (0 <= by1 - ny2 <= 60):
+                    continue
+                ncx = (nx1 + nx2) / 2.0
+                if not (bx1 - 8 <= ncx <= bx2 + 8):
+                    continue
+                dx = abs(ncx - cx)
+                if best_dx is None or dx < best_dx:
+                    best_num, best_dx = num, dx
+            if best_num is None:
+                ok = False
+                break
+            used.add(best_num)
+            pairs.append((best_num, [int(v) for v in box[:4]]))
+        if ok and pairs:
+            pairs.sort(key=lambda p: p[0])
+            units[id(q)] = pairs
+            claimed |= used
+    return units, claimed
+
+
+def _single_slot_question(num: int, bbox: list, image_size: tuple[int, int], source) -> dict[str, Any]:
+    """表格拆格后的单框题（与 build_reference_layout_page 输出同构）。"""
+    box = _layout_bbox(bbox, image_size) or [0, 0, 0, 0]
+    return {
+        "question_id": f"q-{num}",
+        "display_no": num,
+        "baidu_question_id": getattr(source, "question_id", num),
+        "question_type": getattr(source, "question_type", "") or "",
+        "question_text": "",
+        "regions": [
+            {"region_id": f"q-{num}-r1", "label": f"{num}-A", "role": "question", "order": 1, "bbox": box}
+        ],
+        "answer_slots": [
+            {
+                "slot_id": f"q-{num}-s1",
+                "label": f"{num}_1",
+                "order": 1,
+                "regions": [{"bbox": box}],
+                "bbox": box,
+                "has_handwriting_location": True,
+            }
+        ],
+    }
+
+
+def _printed_number_candidates(words: list) -> list[dict]:
+    """从通用 OCR 词里提取「卷面印刷题号」候选 [{num, bbox}]。
+
+    覆盖两种真实形态（不假设题号区间）：
+    1. 题干粘连词「1.下列变化…」「13.小苏打…」：取词首的「N.」，bbox 只保留数字部分
+       （按字高估算数字宽度），避免整行宽 bbox 把锚定吸乱；
+    2. 答题表格里的裸数字题号「1」「2」…「15」：整词即题号。
+    其余词（公式常数、学年、学号）不进入候选。
+    """
+    out: list[dict] = []
+    for w in words or []:
+        if not isinstance(w, dict):
+            continue
+        text = str(w.get("words") or "").strip()
+        box = w.get("bbox")
+        try:
+            x1, y1, x2, y2 = (float(v) for v in (box or [])[:4])
+        except (TypeError, ValueError):
+            continue
+        if x2 <= x1 or y2 <= y1:
+            continue
+        m = re.match(r"^(\d{1,2})\s*[.．、]", text)
+        if m:
+            digits = m.group(1)
+            width = max(8.0, (y2 - y1) * 0.55 * len(digits))
+            out.append({"num": int(digits), "bbox": [int(x1), int(y1), int(min(x2, x1 + width)), int(y2)]})
+            continue
+        if text.isdigit() and text.isascii() and len(text) <= 2:
+            # ⚠️ str.isdigit() 对带圈数字（④）、上标数字也返回 True，但 int() 会抛
+            # ValueError —— 必须限定 ASCII 数字，否则整卷切题直接崩。
+            out.append({"num": int(text), "bbox": [int(x1), int(y1), int(x2), int(y2)]})
+    out.sort(key=lambda n: (n["bbox"][1], n["bbox"][0]))
+    return out
+
+
+def _anchor_printed_numbers(
+    questions: list, printed_numbers: Optional[list[dict]], image_size: tuple[int, int]
+) -> dict[int, int]:
+    """把阅读顺序里的题→卷面印刷题号锚定，返回 {id(question): display_no}。
+
+    规则（不引入任何纸张相关的固定题号范围）：
+    - 题号中心点落在题目框内 → 候选；
+    - 题号底边在题目框顶上方 60px 内且水平位置在框内 → 候选（题号常印在框上沿）；
+    - 多个候选取中心距题目框左上角最近者；
+    - 同一题号只能认领一次；锚不到返回空（调用方退回顺序号）。
+    """
+    if not printed_numbers:
+        return {}
+    nums = []
+    for n in printed_numbers:
+        box = n.get("bbox") if isinstance(n, dict) else None
+        try:
+            x1, y1, x2, y2 = (float(v) for v in (box or [])[:4])
+            num = int(n.get("num"))
+        except (TypeError, ValueError):
+            continue
+        if x2 <= x1 or y2 <= y1:
+            continue
+        nums.append({"num": num, "cx": (x1 + x2) / 2.0, "cy": (y1 + y2) / 2.0, "box": (x1, y1, x2, y2)})
+    if not nums:
+        return {}
+    anchors: dict[int, int] = {}
+    claimed: set[int] = set()
+    for q in questions:
+        if not isinstance(q, VlmQuestion):
+            continue
+        box = q.question_bbox
+        if not box or len(box) != 4:
+            continue
+        bx1, by1, bx2, by2 = (float(v) for v in box[:4])
+        best = None
+        best_dist = None
+        for n in nums:
+            if n["num"] in claimed:
+                continue
+            nx1, ny1, nx2, ny2 = n["box"]
+            inside = bx1 <= n["cx"] <= bx2 and by1 <= n["cy"] <= by2
+            above = bx1 <= n["cx"] <= bx2 and 0 <= by1 - ny2 <= 60
+            if not (inside or above):
+                continue
+            dist = (n["cx"] - bx1) ** 2 + (n["cy"] - by1) ** 2
+            if best_dist is None or dist < best_dist:
+                best, best_dist = n, dist
+        if best is not None:
+            anchors[id(q)] = best["num"]
+            claimed.add(best["num"])
+    return anchors
 
 
 def _layout_slot_boxes(slot: Any, image_size: tuple[int, int]) -> list[list[int]]:
@@ -609,18 +837,34 @@ def apply_reference_layout_to_document(
     image_size = (_to_int(image_size_raw[0]), _to_int(image_size_raw[1]))
     questions = extract_vlm_questions(corrected.get("raw") or {}, image_path=str(corrected.get("image_path") or corrected.get("source_path") or ""))
     layout_questions = layout_page.get("questions") if isinstance(layout_page, dict) else []
-    by_index: dict[int, dict[str, Any]] = {}
+    # 11.11-1 手动排序+重编号：display_no 是老师定的题号（会随排序变），
+    # question_id 里的 q-{原号} ↔ raw 身份（戳号/首切序号）才是认领键——
+    # by_identity=原题按身份认领，by_plain_no=无 question_id 旧数据按号认领，
+    # by_no 按新题号认领（新增题合成兜底）。
+    by_identity: dict[int, dict[str, Any]] = {}
+    by_plain_no: dict[int, dict[str, Any]] = {}
+    by_no: dict[int, dict[str, Any]] = {}
     for item in layout_questions or []:
         if not isinstance(item, dict):
             continue
         display_no = _to_int(item.get("display_no"), 0)
-        if display_no > 0 and display_no not in by_index:
-            by_index[display_no] = item
+        if display_no > 0 and display_no not in by_no:
+            by_no[display_no] = item
+        qid = str(item.get("question_id") or "")
+        match = re.fullmatch(r"q-(\d+)", qid)
+        if match:
+            identity_no = int(match.group(1))
+            if identity_no > 0 and identity_no not in by_identity:
+                by_identity[identity_no] = item
+        elif not qid:
+            if display_no > 0 and display_no not in by_plain_no:
+                by_plain_no[display_no] = item
     kept_questions: list[VlmQuestion] = []
     for question in questions:
-        # 稳定身份戳：重建提取时按戳认 display_no，中段删除也不挪号
-        question.raw["layout_display_index"] = question.display_index
-        edit = by_index.get(question.display_index)
+        # 稳定身份戳：重建提取时按戳认原号，中段删除也不挪号
+        identity = question.display_index
+        question.raw["layout_display_index"] = identity
+        edit = by_identity.get(identity) or by_plain_no.get(identity)
         if edit is not None and not _layout_edit_binds_raw(edit):
             edit = None
         if not edit:
@@ -629,6 +873,10 @@ def apply_reference_layout_to_document(
             question.raw["layout_deleted"] = True
             continue
         question.raw.pop("layout_deleted", None)
+        new_no = _to_int(edit.get("display_no"), 0)
+        if new_no > 0:
+            # 老师定的题号（重编号后与原号不同）：批改报告「第N题」按它来
+            question.display_index = new_no
         had_slots = bool(question.answer_bboxes) or bool(question.raw.get("layout_slots_cleared"))
         region_boxes = []
         for region in edit.get("regions") or []:
@@ -673,6 +921,14 @@ def apply_reference_layout_to_document(
     existing_indexes = {question.display_index for question in questions}
     raw_dict = corrected.get("raw") if isinstance(corrected.get("raw"), dict) else None
     raw_container = _raw_questions_list(raw_dict) if raw_dict else None
+    if isinstance(raw_container, list):
+        # 分身是派生数据、提取已不回流：先清掉旧分身再由 layout 重新合成，
+        # 反复 apply 不让 raw 越攒越多（每轮分身数量=新增题数量）。
+        raw_container[:] = [
+            item
+            for item in raw_container
+            if not (isinstance(item, dict) and item.get("synthetic_from_layout"))
+        ]
     for edit in layout_questions or []:
         if not isinstance(edit, dict):
             continue
@@ -720,6 +976,50 @@ def save_reference_layout_prepare(
     return prepare_id
 
 
+def _build_reference_layout_final_page(
+    source: Any,
+    edited: dict[str, Any],
+) -> dict[str, Any]:
+    """把一页审查结果建成待落盘条目（整卷 confirm 与每面单独保存共用，11.11-11）。"""
+    page_no = str(_to_int(edited.get("page_no"), 0))
+    if not isinstance(source, dict):
+        raise RuntimeError(f"切题审查缺少 P{page_no} 数据")
+    questions = edited.get("questions")
+    if not isinstance(questions, list) or not questions:
+        raise RuntimeError(f"标准答案 P{page_no} 至少需要一个题目框")
+    corrected_raw = copy.deepcopy(source.get("raw") or {})
+    try:
+        corrected_document = apply_reference_layout_to_document(
+            {
+                "raw": corrected_raw,
+                "image_path": source.get("image_path"),
+                "image_size": source.get("image_size") or [0, 0],
+            },
+            edited,
+        )
+        corrected_raw = corrected_document.get("raw") or corrected_raw
+    except Exception:
+        # The editable layout remains authoritative even if the optional
+        # raw-JSON enrichment cannot be reconstructed at save time.
+        pass
+    return {
+        "page_no": _to_int(source.get("page_no"), 1),
+        "filename": source.get("filename"),
+        "source_signature": source.get("source_signature") or {},
+        "image_path": source.get("image_path"),
+        "image_size": source.get("image_size") or [0, 0],
+        "raw": source.get("raw") or {},
+        "corrected_raw": corrected_raw,
+        "layout": {
+            "page_no": _to_int(source.get("page_no"), 1),
+            "filename": source.get("filename"),
+            "image_url": edited.get("image_url") or source.get("image_url") or "",
+            "image_size": source.get("image_size") or [0, 0],
+            "questions": copy.deepcopy(questions),
+        },
+    }
+
+
 def confirm_reference_layout(
     folder_safe: str,
     prepare_id: str,
@@ -731,47 +1031,16 @@ def confirm_reference_layout(
         raise RuntimeError("切题审查数据已失效，请重新进行切题审查")
     pending_pages = pending.get("pages") if isinstance(pending.get("pages"), dict) else {}
     final_pages: dict[str, dict[str, Any]] = {}
+    remaps: dict[str, dict[int, int]] = {}
     for edited in edited_pages or []:
         if not isinstance(edited, dict):
             continue
         page_no = str(_to_int(edited.get("page_no"), 0))
-        source = pending_pages.get(page_no)
-        if not isinstance(source, dict):
-            raise RuntimeError(f"切题审查缺少 P{page_no} 数据")
-        questions = edited.get("questions")
-        if not isinstance(questions, list) or not questions:
-            raise RuntimeError(f"标准答案 P{page_no} 至少需要一个题目框")
-        corrected_raw = copy.deepcopy(source.get("raw") or {})
-        try:
-            corrected_document = apply_reference_layout_to_document(
-                {
-                    "raw": corrected_raw,
-                    "image_path": source.get("image_path"),
-                    "image_size": source.get("image_size") or [0, 0],
-                },
-                edited,
-            )
-            corrected_raw = corrected_document.get("raw") or corrected_raw
-        except Exception:
-            # The editable layout remains authoritative even if the optional
-            # raw-JSON enrichment cannot be reconstructed at save time.
-            pass
-        final_pages[page_no] = {
-            "page_no": _to_int(source.get("page_no"), 1),
-            "filename": source.get("filename"),
-            "source_signature": source.get("source_signature") or {},
-            "image_path": source.get("image_path"),
-            "image_size": source.get("image_size") or [0, 0],
-            "raw": source.get("raw") or {},
-            "corrected_raw": corrected_raw,
-            "layout": {
-                "page_no": _to_int(source.get("page_no"), 1),
-                "filename": source.get("filename"),
-                "image_url": edited.get("image_url") or source.get("image_url") or "",
-                "image_size": source.get("image_size") or [0, 0],
-                "questions": copy.deepcopy(questions),
-            },
-        }
+        final_pages[page_no] = _build_reference_layout_final_page(
+            pending_pages.get(page_no), edited
+        )
+        # 11.11-1 重编号对照：手改答案覆盖层的题号键跟着换号
+        remaps[page_no] = _display_no_remap(pending_pages.get(page_no), edited)
     if not final_pages:
         raise RuntimeError("没有可保存的切题审查页面")
     if set(final_pages) != set(pending_pages):
@@ -787,10 +1056,47 @@ def confirm_reference_layout(
         "pages": final_pages,
     }
     _write_json(_reference_layout_path(folder_safe), result)
+    for page_no, mapping in remaps.items():
+        _remap_answer_table_manual_keys(folder_safe, page_no, mapping)
     try:
         pending_path.unlink(missing_ok=True)
     except OSError:
         pass
+    return result
+
+
+def save_reference_layout_page(
+    folder_safe: str,
+    prepare_id: str,
+    edited_page: dict[str, Any],
+) -> dict[str, Any]:
+    """11.11-11 每面切完单独保存：单页审查结果并进已保存布局，其余页不动。
+
+    切分界面把一面切完就落盘，老师不用等整卷确认；审查看会话（pending）保留，
+    最后点确认仍走 confirm_reference_layout 整卷覆盖（含完整页校验）。
+    """
+    pending_path = _reference_layout_path(folder_safe, pending=True)
+    pending = _read_json(pending_path)
+    if not pending or str(pending.get("prepare_id")) != str(prepare_id):
+        raise RuntimeError("切题审查数据已失效，请重新进行切题审查")
+    pending_pages = pending.get("pages") if isinstance(pending.get("pages"), dict) else {}
+    if not isinstance(edited_page, dict):
+        raise RuntimeError("没有可保存的切题审查页面")
+    page_no = str(_to_int(edited_page.get("page_no"), 0))
+    entry = _build_reference_layout_final_page(pending_pages.get(page_no), edited_page)
+    saved = load_reference_layout(folder_safe) or {}
+    merged_pages = saved.get("pages") if isinstance(saved.get("pages"), dict) else {}
+    result = {
+        "version": 1,
+        "status": "confirmed",
+        "updated_at": _now_iso(),
+        "pages": {**merged_pages, page_no: entry},
+    }
+    _write_json(_reference_layout_path(folder_safe), result)
+    # 11.11-1 重编号对照：手改答案覆盖层的题号键跟着换号
+    _remap_answer_table_manual_keys(
+        folder_safe, page_no, _display_no_remap(pending_pages.get(page_no), edited_page)
+    )
     return result
 
 
@@ -802,8 +1108,14 @@ def load_reference_layout_for_editing(
     folder_safe: str,
     standard_sources: dict[int, tuple[Path, Path]],
     image_urls: Optional[dict[int, str]] = None,
+    fallback_builder: Optional[Callable[[int, Path, Path], Optional[dict[str, Any]]]] = None,
 ) -> dict[str, Any]:
-    """Open the confirmed layout for editing without running OCR again."""
+    """Open the confirmed layout for editing without running OCR again.
+
+    11.11-10：替换一张标准答案只重切本页——签名不匹配的页交给 fallback_builder
+    现场重切，其余页原样沿用已保存的切题，另一张切好的题不再跟着作废。
+    不传 fallback_builder 时保持旧契约：任何页失效都整体报错。
+    """
     data = load_reference_layout(folder_safe)
     saved_pages = data.get("pages") if isinstance(data.get("pages"), dict) else {}
     if not standard_sources or not saved_pages:
@@ -811,13 +1123,31 @@ def load_reference_layout_for_editing(
 
     pending_pages: list[dict[str, Any]] = []
     response_pages: list[dict[str, Any]] = []
+    recut_pages: list[int] = []
     for page_no, (source_path, grading_path) in sorted(standard_sources.items()):
         saved = saved_pages.get(str(page_no))
-        if not isinstance(saved, dict) or saved.get("source_signature") != _file_signature(source_path):
-            raise RuntimeError(f"标准答案 P{page_no} 已变更，请重新进行切题审查")
-        layout = copy.deepcopy(saved.get("layout"))
+        signature_ok = (
+            isinstance(saved, dict)
+            and saved.get("source_signature") == _file_signature(source_path)
+        )
+        layout = copy.deepcopy(saved.get("layout")) if signature_ok else None
+        raw = copy.deepcopy(saved.get("raw") or {}) if signature_ok else None
+        pending_image_path = str(grading_path)
         if not isinstance(layout, dict):
-            raise RuntimeError(f"标准答案 P{page_no} 缺少已保存的切题数据")
+            if fallback_builder is None:
+                if signature_ok:
+                    raise RuntimeError(f"标准答案 P{page_no} 缺少已保存的切题数据")
+                raise RuntimeError(f"标准答案 P{page_no} 已变更，请重新进行切题审查")
+            record = fallback_builder(page_no, source_path, grading_path)
+            if not isinstance(record, dict):
+                raise RuntimeError(f"标准答案 P{page_no} 已变更，请重新进行切题审查")
+            layout = {
+                key: copy.deepcopy(record.get(key))
+                for key in ("page_no", "filename", "image_url", "image_size", "questions")
+            }
+            raw = copy.deepcopy(record.get("raw") or {})
+            pending_image_path = str(record.get("image_path") or grading_path)
+            recut_pages.append(page_no)
         if image_urls and image_urls.get(page_no):
             layout["image_url"] = image_urls[page_no]
         layout["page_no"] = page_no
@@ -826,14 +1156,14 @@ def load_reference_layout_for_editing(
             {
                 **copy.deepcopy(layout),
                 "source_path": str(source_path),
-                "image_path": str(grading_path),
-                "raw": copy.deepcopy(saved.get("raw") or {}),
+                "image_path": pending_image_path,
+                "raw": raw or {},
             }
         )
         response_pages.append(layout)
 
     prepare_id = save_reference_layout_prepare(folder_safe, pending_pages)
-    return {"prepare_id": prepare_id, "pages": response_pages}
+    return {"prepare_id": prepare_id, "pages": response_pages, "recut_pages": recut_pages}
 
 
 def delete_reference_layout(folder_safe: str, page_no: Optional[int] = None) -> None:
@@ -1029,7 +1359,7 @@ def crop_reference_answer_table_region(
 _ANSWER_CHUNK_NO_RE = re.compile(r"(?:^|[\s\n])(\d{1,3})\s*[.、．:：]\s*")
 # 答案表识别算法版本进 cache_token：拆条/补漏算法升级后旧缓存自动重建
 #（手改覆盖层只看 source_signature，不受版本号影响）。
-_ANSWER_TABLE_EXTRACT_VERSION = 5
+_ANSWER_TABLE_EXTRACT_VERSION = 6
 
 _ANSWER_SCAN_PROMPT = (
     "你是标准答案识别专用助手。图片是标准答案卷（或其局部）的截图。"
@@ -1080,7 +1410,7 @@ def _split_entry_by_printed_numbers(entry: dict) -> list[dict]:
         if current <= previous:
             return [entry]
     parent_no = str(entry.get("printed_no") or "").strip()
-    if parent_no.isdigit() and int(parent_no) != numbers[0]:
+    if parent_no.isdigit() and parent_no.isascii() and int(parent_no) != numbers[0]:
         return [entry]
     question_bbox = entry.get("question_bbox") or [0, 0, 0, 0]
     base_bbox = slots[0].get("bbox") or question_bbox
@@ -1142,6 +1472,117 @@ def _split_answer_entries_by_printed_numbers(entries: list[dict]) -> list[dict]:
         used_display.update(child_display)
         split.extend(children)
     return split
+
+
+def _answer_entry_inline_number(text: str) -> Optional[int]:
+    """答案文本开头若带「N.」题号，返回 N；否则 None。"""
+    m = re.match(r"^\s*(\d{1,3})\s*[.、．:：]\s*", str(text or ""))
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
+def _answer_entry_number_offset(entries: list[dict]) -> Optional[int]:
+    """检测答案表「整体错行」：返回统一偏移量（应为 0），检测不出返回 None。
+
+    2026-11-17 P0 用户反馈：16–25 的答案序列与题号整体错开一行，学生写 be/have/2s
+    也被判 ✓。判据：每条答案文本自带的题号（"16. having" 里的 16）与条目 printed_no
+    之间的差，若 ≥60% 的条目是同一个非零差值，则判定整表偏移了该差值。
+    """
+    deltas: list[int] = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        entry_no = _to_int(entry.get("printed_no"), 0)
+        if entry_no <= 0:
+            continue
+        texts = [
+            str(slot.get("answer_text") or "")
+            for slot in (entry.get("slots") or [])
+            if isinstance(slot, dict)
+        ]
+        inline = next((n for n in (_answer_entry_inline_number(t) for t in texts) if n), None)
+        if inline:
+            deltas.append(inline - entry_no)
+    if len(deltas) < 3:
+        return None
+    counts: dict[int, int] = {}
+    for delta in deltas:
+        counts[delta] = counts.get(delta, 0) + 1
+    top_delta, top_count = max(counts.items(), key=lambda kv: kv[1])
+    if top_delta != 0 and top_count * 10 >= len(deltas) * 6:
+        return top_delta
+    return None
+
+
+def _strip_entry_inline_numbers(entry: dict) -> None:
+    """剥掉与条目题号**不一致**的答案文本前缀题号（如 printed_no=15 却写着「16. having」）。
+
+    题号和文本一致时保留原样（「8.(1)海日生残夜」里的 8 是合法题号，也是小问定位的一部分）。
+    """
+    entry_no = _to_int(entry.get("printed_no"), 0)
+    for slot in entry.get("slots") or []:
+        if not isinstance(slot, dict):
+            continue
+        text = str(slot.get("answer_text") or "")
+        inline = _answer_entry_inline_number(text)
+        if inline and entry_no > 0 and inline != entry_no:
+            slot["answer_text"] = re.sub(r"^\s*\d{1,3}\s*[.、．:：]\s*", "", text).strip()
+    texts = [str(slot.get("answer_text") or "") for slot in (entry.get("slots") or []) if isinstance(slot, dict)]
+    if texts:
+        entry["full_answer"] = "\n".join(t for t in texts if t.strip())
+
+
+def _align_answer_entry_numbers(entries: list[dict]) -> list[dict]:
+    """答案表错行矫正：整体偏移时改按文本内题号重编号；否则只剥内联题号。
+
+    - 检测出统一偏移（如全部条目答案文本都比 printed_no 大/小 1）→ 以文本内题号为准
+      重设 printed_no / display_index，保证「第25题」拿到「25. study」这条；
+    - 没有整体偏移 → 只剥掉文本里的题号前缀（不影响其他逻辑）。
+    两种情况都不会凭空造答案；重编号后若有撞号整条保留原样（宁缺勿串）。
+    """
+    if not isinstance(entries, list) or not entries:
+        return entries
+    offset = _answer_entry_number_offset(entries)
+    if offset is None:
+        for entry in entries:
+            if isinstance(entry, dict):
+                _strip_entry_inline_numbers(entry)
+        return entries
+    print(f"[answer-table] 检测到答案表整体错行 {offset:+d}，按文本内题号重编号")
+    existing = {
+        _to_int(e.get("printed_no"), 0) for e in entries if isinstance(e, dict)
+    }
+    renumbered: list[dict] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        inline = None
+        for slot in entry.get("slots") or []:
+            if isinstance(slot, dict):
+                inline = _answer_entry_inline_number(slot.get("answer_text") or "")
+                if inline:
+                    break
+        if inline and inline != _to_int(entry.get("printed_no"), 0):
+            try:
+                entry["printed_no"] = str(inline)
+                entry["display_index"] = 1000 + inline
+                entry["numbering_corrected"] = True
+            except Exception:
+                pass
+        _strip_entry_inline_numbers(entry)
+        renumbered.append(entry)
+    # 重编号后撞号：退回到不做整表重编（宁缺勿串）
+    nums = [_to_int(e.get("printed_no"), 0) for e in renumbered]
+    if len(nums) != len(set(nums)):
+        print("[answer-table] 重编号后出现重复题号，放弃整表重编")
+        for entry in entries:
+            if isinstance(entry, dict):
+                entry.pop("numbering_corrected", None)
+    return entries
 
 
 def _extract_scan_answer_chunks(client, model, image, bbox: list[int]) -> dict[int, str]:
@@ -1329,29 +1770,30 @@ def extract_reference_answer_table(
     if not questions:
         return []
     client, model = _get_qwen_client_and_model()
-    jobs: list[tuple[int, int, list[int]]] = []
+    jobs: list[tuple[VlmQuestion, int, list[int]]] = []
     for question in questions:
         for sub_index, bbox in enumerate(_question_slot_bboxes(question), start=1):
-            jobs.append((question.display_index, sub_index, bbox))
+            jobs.append((question, sub_index, bbox))
     results: dict[tuple[int, int], str] = {}
     with Image.open(image_path) as img0:
         image = img0.convert("RGB")
 
-        def _one(job: tuple[int, int, list[int]]) -> tuple[int, int, str]:
-            q_index, sub_index, bbox = job
+        def _one(job: tuple[VlmQuestion, int, list[int]]) -> tuple[int, int, str]:
+            question, sub_index, bbox = job
             if stop_event and stop_event.is_set():
                 raise RuntimeError("已停止批改")
             try:
-                return (q_index, sub_index, _extract_slot_answer_text(client, model, image, bbox))
+                text = _extract_slot_answer_text(client, model, image, bbox)
+                return (question.display_index, sub_index, text)
             except RuntimeError:
                 raise
             except Exception:
                 # 单槽识别失败按空处理：批改端回退 answer_words / image 1 红框
-                return (q_index, sub_index, "")
+                return (question.display_index, sub_index, "")
 
         workers = max(
             1,
-            min(len(jobs), int(os.environ.get("REFERENCE_ANSWER_TABLE_WORKERS", "4") or "4")),
+            min(len(jobs), env_workers("REFERENCE_ANSWER_TABLE_WORKERS", 4, 8)),
         )
         if jobs:
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -1388,6 +1830,9 @@ def extract_reference_answer_table(
         )
     # 按题号识别：合并块（1-7 题一块）按行内题号拆成一题一行；再补切题漏掉的题号
     entries = _split_answer_entries_by_printed_numbers(entries)
+    # 2026-11-17 P0：拆条后做「答案↔题号」对齐校验，防止整表错行一行
+    #（用户实测 16–25 整体错位，学生写 be/have/2s 也被判 ✓）。
+    entries = _align_answer_entry_numbers(entries)
     # 空白卷全槽无答案：缺号补扫会把题干当答案抄回来，整段跳过（答案表只留题号+答题区）
     has_any_text = any(
         str(slot.get("answer_text") or "").strip()
@@ -1501,6 +1946,84 @@ def _apply_manual_edits_to_entries(entries: list, manual_edits: dict) -> list:
         )
         entry["edited"] = True
     return entries
+
+
+def _display_no_remap(source: Any, edited: dict[str, Any]) -> dict[int, int]:
+    """11.11-1 重编号对照：按 question_id 认领，得出「原题号→老师定的新题号」。
+
+    只记变了号的题；question_id 认不上的（旧数据无 id）按 q-{原号} 铸号
+    回认——前端重编号前会给无 id 的旧题补 q-{现号}，现号就是原号。
+    """
+    mapping: dict[int, int] = {}
+    if not isinstance(source, dict):
+        return mapping
+    source_by_qid: dict[str, int] = {}
+    source_plain: dict[int, Any] = {}
+    for item in source.get("questions") or []:
+        if not isinstance(item, dict):
+            continue
+        number = _to_int(item.get("display_no"), 0)
+        qid = str(item.get("question_id") or "")
+        if qid and number > 0 and qid not in source_by_qid:
+            source_by_qid[qid] = number
+        if not qid and number > 0 and number not in source_plain:
+            source_plain[number] = item
+    for item in edited.get("questions") or []:
+        if not isinstance(item, dict):
+            continue
+        new_no = _to_int(item.get("display_no"), 0)
+        if new_no <= 0:
+            continue
+        qid = str(item.get("question_id") or "")
+        old_no = source_by_qid.get(qid)
+        if old_no is None:
+            match = re.fullmatch(r"q-(\d+)", qid)
+            if match and int(match.group(1)) in source_plain:
+                # 前端给旧数据补的铸号：q-{原号} ↔ 无 id 的原题
+                old_no = int(match.group(1))
+        if old_no and old_no != new_no:
+            mapping[old_no] = new_no
+    return mapping
+
+
+def _remap_answer_table_manual_keys(
+    folder_safe: str, page_no: str, mapping: dict[int, int]
+) -> None:
+    """11.11-1 重编号后手改答案覆盖层的题号键跟着换号，老师的手改不丢。
+
+    撞号（被删题的死键 vs 挪过来的活键）活键优先；再撞宁缺勿串、先者保留，
+    宁可让老师重改一次，不许把答案安到别的题上。
+    """
+    if not mapping:
+        return
+    path = _answer_table_path(folder_safe)
+    with _ANSWER_TABLE_LOCK:
+        data = _read_json(path) or {}
+        pages = data.get("pages") if isinstance(data.get("pages"), dict) else {}
+        saved = pages.get(str(page_no))
+        if not isinstance(saved, dict):
+            return
+        manual = saved.get("manual_edits")
+        by_index = manual.get("by_display_index") if isinstance(manual, dict) else None
+        if not isinstance(by_index, dict) or not by_index:
+            return
+        remapped: dict[str, Any] = {}
+        for old, new in sorted(mapping.items()):
+            key = str(old)
+            if key in by_index:
+                remapped[str(new)] = by_index[key]
+        for key in sorted(by_index.keys(), key=lambda value: _to_int(value, 0)):
+            old = _to_int(key, 0)
+            if old in mapping:
+                continue
+            if key in remapped:
+                continue
+            remapped[key] = by_index[key]
+        if remapped == by_index:
+            return
+        manual["by_display_index"] = remapped
+        pages[str(page_no)] = saved
+        _write_json(path, {"version": 1, "updated_at": _now_iso(), "pages": pages})
 
 
 # ── 答案纸（答案单独一张纸）：按印刷题号扫出 {题号: 答案} 合并进答案表 ──
@@ -2026,7 +2549,7 @@ def _answer_table_sort_key(entry: dict) -> tuple:
     if not isinstance(entry, dict):
         return (2, 0, 0)
     no = str(entry.get("printed_no") or "").strip()
-    if no.isdigit():
+    if no.isdigit() and no.isascii():
         return (0, int(no), _to_int(entry.get("display_index"), 0))
     return (1, 0, _to_int(entry.get("display_index"), 0))
 
@@ -2241,16 +2764,20 @@ def recognize_reference_vlm_batch(
     stop_event: Optional[threading.Event] = None,
     max_workers: Optional[int] = None,
     allow_empty: bool = False,
+    on_progress: Optional[Any] = None,
 ) -> tuple[dict[str, dict], dict[str, Exception]]:
     """Recognize all papers with Baidu paper_cut_edu_vlm.
 
     items: (cache_key, display_name, source_path)
+    on_progress: 可选回调 on_progress(done, total)——每完成一张调一次，
+    供进度透出（「正在识别试卷 x/y」）。回调异常只忽略，绝不影响批改。
     """
     if not items:
         return {}, {}
-    # 1015 内存防线：默认并发 8→4。每线程整页 base64 常驻（手机卷面 ~1.2MB
-    # → base64 ~1.6MB + JSON 请求体副本），8G 机器上 8 线程双批次即事故形态。
-    workers = max_workers or int(os.environ.get("REFERENCE_VLM_BAIDU_WORKERS", "4") or "4")
+    # 1015 内存防线：每线程整页 base64 常驻（手机卷面 ~1.2MB → base64 ~1.6MB
+    # + JSON 请求体副本），8G 机器上 8 线程双批次即事故形态。默认并发按内存
+    # 自适应：<15G 保守 4，>=15G 8（perf_tuning.env_workers，env 可覆盖）。
+    workers = max_workers or env_workers("REFERENCE_VLM_BAIDU_WORKERS", 4, 8)
     workers = max(1, min(workers, len(items)))
     results: dict[str, dict] = {}
     errors: dict[str, Exception] = {}
@@ -2282,6 +2809,8 @@ def recognize_reference_vlm_batch(
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_map = {executor.submit(_one, item): item[0] for item in items}
+        done_count = 0
+        total_count = len(items)
         for future in as_completed(future_map):
             key = future_map[future]
             try:
@@ -2289,6 +2818,12 @@ def recognize_reference_vlm_batch(
                 results[got_key] = data
             except Exception as exc:
                 errors[key] = exc
+            done_count += 1
+            if on_progress is not None:
+                try:
+                    on_progress(done_count, total_count)
+                except Exception:
+                    pass
     return results, errors
 
 
@@ -2452,6 +2987,66 @@ def _answer_bboxes(ans_location: Any, image_size: tuple[int, int]) -> list[list[
     ]
 
 
+def _answer_locations_from_raw(location: dict, item: dict) -> list:
+    """收集一道题的全部作答框坐标载荷（兼容三种返回形态）。
+
+    百度 paper_cut_edu_vlm（only_split=true）的真实形态是
+        location = {"qus_location": [...], "ans": [{"ans_location": [x1,y1,x2,y2]}, ...]}
+    作答框挂在 ans[i].ans_location 上；历史代码只读 location.ans_location（该键不存在）
+    → 全卷 0 作答槽，作答区退化成整题框（选择题大面积错判的根因）。
+    切题审查回写的修正形态是 location.ans_location = [[x1,y1,x2,y2], ...]；
+    合成题形态是 item.ans_location。三种都要认，按原顺序返回，不改顺序。
+    """
+    payloads: list = []
+    ans_list = location.get("ans")
+    if isinstance(ans_list, list):
+        for entry in ans_list:
+            if isinstance(entry, dict):
+                box = entry.get("ans_location")
+            else:
+                box = entry
+            if box:
+                payloads.append(box)
+    elif isinstance(ans_list, dict):
+        # 少数返回把 ans 写成单个对象而非数组
+        payloads.append(ans_list.get("ans_location") or ans_list)
+    flat = location.get("ans_location")
+    if flat:
+        if isinstance(flat, list) and flat and isinstance(flat[0], (list, tuple, dict)):
+            payloads.extend(flat)
+        else:
+            payloads.append(flat)
+    item_ans = item.get("ans_location")
+    if item_ans:
+        payloads.append(item_ans)
+    return payloads
+
+
+def _answer_boxes_from_item(item: dict, location: dict, image_size: tuple[int, int]) -> list[list[int]]:
+    """从单题原始条目解析作答框列表：去重、按阅读顺序（先 y 后 x）排序。
+
+    去重/排序只为让槽位编号稳定（多空题的 slot_index 要可复现），不影响框本身。
+    """
+    boxes: list[list[int]] = []
+    for payload in _answer_locations_from_raw(location, item):
+        for box in _answer_bboxes(payload, image_size):
+            if box not in boxes:
+                boxes.append(box)
+    boxes.sort(key=lambda b: (b[1], b[0]))
+    return boxes
+
+
+def _bbox_union_of(boxes: list[list[int]]) -> Optional[list[int]]:
+    if not boxes:
+        return None
+    return [
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    ]
+
+
 def _answer_bbox_union(ans_location: Any, image_size: tuple[int, int]) -> Optional[list[int]]:
     boxes = _answer_bboxes(ans_location, image_size)
     if not boxes:
@@ -2504,6 +3099,11 @@ def extract_vlm_questions(raw: dict, *, image_path: str) -> list[VlmQuestion]:
         # 切题审查删掉的题（老师判它不存在）：直接跳过，别借重建回魂
         if item.get("layout_deleted"):
             continue
+        # 切题审查新增题的合成分身不回流提取：每轮 apply 由 layout 重新合成
+        # （doc["questions"] 里始终有它们）；也防分身的戳号与重编号后的
+        # 原题身份撞号，把原题的框认错（11.11-1）。
+        if item.get("synthetic_from_layout"):
+            continue
         location = item.get("location") if isinstance(item.get("location"), dict) else {}
         bbox = _normalize_bbox(location.get("qus_location") or item.get("qus_location"), image_size)
         if not bbox:
@@ -2512,9 +3112,8 @@ def extract_vlm_questions(raw: dict, *, image_path: str) -> list[VlmQuestion]:
         if not elements and isinstance(item.get("qus_element"), dict):
             elements = item.get("qus_element") or {}
         question_id = _to_int(item.get("qus_id") or item.get("question_id") or item.get("id"), pos)
-        ans_location = location.get("ans_location") or item.get("ans_location")
-        answer_bboxes = _answer_bboxes(ans_location, image_size)
-        answer_bbox = _answer_bbox_union(ans_location, image_size)
+        answer_bboxes = _answer_boxes_from_item(item, location, image_size)
+        answer_bbox = _bbox_union_of(answer_bboxes)
         answer_words = _as_text_list(
             elements.get("answer_words")
             or elements.get("ans_words")
@@ -3254,6 +3853,147 @@ def _table_quote_mismatch(quote: str, located_no: Optional[int], answer_table_te
     return "标准引文在参考答案完整表中找不到"
 
 
+def _norm_answer_for_verify(text: Any) -> str:
+    """答案比对归一：去题号行头/空白/标点/大小写，全角转半角。"""
+    s = str(text or "").strip()
+    s = re.sub(r"^第\s*\d+\s*题\s*[:：]?\s*", "", s)
+    s = re.sub(r"^\(?\d{1,3}[.、．:：)）]\s*", "", s)
+    s = unicodedata.normalize("NFKC", s)
+    s = s.lower()
+    s = re.sub(r"[\s,，。、;；:：!?！？\"'“”‘’（）()\[\]【】{}<>《》|｜/\\\-=_+*—–]", "", s)
+    return s
+
+
+def _edit_distance_le(a: str, b: str, limit: int) -> bool:
+    """a、b 的编辑距离是否 <= limit（早停实现，短字符串足够）。"""
+    if abs(len(a) - len(b)) > limit:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        cur = [i]
+        row_min = i
+        for j, cb in enumerate(b, start=1):
+            cost = 0 if ca == cb else 1
+            v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            cur.append(v)
+            row_min = min(row_min, v)
+        if row_min > limit:
+            return False
+        prev = cur
+    return prev[-1] <= limit
+
+
+def _ambiguous_multi_candidate(transcription: str, standard_text: str = "") -> Optional[str]:
+    """转写里同时出现多个「完整候选答案」→ 多半是划掉重写没认准，返回原因。
+
+    2026-11-18 客户反馈：学生划掉一个答案再写新的时，留痕上 ? 和 ✓/× 混在一起。
+    提示词已要求只认未被划掉的最终答案，但模型仍可能把「划线前的旧答案 + 新答案」
+    一起转写出来。这种转写不能拿来判对错——只能转人工确认。
+
+    判定（保守，宁可漏判不可误伤）：
+    - **标准答案本身就是多空的**（含多个片段）时，转写里的多段是正常作答 → 不判歧义；
+    - 去掉不确定标记后，按常见分隔（空格/逗号/顿号/斜杠/或/→/换行）切段；
+    - 有 ≥2 段且每段都是「像答案的内容」→ 歧义；
+    - 单字母选择题（A/B/C/D）出现两个不同字母 → 歧义。
+    """
+    cleaned = re.sub(r"\[\s*\?+\s*\]", "", str(transcription or ""))
+    cleaned = re.sub(r"\[[^\[\]|]*\|[^\[\]]*\]", "", cleaned).strip()
+    if not cleaned:
+        return None
+    # 标准答案本身多空/多段：转写的多段就是正常的逐空作答
+    std = str(standard_text or "").strip()
+    if std:
+        std_parts = [p for p in re.split(r"[\s,，、;；/|\\→]+|或", re.sub(r"第\d+空[:：]", "", std)) if p.strip()]
+        if len([p for p in std_parts if re.search(r"[0-9A-Za-z一-鿿]", p)]) >= 2:
+            return None
+    # 只在**短答案**上做多候选检测：空格分隔的多词长句（"because it is big"
+    # "on the floor of the classroom"）是正常答案，不是划掉重写。
+    if len(cleaned) > 16:
+        return None
+    # 选择题：两个不同选项字母同时出现
+    letters = re.findall(r"(?<![A-Za-z])[A-D](?![A-Za-z])", cleaned.upper())
+    if len(set(letters)) >= 2 and len(cleaned) <= 12:
+        return (
+            f"作答里同时出现多个选项（{'/'.join(sorted(set(letters)))}），"
+            "疑似划掉后重写，机器未确认最终答案，请人工确认"
+        )
+    if len(cleaned) > 10:
+        return None
+    parts = [
+        p.strip()
+        for p in re.split(r"[\s,，、;；/|\\→]+|或", cleaned)
+        if p.strip()
+    ]
+    parts = [p for p in parts if re.search(r"[0-9A-Za-z一-鿿]", p)]
+    if len(parts) >= 2:
+        return (
+            f"作答里同时出现多个候选答案（{'、'.join(parts[:3])}），"
+            "疑似划掉后重写，机器未确认最终答案，请人工确认"
+        )
+    return None
+
+
+def _verify_answer_against_standard(transcription: str, standard_text: str, code: int) -> Optional[str]:
+    """确定性校验：学生作答与标准答案是否可接受地一致；不一致却判对 → 返回原因（要改判）。
+
+    2026-11-17 用户反馈 P0：答案序列与题号整体错开一行时，学生会看到「这个答案是对的」。
+    这里用确定性的字符串校验兜住模型判对：
+    - 标准答案不可信（〈文本缺失〉/空/含 [?]）→ 不校验（None）；
+    - 转写为空 → 不校验（交给空白闸/未作答逻辑）；
+    - 归一后完全相同、包含关系、或编辑距离在容差内 → 不干预；
+    - 明显不一致却判「对」→ 返回冲突原因，调用方转待确认。
+    """
+    if code != CORRECT:
+        return None
+    std = str(standard_text or "").strip()
+    if not std or _TEXT_MISSING in std or "[?]" in std:
+        return None
+    t = _norm_answer_for_verify(transcription)
+    if not t:
+        return None
+    # 多可接受答案（| 分隔）：命中任一即算一致
+    variants = _accepted_answer_variants(std) or [std]
+    candidates = [_norm_answer_for_verify(v) for v in variants]
+    candidates = [c for c in candidates if c]
+    if not candidates:
+        return None
+    # 简答类答案（长句）不在这层确定性校验范围内：标准答案 > 20 字符时逐字比对
+    # 误伤远大于收益（「因为学校很大」对「因为学校很大而且有很多学生」是合理简答），
+    # 交回模型语义判断。
+    # 简答类答案（长句）不在这层确定性校验范围内：逐字比对误伤远大于收益
+    #（「因为学校很大」对「因为学校很大而且有很多学生」是合理简答）。
+    # 阈值按语言定：中文按字数（10 字以上即视为简答），英文按字符数（25 以上）。
+    probe = candidates[0]
+    cjk = sum(1 for ch in probe if "一" <= ch <= "鿿")
+    if (cjk >= 10) or (cjk == 0 and len(probe) >= 25):
+        return None
+    for c in candidates:
+        if t == c:
+            return None
+        # 包含关系只允许「作答里写出完整标准答案」，且要求作答明显更长
+        #（简答/长空常见）。⛔ 反向不认：「不做功」包含「做功」不能算对。
+        if len(c) >= 3 and c in t and len(t) >= len(c) + 2:
+            return None
+        # 编辑距离容差：按标准答案长度给 1~2 个字符的笔误容忍
+        limit = 0 if len(c) <= 2 else (1 if len(c) <= 6 else 2)
+        if _edit_distance_le(t, c, limit):
+            return None
+        # 学生作答是标准答案的「实质子串」（≥60% 长度）：简答只写关键部分也算对。
+        # ⛔「答案」之于「标准表答案」只有 40%，不放行。
+        if t in c and len(t) * 5 >= len(c) * 3:
+            return None
+    # 英文短语作答是标准答案的一部分（如答 "before" 对 "before the class begins"）：
+    # 只在**纯英文**且作答长度 ≥ 标准的一半时才认，中文不适用（中文少一个字常是反义）。
+    if t.isascii() and any(c.isascii() for c in candidates):
+        for c in candidates:
+            if c.isascii() and c.startswith(t) is False and t in c and len(t) * 2 >= len(c):
+                return None
+    return (
+        f"学生作答「{str(transcription or '').strip()[:30]}」与标准答案「{std[:30]}」明显不符，"
+        "机器判对已驳回，请人工确认"
+    )
+
+
 def _apply_conclusion_guard(decision: dict) -> dict:
     """判语结论与判定矛盾 → 待确认（例：理由以「…判错。」收尾却给了对）。
 
@@ -3290,6 +4030,18 @@ def _choice_letters(text: Any) -> str:
     return s if re.fullmatch(r"[A-D]+", s) else ""
 
 
+def _accepted_answer_variants(text: Any) -> list[str]:
+    """11.11-12 前半：一个空多个可接受答案的显式设置——答案文本里用 | 分隔。
+
+    老师在识别列表手改答案时写「答案一|答案二」即显式声明该空有多个可接受
+    答案，学生命中任一个即判对。全角｜同义；不足两段（含「答案|」这类带空段
+    的 OCR 管道噪声）不算显式多解，维持原语义。
+    """
+    parts = [part.strip() for part in re.split(r"[|｜]", str(text or ""))]
+    parts = [part for part in parts if part]
+    return parts if len(parts) >= 2 else []
+
+
 def _multi_select_letter_rule(transcription: str, standard_text: str) -> Optional[tuple]:
     """多选题（标准答案 2-4 个 A-D 字母）确定性字母集合判定（20261021 用户定规则）。
 
@@ -3298,6 +4050,10 @@ def _multi_select_letter_rule(transcription: str, standard_text: str) -> Optiona
     - 只少选没多选 → 半对（partial_ratio = 选对数/正确数）。
     转写/标准剥不出纯 A-D 字母串则返回 None 不改判（交 VL/人工）；返回 (code, partial_ratio)。
     """
+    if _accepted_answer_variants(standard_text):
+        # 11.11-12 显式多可接受答案（| 分隔）压过字母集合规则：
+        # 「A|C」= A、C 任一即可，不是多选「AC」，别按少选半对改判。
+        return None
     e = _choice_letters(standard_text)
     s = _choice_letters(transcription)
     if len(e) < 2 or not s:
@@ -3383,52 +4139,20 @@ def _normalize_decision(
         "analysis": analysis,
         "confidence": round(confidence, 3),
         "partial_ratio": partial_ratio,
-        # 转写证据（随 decision 走两遍归一化，read_guard 幂等依赖它）
-        "transcription": str(data.get("transcription") or "").strip(),
+        # 转写证据（随 decision 走两遍归一化；20261108 起提示词用 student_answer 兼容旧 transcription）
+        "transcription": str(data.get("student_answer") or data.get("transcription") or "").strip(),
         "read_confidence": read_confidence,
         "standard_answer_text": (
             str(standard_answer_text if standard_answer_text is not None else data.get("standard_answer_text") or "").strip()
         ),
-        # 表引文随 decision 走两遍归一化（_insert_sub_grading_result 会再跑一次），保证幂等
+        # 表引文字段保留（旧缓存/幂等再归一化兼容），新协议不再要求模型回填
         "standard_quote": str(data.get("standard_quote") or "").strip(),
         "located_no": _to_int(data.get("located_no"), 0) or None,
         "read_uncertain": False,
     }
-    # 表引文回验：自称的「第N题标准」必须与答案表原文对得上，对不上转人工（防查错行/抄错字反判学生）
-    def _force_pending(note: str) -> None:
-        if decision["correctResult"] == PENDING:
-            return
-        decision["correctResult"] = PENDING
-        decision["result"] = RESULT_TEXT[PENDING]
-        decision["partial_ratio"] = None
-        base = str(decision.get("reason") or "").strip()
-        full = f"{note}，待人工确认"
-        decision["reason"] = f"{full}；{base}" if base else full
-        decision["analysis"] = decision["reason"]
-
-    if answer_table_text:
-        mismatch = _table_quote_mismatch(
-            str(data.get("standard_quote") or ""),
-            _to_int(data.get("located_no"), 0) or None,
-            answer_table_text,
-        )
-        if mismatch:
-            _force_pending(mismatch)
-    # 选项字母矛盾闸：字母一致却判错/不一致却判对 → 转人工
-    # 有表时只信 standard_quote（机器盲配文本不可作字母依据）；无表时才用 standard_answer_text
-    quote_for_letter = str(data.get("standard_quote") or "").strip()
-    if not quote_for_letter and not answer_table_text:
-        quote_for_letter = decision.get("standard_answer_text") or ""
-    letter_conflict = _objective_letter_conflict(
-        decision.get("transcription") or "",
-        quote_for_letter,
-        decision["correctResult"],
-    )
-    if letter_conflict:
-        _force_pending(letter_conflict)
-    # 多选题确定性字母集合判定（压过 VL 的宽容/误判，与答案表链同规则）：
-    # 选错任意一个=错；只少选=半对（按选对比例）；全同=对。已转人工的不覆盖。
-    ms = _multi_select_letter_rule(decision.get("transcription") or "", quote_for_letter)
+    # 20261108 照批改君：判词三态定案（对/错/未作答），删表引文回验闸/字母矛盾闸/read_guard
+    #（它们把好判词压成待确认是旧链病根）。多选字母集合规则=用户 20261021 定的确定性规则，保留压 VL。
+    ms = _multi_select_letter_rule(decision.get("transcription") or "", decision.get("standard_answer_text") or "")
     if ms and decision["correctResult"] != PENDING:
         ms_code, ms_ratio = ms
         decision["correctResult"] = ms_code
@@ -3438,7 +4162,39 @@ def _normalize_decision(
         decision["reason"] = f"{ms_note}，按选项集合判定"
         decision["analysis"] = decision["reason"]
     _apply_conclusion_guard(decision)
-    return _apply_read_guard(decision)
+    # 2026-11-18 划掉重写：转写里同时出现多个候选答案 → 模型没分清最终答案，
+    # 不许自动判对错（否则留痕上 ? 和 ✓/× 混在一起）。转人工确认。
+    ambiguous = _ambiguous_multi_candidate(
+        decision.get("transcription") or "",
+        # 标准答案可能只在 standard_quote（模型实际对照的那一行）里
+        decision.get("standard_answer_text")
+        or decision.get("standard_quote")
+        or "",
+    )
+    if ambiguous:
+        decision["correctResult"] = PENDING
+        decision["result"] = RESULT_TEXT[PENDING]
+        decision["partial_ratio"] = None
+        decision["reason"] = ambiguous
+        decision["analysis"] = ambiguous
+        return decision
+    # 2026-11-17 P0：确定性答案校验——答案与标准明显不符时不许判对
+    #（答案表与题号错开一行时，学生会看到「错的答案打 ✓」，危害大于扣错分）。
+    # 二遍归一化（_insert_sub_grading_result 传机器盲配文本）不得据此翻案：
+    # decision 自带 standard_quote（模型实际对照的标准答案）时以它为准，跳过这层。
+    if not str(decision.get("standard_quote") or "").strip():
+        conflict = _verify_answer_against_standard(
+            decision.get("transcription") or "",
+            decision.get("standard_answer_text") or "",
+            decision.get("correctResult"),
+        )
+        if conflict:
+            decision["correctResult"] = PENDING
+            decision["result"] = RESULT_TEXT[PENDING]
+            decision["partial_ratio"] = None
+            decision["reason"] = conflict
+            decision["analysis"] = conflict
+    return decision
 
 
 def _question_payload(question: VlmQuestion) -> dict:
@@ -3880,19 +4636,23 @@ def _batch_context_regions(
     return projected
 
 
-def _batch_task_payload(batch: VlmQuestionBatchTask, *, has_table: bool = False) -> dict:
-    payload = {
+def _batch_task_payload(batch: VlmQuestionBatchTask) -> dict:
+    # 20261108 照批改君整改：每槽直接给标准答案文本（识别列表，含老师手改），
+    # 不再发整表让模型查号抄引文（查错行/抄错字反判学生是旧链主要病根）。
+    return {
         "question_id": batch.batch_id,
         "parent_question_index": batch.student_question.display_index,
-        "standard_answer_text_is_ground_truth": not has_table,
         "slots": [
             {
                 "slot_key": _slot_key(task),
                 "sub_index": task.sub_index,
                 "is_answer_slot": task.is_answer_slot,
                 "anchor_source": task.anchor_source,
-                # 答案表在场时不给机器配对文本（防模型照错配对判分）：判分依据只在完整表
-                "standard_answer_text": None if has_table else _standard_answer_text(task),
+                "standard_answer_text": _standard_answer_text(task),
+                # 11.11-12 显式多可接受答案（答案文本 | 分隔）：命中任一即判对
+                "standard_answer_variants": _accepted_answer_variants(
+                    _standard_answer_text(task) or ""
+                ),
                 "standard_answer_slot": {
                     "target_answer_bbox": task.standard_answer_bbox,
                     "context_bbox": task.standard_context_bbox,
@@ -3909,9 +4669,6 @@ def _batch_task_payload(batch: VlmQuestionBatchTask, *, has_table: bool = False)
         "standard_question": _question_payload(batch.standard_question),
         "student_question": _question_payload(batch.student_question),
     }
-    if has_table:
-        payload["code_pairing_hint_unreliable"] = True
-    return payload
 
 
 def _build_batch_qwen_prompt(
@@ -3920,24 +4677,33 @@ def _build_batch_qwen_prompt(
     family_hint: str = "",
     answer_table_text: str = "",
 ) -> str:
-    policy_hint = "" if answer_table_text else _grading_policy_hint(batch.slots[0])
-    payload = {"grading_task": _batch_task_payload(batch, has_table=bool(answer_table_text))}
-    authority_rule = _authority_rule(True, has_table=bool(answer_table_text))
+    # 20261108 照批改君整改（判分协议整套换血）：两图直接对照 + 手写宽容 + 标准答案权威 +
+    # 判错前二次核对，AI 只出 对/错/未作答。不再发整表查号抄引文（查错行反判学生是旧链病根）。
+    # 叙阅扩展：每槽标准答案文本（识别列表，含老师手改）随元数据进提示词；〈文本缺失〉/空=只认 image 1。
+    policy_hint = _grading_policy_hint(batch.slots[0])
+    payload = {"grading_task": _batch_task_payload(batch)}
+    authority_rule = (
+        "- STANDARD-ANSWER AUTHORITY: the standard answer visible in image 1's same-labeled red rectangle "
+        "is the sole ground truth. Never replace, correct, extend, or second-guess it using your own "
+        "solution or outside knowledge. The metadata gives each slot a standard_answer_text (the "
+        "teacher-verified answer record). When a slot's image 1 rectangle is blank, its "
+        "standard_answer_text is the sole ground truth instead. When both exist and your reading of "
+        "image 1 conflicts with the text, the text wins — it carries the teacher's final corrections. "
+        "A standard_answer_text of 〈文本缺失〉 or null means there is no text record: image 1 is then the "
+        "sole ground truth for that slot. "
+        "MULTIPLE ACCEPTABLE ANSWERS: when a standard_answer_text lists alternatives separated by \"|\" "
+        "(e.g. \"甲|乙\"), the blank has multiple acceptable answers and the student's answer is correct "
+        "if it matches ANY ONE alternative — never mark it wrong only because it differs from the other "
+        "alternatives.\n"
+    )
     objective_rule = (
         "- OBJECTIVE STRICT: every student's selected option, true/false value, fixed answer, matching, "
         "or ordering must be exactly the same as the corresponding labeled slot standard answer. Any different, "
         "missing, or extra option/value is wrong.\n"
-        "MULTI-SELECT EXCEPTION (standard answer has 2+ option letters like AD): if the student's letter set "
-        "equals the standard set, mark 对 (correctResult=1); if ANY picked letter is outside the standard set, "
-        "mark 错 (correctResult=2) with NO credit even when some correct letters were also picked; if picks are "
-        "a non-empty subset of the standard set (only missing, no wrong picks), mark 半对 (correctResult=4) "
-        "with partial_ratio = (correct letters picked) / (total standard letters). "
-        "Missing-only is NOT wrong for multi-select.\n"
     )
     subjective_rule = (
         "- SUBJECTIVE SEMANTIC: understand the standard answer's conclusion, key ideas, reasoning, and "
-        "required points. Accept different wording only when the essential meaning matches. When only "
-        "part of the required points are met, use 4 (半对) and set partial_ratio (0 to 1).\n"
+        "required points. Accept different wording only when the essential meaning matches.\n"
     )
     if policy_hint == "objective_strict":
         policy_instruction = "This is an OBJECTIVE question. Apply OBJECTIVE STRICT policy."
@@ -3946,76 +4712,12 @@ def _build_batch_qwen_prompt(
         policy_instruction = "This is a SUBJECTIVE question. Apply SUBJECTIVE SEMANTIC policy."
         policy_rules = authority_rule + subjective_rule
     else:
-        if answer_table_text:
-            policy_instruction = (
-                "First classify the visible question from image 1 and the printed question number you "
-                "located: its 【参考答案完整表】 entry tells you the type. For choice, true/false, "
-                "fixed-answer fill-in, matching, ordering, or another objectively scored item, "
-                "Apply OBJECTIVE STRICT policy. Otherwise Apply SUBJECTIVE SEMANTIC policy."
-            )
-        else:
-            policy_instruction = (
-                "Classify the visible question first. Use OBJECTIVE STRICT for fixed-answer items and "
-                "SUBJECTIVE SEMANTIC for open responses."
-            )
+        policy_instruction = (
+            "Classify the visible question first. Use OBJECTIVE STRICT for fixed-answer items and "
+            "SUBJECTIVE SEMANTIC for open responses."
+        )
         policy_rules = authority_rule + objective_rule + subjective_rule
     expected_slots = ", ".join(_slot_key(task) for task in batch.slots)
-    if answer_table_text:
-        # 答案表在场：每槽不再给机器配对文本（folder8 实测模型会照错配对判分）
-        standard_text_lines = "".join(
-            f"- 作答区 {_slot_key(task)}：按该空所属印刷题号查【参考答案完整表】判分"
-            "（回填 located_no，且把所查行原文一字不差照抄进 standard_quote）\n"
-            for task in batch.slots
-        )
-    else:
-        standard_text_lines = "".join(
-            f"- 作答区 {_slot_key(task)}：{_standard_answer_text(task) or '〈文本缺失〉'}\n"
-            for task in batch.slots
-        )
-    table_block = ""
-    standard_heading = "【标准答案识别文本（唯一判分依据；〈文本缺失〉的槽以 image 1 对应红框为准）】\n"
-    if answer_table_text:
-        table_block = (
-            "【参考答案完整表（标准答案识别文本；先认图像2红框旁的印刷题号，再对照本表判分）】\n"
-            + answer_table_text
-            + "\n\n"
-        )
-        standard_heading = (
-            "【本槽代码初步对照（禁止作为判分依据：机器按位置盲猜，经常错误；"
-            "以红框所属印刷题号在完整表查到的答案为准；〈文本缺失〉的槽以 image 1 对应红框为准）】\n"
-        )
-    code5_note = (
-        "Use 5 (待确认) only per the authority rule: when the governing printed question number cannot be "
-        "located (reason starting 无法定位题号), or when the crop clearly truncates the writing (reason "
-        "starting 框被截断); never use 5 for hard-to-read handwriting.\n"
-        if answer_table_text
-        else ""
-    )
-    quote_note = (
-        "Also return located_no and standard_quote for every slot: located_no is the printed question "
-        "number you located (an integer), and standard_quote is the VERBATIM 【参考答案完整表】 line for "
-        "that number which you judged against, including its 第N题 prefix. Copy every character exactly; "
-        "never correct, reword, or borrow another question's line. The backend checks the quote against "
-        "the table entry of located_no and routes a mismatch to human review as 待确认.\n"
-        if answer_table_text
-        else ""
-    )
-    comparison_target = (
-        "the 【参考答案完整表】 entry for the printed question number that governs that slot's blank"
-        if answer_table_text
-        else "its standard answer above"
-    )
-    if answer_table_text:
-        schema_line = (
-            '{"question_id":1,"slots":[{"slot_key":"1_1","correctResult":1,"result":"对","transcription":"...",'
-            '"read_confidence":0.9,"located_no":1,"standard_quote":"第1题：...","reason":"...","analysis":"...",'
-            '"confidence":0.0,"partial_ratio":null}]}'
-        )
-    else:
-        schema_line = (
-            '{"question_id":1,"slots":[{"slot_key":"1_1","correctResult":1,"result":"对","transcription":"...",'
-            '"read_confidence":0.9,"reason":"...","analysis":"...","confidence":0.0,"partial_ratio":null}]}'
-        )
     return "".join(
         [
             "You are a strict school-exam grader. The user content contains exactly two images in order: ",
@@ -4026,48 +4728,60 @@ def _build_batch_qwen_prompt(
             "top-left corner. Never bind a rectangle to a slot key by its position, by top-to-bottom order in "
             "the image, or by the order of slot keys listed below. ",
             "Compare every labeled slot independently; do not let one slot's answer affect another slot.\n\n",
-            table_block,
-            standard_heading,
-            standard_text_lines,
-            "\n",
             f"The student paper is: {student_name}.\n",
             f"Expected slot keys, which must all be returned exactly once: {expected_slots} "
             "(this list order is not the image order; bind each returned slot to the label on its red rectangle)\n\n",
+            "HANDWRITING TOLERANCE (important): A faint, blurred, broken, tilted, overwritten, or low-contrast ",
+            "student answer is not automatically wrong. Reconstruct the most likely content from all visible ",
+            "strokes, its position and context, and the standard. If the likely reading matches the corresponding ",
+            "standard slot, return correct even when the writing is not visually identical. Return wrong only ",
+            "when tolerant reading confirms different content, and return blank only when the slot has no ",
+            "meaningful writing.\n",
+            "If the meaningful answer content in a corresponding standard slot and student slot is visually ",
+            "identical, it MUST be graded correct. Do not invent a difference.\n\n",
+            "STRIKETHROUGH / CORRECTION (very important): students frequently write an answer, cross it out ",
+            "with one or more quick lines (a horizontal or diagonal slash through the letters, a squiggle, ",
+            "or a scribbled-out blob), and then write the corrected answer nearby (above it, after it, or on ",
+            "a following line). In that case ONLY the final, non-crossed-out answer counts:\n",
+            "  - Ignore any answer that has a strike line through it; do NOT transcribe it as the student's ",
+            "answer and do NOT report it in student_answer.\n",
+            "  - The graded answer is the one WITHOUT a strike mark that the student kept. If two unstruck ",
+            "writings exist, the one written later/rightmost/lower is the final answer.\n",
+            "  - A strike-out is a thin straight/diagonal stroke passing THROUGH the middle of the letters. Do ",
+            "not mistake an underline, a parenthesis, or a natural pen stroke for a strike-out.\n",
+            "  - If crossing-out is visible but you cannot tell which of the writings is the final one, return ",
+            "correctResult 5 (待确认) instead of guessing.\n\n",
             policy_instruction,
             "\n\nMandatory grading policies:\n",
             policy_rules,
-            _TRANSCRIPTION_RULE.replace(
-                "the red slot of image 2", "each labeled red slot of image 2"
-            ).replace(
-                "into \"transcription\"",
-                "into that slot's \"transcription\"",
-            ),
             "\nRules:\n",
             f"1. Return question_id exactly as supplied: {batch.batch_id}. It identifies this parent-question batch.\n",
             "2. Return one item in slots for every expected slot key. Do not omit, merge, reorder, duplicate, "
             "or invent a slot key.\n",
-            "3. Each slot correctResult must be 1 for correct, 2 for wrong, 3 for blank/unanswered, or 4 for "
-            "partially correct (半对, with partial_ratio 0 to 1). A blank highlighted student slot is 3.\n",
+            "3. Each slot correctResult must be 1 for correct, 2 for wrong, or 3 for blank/unanswered. "
+            "A blank highlighted student slot is 3.\n",
             "   CRITICAL — image 1 is the STANDARD-ANSWER packet: the teacher usually wrote the standard answers on "
-            "the SAME blanks. NEVER copy image 1's text into a slot's \"transcription\" and never treat image 1's "
+            "the SAME blanks. NEVER copy image 1's text into your reading of a student slot and never treat image 1's "
             "writing as student work. Judge ONLY what is handwritten in that slot's image 2 rectangle. If a student "
             "rectangle shows no handwriting (an empty printed line or empty blank), its correctResult must be 3 even "
             "when the corresponding image 1 rectangle is filled with the standard answer.\n",
-            code5_note,
-            quote_note,
             "4. Use only the corresponding labeled red slot in image 1 and image 2. Do not grade another slot. "
-            "Read the large label beside each red rectangle to know its slot key; never assign results by order.\n",
-            f"5. Judge each slot strictly by comparing its \"transcription\" against {comparison_target}. "
-            "Hard-to-read handwriting must be marked in the transcription and still get your best judgment; the "
-            "backend routes uncertain transcriptions to human review automatically. Never force a wrong verdict "
-            "just because the handwriting is ugly.\n",
+            "Read the large label beside each red rectangle to know its slot key; never assign results by order. "
+            "Strict answer identity does not require strict visual clarity; tolerate handwriting and scan noise.\n",
+            "5. Verify a proposed wrong decision a second time against the standard before returning it: use 2 "
+            "only when careful tolerant reading confirms genuinely different content, and use 3 only when the "
+            "slot has no meaningful writing at all. Never turn visual uncertainty or poor handwriting quality "
+            "alone into wrong.\n",
             "6. Write reason and analysis in Chinese. Keep correct-slot analysis brief; explain the error "
-            "and correct approach for a wrong slot.\n",
+            "and correct approach for a wrong slot. Also return student_answer: the student's visible answer "
+            "content in plain text (empty string when unreadable or blank) — it is explanatory only and never "
+            "changes the grading decision.\n",
             "7. Use plain Chinese text and Unicode math symbols only. Do not use TeX, LaTeX, Markdown, "
             "dollar-sign delimiters, caret exponent notation, or backslash characters. "
             "Never use the ASCII double-quote character inside text fields; write 「」 instead.\n",
             "8. Do not return coordinates or extra fields. Return exactly one valid JSON object with this schema:\n",
-            schema_line,
+            '{"question_id":1,"slots":[{"slot_key":"1_1","correctResult":1,"result":"对","student_answer":"...",'
+            '"reason":"...","analysis":"...","confidence":0.0}]}',
             "\n\n",
             "Task metadata is read-only; image labels and red rectangles are authoritative:\n",
             json.dumps(payload, ensure_ascii=False),
@@ -4135,26 +4849,48 @@ def _call_qwen_for_question_batch(
     prompt = _build_batch_qwen_prompt(
         batch, student_name, family_hint=family_hint, answer_table_text=answer_table_text
     )
-    completion = client.chat.completions.create(
-        model=model,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": std_image_url}},
-                    {"type": "image_url", "image_url": {"url": stu_image_url}},
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ],
-        stream=False,
-        timeout=180,
-        extra_body=QWEN_CHAT_EXTRA_BODY,
-    )
-    content = completion.choices[0].message.content or ""
-    return _normalize_batch_decision(
-        _json_object_from_text(content), batch, answer_table_text=answer_table_text
-    )
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": std_image_url}},
+                {"type": "image_url", "image_url": {"url": stu_image_url}},
+                {"type": "text", "text": prompt},
+            ],
+        }
+    ]
+    # 20261108 照批改君：temperature=0 稳判；坏 JSON/违约回复原地重问一次
+    #（只纠正格式、不许借机改判），再坏才抛给整卷重试。
+    last_error = None
+    for attempt in range(2):
+        completion = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=False,
+            temperature=0,
+            timeout=180,
+            extra_body=QWEN_CHAT_EXTRA_BODY,
+        )
+        content = completion.choices[0].message.content or ""
+        try:
+            return _normalize_batch_decision(
+                _json_object_from_text(content), batch, answer_table_text=answer_table_text
+            )
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0:
+                messages = messages + [
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Your last response failed validation: {exc}. Use the same two images and "
+                            "return a complete JSON object matching the exact contract. Do not infer "
+                            "correctness from this formatting error. Use exactly 1/对, 2/错, or 3/未作答 "
+                            "for each slot."
+                        ),
+                    }
+                ]
+    raise last_error
 
 
 def _task_context_regions(
@@ -4314,16 +5050,20 @@ def _bbox_from_normalized(
     bbox: tuple[float, float, float, float],
     image_size: tuple[int, int],
     *,
-    offset: tuple[float, float] = (0.0, 0.0),
+    offset: tuple[float, ...] = (0.0, 0.0),
 ) -> list[int]:
     width, height = image_size
-    dx, dy = offset
+    # offset 2-元组=平移（老口径）；4-元组=逐轴缩放+平移（20261109 ① 全局仿射）
+    if len(offset) == 4:
+        sx, sy, dx, dy = (float(value) for value in offset)
+    else:
+        sx, sy, dx, dy = 1.0, 1.0, float(offset[0]), float(offset[1])
     return _clamp_bbox(
         [
-            int(round((bbox[0] + dx) * width)),
-            int(round((bbox[1] + dy) * height)),
-            int(round((bbox[2] + dx) * width)),
-            int(round((bbox[3] + dy) * height)),
+            int(round((sx * bbox[0] + dx) * width)),
+            int(round((sy * bbox[1] + dy) * height)),
+            int(round((sx * bbox[2] + dx) * width)),
+            int(round((sy * bbox[3] + dy) * height)),
         ],
         image_size,
     )
@@ -4518,6 +5258,90 @@ def build_reference_vlm_slot_template(documents: dict[str, dict]) -> list[VlmSlo
     ]
 
 
+def _fit_normalized_transform(
+    pairs: list[tuple[tuple[float, float], tuple[float, float]]],
+    base_offset: tuple,
+) -> tuple:
+    """稳健逐轴缩放+平移配准（20261109 ① 全局仿射）：src→dst 控制点拟合
+    x'=sx*x+dx、y'=sy*y+dy（归一化坐标）。
+
+    两轮 MAD 剔野后最小二乘；缩放超 [0.9,1.1]、内点少于 4、或中位残差不优于
+    平移基准 → 原样退回 base_offset（宁缺勿乱，绝不比平移更差）。
+    """
+    pts: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for src, dst in pairs or []:
+        try:
+            s = (float(src[0]), float(src[1]))
+            d = (float(dst[0]), float(dst[1]))
+        except (TypeError, ValueError, IndexError):
+            continue
+        pts.append((s, d))
+    if len(pts) < 4:
+        return base_offset
+
+    def _lsq(sub):
+        n = len(sub)
+        s_x = sum(p[0][0] for p in sub) / n
+        s_y = sum(p[0][1] for p in sub) / n
+        d_x = sum(p[1][0] for p in sub) / n
+        d_y = sum(p[1][1] for p in sub) / n
+        var_x = sum((p[0][0] - s_x) ** 2 for p in sub)
+        var_y = sum((p[0][1] - s_y) ** 2 for p in sub)
+        sx = (
+            sum((p[0][0] - s_x) * (p[1][0] - d_x) for p in sub) / var_x
+            if var_x > 1e-12
+            else 1.0
+        )
+        sy = (
+            sum((p[0][1] - s_y) * (p[1][1] - d_y) for p in sub) / var_y
+            if var_y > 1e-12
+            else 1.0
+        )
+        return sx, sy, d_x - sx * s_x, d_y - sy * s_y
+
+    def _residual(fit, p):
+        sx, sy, dx, dy = fit
+        rx = sx * p[0][0] + dx - p[1][0]
+        ry = sy * p[0][1] + dy - p[1][1]
+        return (rx * rx + ry * ry) ** 0.5
+
+    inliers = pts
+    fit = None
+    for _round in range(2):
+        if len(inliers) < 4:
+            return base_offset
+        fit = _lsq(inliers)
+        if not (0.9 <= fit[0] <= 1.1 and 0.9 <= fit[1] <= 1.1):
+            return base_offset
+        res = [_residual(fit, p) for p in inliers]
+        med = _median(res)
+        mad = _median([abs(r - med) for r in res])
+        limit = max(2.5 * mad, 0.012, med * 1.5)
+        kept = [p for p, r in zip(inliers, res) if r <= limit]
+        if len(kept) < 4:
+            return base_offset
+        if len(kept) == len(inliers):
+            break
+        inliers = kept
+    if fit is None or len(inliers) < 4:
+        return base_offset
+
+    def _as_transform(offset):
+        if offset is not None and len(offset) == 4:
+            return (float(offset[0]), float(offset[1]), float(offset[2]), float(offset[3]))
+        try:
+            return (1.0, 1.0, float(offset[0]), float(offset[1]))
+        except (TypeError, ValueError, IndexError):
+            return (1.0, 1.0, 0.0, 0.0)
+
+    base_fit = _as_transform(base_offset)
+    base_med = _median([_residual(base_fit, p) for p in pts])
+    fit_med = _median([_residual(fit, p) for p in pts])
+    if fit_med > base_med:
+        return base_offset
+    return fit
+
+
 def _match_template_to_paper(
     slot_template: list[VlmSlotTemplate],
     questions: list[VlmQuestion],
@@ -4536,22 +5360,29 @@ def _match_template_to_paper(
     )
 
     def assign(
-        offset: tuple[float, float],
+        transform: tuple,
         max_distance: float,
         *,
         same_no_only: bool = False,
         reserved_templates: Optional[set[int]] = None,
         reserved_papers: Optional[set[int]] = None,
     ):
-        dx, dy = offset
+        # transform 2-元组=平移（老口径）；4-元组=逐轴缩放+平移（① 全局仿射）
+        if len(transform) == 4:
+            sx, sy, dx, dy = (float(value) for value in transform)
+        else:
+            sx, sy, dx, dy = 1.0, 1.0, float(transform[0]), float(transform[1])
         candidates: list[tuple[float, int, int]] = []
         for template_index, template_slot in enumerate(slot_template):
             if reserved_templates and template_index in reserved_templates:
                 continue
             expected_no = (expected_no_by_template or {}).get(template_index)
-            shifted = tuple(
-                value + (dx if index % 2 == 0 else dy)
-                for index, value in enumerate(template_slot.normalized_bbox)
+            base = template_slot.normalized_bbox
+            shifted = (
+                sx * base[0] + dx,
+                sy * base[1] + dy,
+                sx * base[2] + dx,
+                sy * base[3] + dy,
             )
             for paper_index, (question, _sub_index, _bbox, normalized) in enumerate(paper_slots):
                 if reserved_papers and paper_index in reserved_papers:
@@ -4610,6 +5441,35 @@ def _match_template_to_paper(
         assigned.update(extra)
     else:
         assigned = assign(offset, final_distance)
+    # ① 20261109 全局仿射配准：平移粗配后，用配对控制点稳健拟合逐轴缩放+平移，
+    # 再按拟合变换重配一轮——修正整页缩放/裁边漂移造成的投影错位（幽灵空源头）。
+    def _pair_points(assigned_map):
+        return [
+            (
+                _normalized_bbox_center(slot_template[template_index].normalized_bbox),
+                _normalized_bbox_center(paper_slots[paper_index][3]),
+            )
+            for template_index, (paper_index, _distance) in assigned_map.items()
+        ]
+
+    transform = _fit_normalized_transform(_pair_points(assigned), offset)
+    if len(transform) == 4:
+        if expected_no_by_template:
+            reshaped = assign(transform, no_match_distance, same_no_only=True)
+            reshaped.update(
+                assign(
+                    transform,
+                    final_distance,
+                    reserved_templates=set(reshaped),
+                    reserved_papers={p for p, _d in reshaped.values()},
+                )
+            )
+        else:
+            reshaped = assign(transform, final_distance)
+        if len(reshaped) >= len(assigned):
+            assigned = reshaped
+            transform = _fit_normalized_transform(_pair_points(assigned), transform)
+    offset = transform
     matches: dict[int, tuple[VlmQuestion, int, list[int], float]] = {}
     residuals: list[float] = []
     for template_index, (paper_index, distance) in assigned.items():
@@ -4693,6 +5553,42 @@ def _build_template_grading_tasks(
         student_size,
         expected_no_by_template,
     )
+    # ① 20261109 全局配准：用「标准题区↔学生题区」绑定对（大切题框，比小墨迹框
+    # 稳）再拟合一次逐轴缩放+平移，红框投影整页统一走它；拟合不稳退回配准平移。
+    pair_counts: dict[int, dict[int, int]] = {}
+    pair_student: dict[tuple[int, int], object] = {}
+    for template_index, match in student_matches.items():
+        std_qidx = slot_template[template_index].question_index
+        student_question = match[0]
+        counts = pair_counts.setdefault(std_qidx, {})
+        counts[id(student_question)] = counts.get(id(student_question), 0) + 1
+        pair_student[(std_qidx, id(student_question))] = student_question
+    question_pairs: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for std_qidx, counts in pair_counts.items():
+        best_key = max(counts.items(), key=lambda kv: (kv[1], -kv[0]))[0]
+        student_question = pair_student[(std_qidx, best_key)]
+        std_question = next(
+            (q for q in standard_questions if q.display_index == std_qidx), None
+        )
+        if (
+            std_question is None
+            or not std_question.question_bbox
+            or not getattr(student_question, "question_bbox", None)
+        ):
+            continue
+        sb = std_question.question_bbox
+        tb = student_question.question_bbox
+        for (sx, sy), (tx, ty) in zip(
+            ((sb[0], sb[1]), (sb[2], sb[1]), (sb[2], sb[3]), (sb[0], sb[3])),
+            ((tb[0], tb[1]), (tb[2], tb[1]), (tb[2], tb[3]), (tb[0], tb[3])),
+        ):
+            question_pairs.append(
+                (
+                    (sx / max(1, standard_size[0]), sy / max(1, standard_size[1])),
+                    (tx / max(1, student_size[0]), ty / max(1, student_size[1])),
+                )
+            )
+    question_transform = _fit_normalized_transform(question_pairs, student_offset)
     specs: list[dict[str, Any]] = []
     used_student_slots: set[tuple[int, int]] = set()
     reserved_student_slots = {
@@ -4755,50 +5651,98 @@ def _build_template_grading_tasks(
             standard_size,
         )
 
-        # 整页归一化落点（带批改配准偏移）：标准答题区在学生卷上的直接投影，
+        # 整页归一化落点（带批改配准变换）：标准答题区在学生卷上的直接投影，
         # 也是绑题和相对投影失真时的兜底红框。
         normalized_slot_bbox = _bbox_from_normalized(
-            template_slot.normalized_bbox, student_size, offset=student_offset
+            template_slot.normalized_bbox, student_size, offset=question_transform
         )
         recovered_student_slot: Optional[tuple[VlmQuestion, int, list[int]]] = None
         if student_match:
-            student_bbox = student_match[2]
-            student_question = student_match[0]
+            fallback_question = student_match[0]
         else:
-            student_question = _question_for_slot_box(
+            fallback_question = _question_for_slot_box(
                 student_questions,
                 standard_question.printed_no,
                 normalized_slot_bbox,
                 student_size,
             )
-            if student_question is None:
-                continue
+        if fallback_question is None:
+            continue
 
-        relative_projection = _project_bbox_between_question_regions(
-            standard_bbox,
-            standard_question.question_bbox,
-            student_question.question_bbox,
-            student_size,
+        # ① 20261109 幽灵空根因二号：整页平移配准在版面漂移下会把落点带进
+        # 上一题的题区，题绑定跟着错、相对投影被拉去别的行（tpl8/tpl9 类差
+        # 100px 幽灵空）。闸选题绑定三级：
+        #   1) 有候选题区的相对投影与全局配准投影吻合（≤0.05）→ 认该绑定
+        #      （幽灵空时配准落点飘进上一题，正确题区的投影才对得上）；
+        #   2) 都不吻合 → 认兜底题区自己的相对投影（版面整体平移时相对投影
+        #      跟着题区走才是契约，离配准投影远也照样准）；
+        #   3) 兜底题区不可比/投影失真 → 维持全局配准投影。
+        candidate_questions: list[VlmQuestion] = [fallback_question]
+        candidate_questions.extend(
+            question
+            for question in student_questions
+            if all(question is not existing for existing in candidate_questions)
         )
-        if (
-            relative_projection
-            and _question_regions_comparable(
+
+        def _relative_projection(question: VlmQuestion) -> Optional[list[int]]:
+            if not question.question_bbox:
+                return None
+            relative = _project_bbox_between_question_regions(
+                standard_bbox,
                 standard_question.question_bbox,
-                student_question.question_bbox,
-                standard_size,
+                question.question_bbox,
                 student_size,
             )
-            and _projection_within_sane_scale(
-                standard_bbox, relative_projection, standard_size, student_size
-            )
-        ):
-            projected_student_bbox = relative_projection
-        else:
-            projected_student_bbox = normalized_slot_bbox
-        if not student_match:
-            student_bbox = projected_student_bbox
+            if not relative:
+                return None
+            if not _question_regions_comparable(
+                standard_question.question_bbox,
+                question.question_bbox,
+                standard_size,
+                student_size,
+            ):
+                return None
+            if not _projection_within_sane_scale(
+                standard_bbox, relative, standard_size, student_size
+            ):
+                return None
+            return relative
 
-        if not student_match:
+        def _agrees_with_registration(relative: list[int]) -> bool:
+            # 吻合 = 绑定没飘；跨题飘移/题区错绑时相对投影会与配准投影拉开
+            return (
+                _normalized_center_distance(
+                    relative, student_size, normalized_slot_bbox, student_size
+                )
+                <= 0.05
+            )
+
+        student_question = fallback_question
+        projected_student_bbox = normalized_slot_bbox
+        for candidate_question in candidate_questions:
+            relative_projection = _relative_projection(candidate_question)
+            if relative_projection and _agrees_with_registration(relative_projection):
+                student_question = candidate_question
+                projected_student_bbox = relative_projection
+                break
+        else:
+            fallback_relative = _relative_projection(fallback_question)
+            if fallback_relative:
+                projected_student_bbox = fallback_relative
+
+        # 20261109 用户令「严格按照切分的框」：红框/裁剪/打标一律用标准答题区
+        # 投影框。OCR 墨迹框只回答「这空有没有作答」和题归属，距离再近也不许
+        # 替换/扩张红框——订正注音、草稿、词库、2×2 垃圾框因此都进不了红框。
+        student_bbox = projected_student_bbox
+
+        # 墨迹归属同样按覆盖率闸：配对上的墨迹只有实质性落在投影框内才算该空
+        # 的作答；框外的墨迹（订正注音等）只当没写，留给投影框内其他墨迹恢复。
+        matched_ink_inside = (
+            student_match is not None
+            and _ink_coverage_inside_bbox(projected_student_bbox, student_match[2])
+            >= overlap_threshold
+        )
+        if not matched_ink_inside:
             # 判定口径 = 墨迹自身有多大比例落在投影答题区内（覆盖率），
             # 不是「重叠/小框」：大草稿擦到小投影也会拿 1.0。
             # 取覆盖率最高的墨迹；同覆盖率才比中心距离。
@@ -4831,17 +5775,14 @@ def _build_template_grading_tasks(
                 _neg_coverage, _distance, owner_question, sub_index, direct_bbox = (
                     direct_candidates[0]
                 )
-                student_bbox = direct_bbox
                 recovered_student_slot = (owner_question, sub_index, direct_bbox)
 
         if student_match:
             used_student_slots.add((id(student_match[0]), student_match[1]))
-            anchor_source = "baidu_direct"
-            has_mark_anchor = True
-            has_handwriting_location = True
-        elif recovered_student_slot:
+        if recovered_student_slot:
             owner_question, sub_index, _direct_bbox = recovered_student_slot
             used_student_slots.add((id(owner_question), sub_index))
+        if matched_ink_inside or recovered_student_slot:
             anchor_source = "baidu_direct"
             has_mark_anchor = True
             has_handwriting_location = True
@@ -4868,8 +5809,8 @@ def _build_template_grading_tasks(
         )
 
     # The reviewed standard-answer template is authoritative for slot count.
-    # Any unmatched student OCR box may refine a template slot's physical
-    # handwriting anchor, but must never create a second grading task.
+    # Any unmatched student OCR box may only flag a template slot as answered;
+    # it must never move the red box nor create a second grading task.
     # 只收实质性落在投影答题区内的墨迹（覆盖率≥overlap_threshold）：
     # 草稿/词库/邻空答案只要不是真写在该空里就不并入红框。
     recovered_by_spec: dict[int, list[list[int]]] = {}
@@ -4903,15 +5844,13 @@ def _build_template_grading_tasks(
 
     for spec_index, recovered_boxes in recovered_by_spec.items():
         spec = specs[spec_index]
-        direct_boxes = list(recovered_boxes)
-        if spec["has_handwriting_location"]:
-            direct_boxes.append(spec["student_bbox"])
-        merged_bbox = _bbox_union(direct_boxes, student_size)
-        if merged_bbox:
-            spec["student_bbox"] = merged_bbox
-            spec["has_mark_anchor"] = True
-            spec["has_handwriting_location"] = True
-            spec["anchor_source"] = "baidu_direct"
+        if not recovered_boxes:
+            continue
+        # 20261109 严格按照切分的框：恢复墨迹只补「有作答」标记，
+        # 红框保持投影框不合并墨迹框（_bbox_union 会把红框胀出答题区）。
+        spec["has_mark_anchor"] = True
+        spec["has_handwriting_location"] = True
+        spec["anchor_source"] = "baidu_direct"
 
     grouped_specs: dict[int, list[dict[str, Any]]] = {}
     for spec in specs:
@@ -5384,6 +6323,56 @@ def _aggregate_question_grading(question: VlmQuestion) -> None:
     question.raw["grading_result"] = grading
 
 
+def _apply_answer_set_rule(questions: list) -> None:
+    """答案集合无序比对（20261112 用户定规则，「地图的三要素」三空不按顺序填也算对）。
+
+    同题 ≥2 个作答区都各有标准/学生答案文本：逐位比对没全对时，再看整题答案集合
+    ——学生各空答案的多重集与标准多重集归一化后完全一致（只是填的顺序不同）
+    → 整题各空一律判对。宁缺勿串：
+    - 任一空待确认/未作答/读不准/缺文本 → 整题不碰（交判词/人工）；
+    - 标准答案是选项字母/对错判断的题不适用（按小问对位，不许跨空对调）；
+    - 只认归一化严格相等（词形近似/单位换算不进此规则）。
+    """
+    from app.grading.answer_key_grading import _answer_set_is_objective, _answer_set_matches
+
+    for question in questions or []:
+        if not isinstance(question, VlmQuestion):
+            continue
+        subs = [
+            item
+            for item in (question.raw.get("sub_grading_results") or [])
+            if isinstance(item, dict)
+        ]
+        if len(subs) < 2:
+            continue
+        if all(_to_int(item.get("correctResult"), WRONG) == CORRECT for item in subs):
+            continue
+        students: list[str] = []
+        standards: list[str] = []
+        for item in subs:
+            code = _to_int(item.get("correctResult"), WRONG)
+            stu = str(item.get("transcription") or "").strip()
+            std = str(item.get("correct_answer") or "").strip()
+            if code not in (CORRECT, WRONG, PARTIAL):
+                break
+            if not stu or not std or bool(item.get("read_uncertain")):
+                break
+            if _answer_set_is_objective(std):
+                break
+            students.append(stu)
+            standards.append(std)
+        else:
+            if _answer_set_matches(students, standards):
+                note = "各空答案与标准答案集合一致（顺序不同），整题判对"
+                for item in subs:
+                    item["correctResult"] = CORRECT
+                    item["result"] = RESULT_TEXT.get(CORRECT, "对")
+                    item["partial_ratio"] = None
+                    item["reason"] = note
+                    item["analysis"] = note
+                _aggregate_question_grading(question)
+
+
 def _bbox_match_position(
     boxes: list, target_bbox: Optional[list[int]]
 ) -> Optional[int]:
@@ -5626,7 +6615,14 @@ def _build_blocks(
                 )
             continue
         grading = q.raw.get("grading_result") if isinstance(q.raw.get("grading_result"), dict) else {}
-        code = _to_int(grading.get("correctResult"), _to_int(q.raw.get("correctResult"), WRONG))
+        verdict = grading.get("correctResult")
+        if verdict is None:
+            verdict = q.raw.get("correctResult")
+        if verdict is None:
+            # 20261109 严格按照切分的框：没框没任务、也从没判过的切题碎片题，
+            # 不再造默认「错」假行（曾产出 2×2 飘边框+空讲解假行）。
+            continue
+        code = _to_int(verdict, WRONG)
         result_text = _result_label(code, grading.get("partial_ratio"))
         std_q = (standard_by_id or {}).get(q.question_id) if isinstance(standard_by_id, dict) else None
         std_words: list[str] = []
@@ -5668,7 +6664,37 @@ def _build_blocks(
     return blocks
 
 
-def _summarize_result_text(questions: list[VlmQuestion]) -> str:
+def _find_ungraded_standard_questions(
+    standard_questions: Optional[list],
+    tasks: Optional[list],
+) -> list[VlmQuestion]:
+    """台账#7 题目漏批哨兵：挑出「标准侧有正式题号、却没排进任何判分任务」的题。
+
+    切题/投影失配时该题一个任务都没有，_build_blocks/_summarize 按「没判过不进结果」
+    的口径把它静默丢掉——老师看到的就是「题目漏批」。这里把它挑出来进结果文本，
+    亮成「待确认，请手动批改」，绝不静默消失。
+    老师在切题审查里删掉的题（layout_deleted）和清空答题区的题（layout_slots_cleared）
+    是人工决定不批，不算漏批；无印刷题号的切题碎片不报（防误报）。
+    """
+    covered = {id(task.standard_question) for task in (tasks or [])}
+    ungraded: list[VlmQuestion] = []
+    for question in standard_questions or []:
+        if not isinstance(question, VlmQuestion):
+            continue
+        if id(question) in covered:
+            continue
+        if _to_int(question.printed_no, 0) <= 0:
+            continue
+        if question.raw.get("layout_deleted") or question.raw.get("layout_slots_cleared"):
+            continue
+        ungraded.append(question)
+    return ungraded
+
+
+def _summarize_result_text(
+    questions: list[VlmQuestion],
+    ungraded_questions: Optional[list[VlmQuestion]] = None,
+) -> str:
     total = 0
     correct = wrong = unanswered = partial = pending = 0
     lines: list[str] = []
@@ -5698,9 +6724,15 @@ def _summarize_result_text(questions: list[VlmQuestion]) -> str:
                     f"\uff1a{_result_label(code, sub_result.get('partial_ratio'))} - {analysis}"
                 )
             continue
-        total += 1
         grading = q.raw.get("grading_result") if isinstance(q.raw.get("grading_result"), dict) else {}
-        code = _to_int(grading.get("correctResult"), WRONG)
+        verdict = grading.get("correctResult")
+        if verdict is None:
+            verdict = q.raw.get("correctResult")
+        if verdict is None:
+            # 没判过的切题碎片题不进结果（与 _build_blocks 同口径）
+            continue
+        total += 1
+        code = _to_int(verdict, WRONG)
         if code == CORRECT:
             correct += 1
         elif code == UNANSWERED:
@@ -5713,6 +6745,12 @@ def _summarize_result_text(questions: list[VlmQuestion]) -> str:
             wrong += 1
         analysis = str(grading.get("analysis") or grading.get("reason") or "").strip()
         lines.append(f"第{q.display_index}题：{_result_label(code, grading.get('partial_ratio'))} - {analysis}")
+    # 台账#7 漏批哨兵：没排进判分任务的正题亮出来交老师手动批，不随静默口径消失
+    for q in sorted(ungraded_questions or [], key=lambda item: _to_int(item.printed_no, 0)):
+        no = _to_int(q.printed_no, 0)
+        total += 1
+        pending += 1
+        lines.append(f"⚠️第{no}题：待确认 - 未定位到作答区，本题未批改，请手动批改")
     header = f"总题量：{total}；正确：{correct}；错误：{wrong}；半对：{partial}；未作答：{unanswered}；待确认：{pending}"
     return "\n".join([header, "逐题讲解：", *lines])
 
@@ -6146,6 +7184,542 @@ def _save_reference_vlm_artifacts(
         _write_json(analysis_path, analysis_data)
 
 
+# ── 留痕：一题一枚（20261109 照批改君换血）────────────────────────────────
+# 批改君 manual 留痕几何（D:\批改君\后端\app\grading\pipeline.py 只读参照，
+# 此为照抄移植，不动批改君代码）：勾/叉贴作答框右缘、底对齐；未作答空心椭圆
+# 圈住作答框；每题得分 "+N"/"0" 贴勾叉右侧；总分 "得分/满分" 手写体写左上角。
+
+
+def _load_reference_score_font(size: int):
+    """手写体数字字体（批改君 Kalam 同款链路）；找不到退留痕勾叉字体。"""
+    if ImageFont is None:
+        return None
+    candidates = []
+    configured = os.environ.get("GRADING_SCORE_FONT_PATH", "").strip()
+    if configured:
+        candidates.append(configured)
+    for root in (getattr(sys, "_MEIPASS", None), project_root()):
+        if root:
+            candidates.append(str(Path(root) / "assets" / "fonts" / "score" / "Kalam-Regular.ttf"))
+    if os.name == "nt":
+        win_fonts = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+        candidates.extend(str(win_fonts / name) for name in ("segoepr.ttf", "segoesc.ttf", "comic.ttf"))
+    candidates.append("/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf")
+    for path in candidates:
+        try:
+            if os.path.isfile(path):
+                return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    return _mark_font(size)
+
+
+def _format_reference_score_value(value) -> str:
+    """批改君 _format_score_mark_value 同款：整数不带小数点，负数/坏值 "--"。"""
+    try:
+        number = round(float(value), 2)
+    except (TypeError, ValueError):
+        return "--"
+    if not math.isfinite(number) or number < 0:
+        return "--"
+    return str(int(number)) if number.is_integer() else f"{number:.2f}".rstrip("0").rstrip(".")
+
+
+def _reference_score_text(value) -> str:
+    """批改君 score 模式字式："+N" / "0"。"""
+    try:
+        number = round(float(value), 2)
+    except (TypeError, ValueError):
+        return "0"
+    text = str(number)
+    if text.endswith(".0"):
+        text = text[:-2]
+    return ("+" + text) if number > 0 else "0"
+
+
+def _draw_reference_question_mark(draw, image_width: int, image_height: int, bbox, result: str) -> None:
+    """批改君 _draw_manual_result_mark 同款几何：勾/叉贴作答框右缘、底对齐；
+    未作答空心椭圆圈住作答框；半对 √ 加斜杠。"""
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return
+    try:
+        x1, y1, x2, y2 = [float(value) for value in bbox]
+    except (TypeError, ValueError):
+        return
+    if x2 <= x1 or y2 <= y1 or (x2 <= 0 and y2 <= 0):
+        return
+    size = max(30.0, min(80.0, image_width * 0.025))
+    x = min(image_width - size, x2 - size * 0.25)
+    y = min(image_height - size, max(y1, y2 - size))
+    stroke_width = max(4, int(round(size * 0.08)))
+    color = "#FF0000"
+    if result == "未作答":
+        area_stroke_width = max(2, min(8, stroke_width))
+        pad = max(4, area_stroke_width * 2)
+        draw.ellipse(
+            [
+                (int(round(x1)) - pad, int(round(y1)) - pad),
+                (int(round(x2)) + pad, int(round(y2)) + pad),
+            ],
+            outline=color,
+            width=area_stroke_width,
+        )
+        return
+    if result == "待确认":
+        return
+
+    def point(px: float, py: float) -> tuple[int, int]:
+        return int(round(x + size * px)), int(round(y + size * py))
+
+    is_partial = result == "半对"
+    mark = "√" if result in ("对", "半对") else "×"
+    font = _mark_font(max(1, int(round(size))))
+    if font is not None:
+        baseline_y = y + size * 0.82
+        try:
+            draw.text(
+                (int(round(x)), int(round(baseline_y))),
+                mark,
+                fill=color,
+                font=font,
+                anchor="ls",
+            )
+        except Exception:
+            try:
+                ascent = int(font.getmetrics()[0])
+            except Exception:
+                ascent = int(round(size))
+            draw.text(
+                (int(round(x)), int(round(baseline_y - ascent))),
+                mark,
+                fill=color,
+                font=font,
+            )
+        if is_partial:
+            draw.line(
+                [point(0.28, 0.43), point(0.62, 0.52)],
+                fill=color,
+                width=stroke_width,
+            )
+        return
+    if result in ("对", "半对"):
+        draw.line(
+            [point(0.10, 0.54), point(0.34, 0.78), point(0.84, 0.18)],
+            fill=color,
+            width=stroke_width,
+            joint="curve",
+        )
+        if is_partial:
+            draw.line([point(0.28, 0.43), point(0.62, 0.52)], fill=color, width=stroke_width)
+    else:
+        draw.line([point(0.20, 0.20), point(0.80, 0.80)], fill=color, width=stroke_width)
+        draw.line([point(0.80, 0.20), point(0.20, 0.80)], fill=color, width=stroke_width)
+
+
+def _draw_reference_question_score(draw, image_width: int, image_height: int, bbox, earned) -> None:
+    """每题得分留痕："+N"/"0" 手写体，贴勾/叉右侧同一基线（20261109）。"""
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return
+    try:
+        _x1, _y1, x2, y2 = [float(value) for value in bbox]
+    except (TypeError, ValueError):
+        return
+    if x2 <= _x1 or y2 <= _y1 or (x2 <= 0 and y2 <= 0):
+        return
+    size = max(30.0, min(80.0, image_width * 0.025))
+    x = min(image_width - size, x2 - size * 0.25)
+    y = min(image_height - size, max(_y1, y2 - size))
+    text = _reference_score_text(earned)
+    text_font = _load_reference_score_font(max(1, int(round(size * 0.78))))
+    if text_font is None:
+        return
+    color = "#FF0000"
+    text_x = min(image_width - 8, x + size * 1.06)
+    baseline_y = y + size * 0.82
+    try:
+        draw.text(
+            (int(round(text_x)), int(round(baseline_y))),
+            text,
+            fill=color,
+            font=text_font,
+            anchor="ls",
+        )
+    except Exception:
+        try:
+            ascent = int(text_font.getmetrics()[0])
+        except Exception:
+            ascent = int(round(size * 0.78))
+        draw.text(
+            (int(round(text_x)), int(round(baseline_y - ascent))),
+            text,
+            fill=color,
+            font=text_font,
+        )
+
+
+def _draw_reference_total_score_mark(draw, w: int, h: int, score_total, max_score_total=None) -> None:
+    """批改君 _draw_manual_total_score_mark：左上角手写体 "得分/满分"（20261109）。"""
+    try:
+        value = round(float(score_total), 2)
+    except (TypeError, ValueError):
+        return
+    if not math.isfinite(value) or value < 0:
+        return
+    score_text = f"{_format_reference_score_value(value)}/{_format_reference_score_value(max_score_total)}"
+    font_size = max(39, min(82, int(w * 0.048)))
+    font = _load_reference_score_font(font_size)
+    if font is None:
+        return
+    margin = min(max(32, int(w * 0.035)), int(w * 0.1))
+    while font.getlength(score_text) > w - margin * 2 and font_size > 8:
+        font_size -= 1
+        font = _load_reference_score_font(font_size)
+    x = margin
+    baseline_y = min(h - 4, max(font_size + 4, int(h * 0.12)))
+    color = "#dc2626"
+    try:
+        draw.text((x, baseline_y), score_text, fill=color, font=font, anchor="ls")
+    except Exception:
+        try:
+            ascent = int(font.getmetrics()[0])
+        except Exception:
+            ascent = font_size
+        draw.text((x, baseline_y - ascent), score_text, fill=color, font=font)
+
+
+def _reference_block_code(block: dict) -> int:
+    value = block.get("baidu_correct_result")
+    if value is not None and str(value).strip() != "":
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            pass
+    text = str(block.get("result") or "").strip()
+    return {
+        "对": CORRECT,
+        "correct": CORRECT,
+        "错": WRONG,
+        "wrong": WRONG,
+        "未作答": UNANSWERED,
+        "unanswered": UNANSWERED,
+        "半对": PARTIAL,
+        "partial": PARTIAL,
+        "待确认": PENDING,
+        "pending": PENDING,
+    }.get(text, WRONG)
+
+
+def _reference_effective_bbox(block: dict) -> Optional[list[int]]:
+    """画圈用框：有锚用块 bbox；没锚退题目框右下角小框（question_bbox_fallback）。"""
+
+    def valid(value: Any) -> Optional[list[int]]:
+        if not isinstance(value, (list, tuple)) or len(value) < 4:
+            return None
+        try:
+            bbox = [int(_to_float(item)) for item in value[:4]]
+        except (TypeError, ValueError):
+            return None
+        return bbox if bbox[2] > bbox[0] and bbox[3] > bbox[1] else None
+
+    if block.get("has_mark_anchor", block.get("has_handwriting_location")):
+        return valid(block.get("bbox"))
+    question_bbox = valid(block.get("baidu_question_bbox"))
+    if question_bbox:
+        return _mark_bbox_from_area(question_bbox, question_bbox)
+    return valid(block.get("bbox"))
+
+
+def _reference_question_groups(
+    blocks,
+    template_slot_question: Optional[dict] = None,
+    question_full_scores: Optional[dict] = None,
+    scoring_config: Optional[dict] = None,
+    scoring_key_offset: int = 0,
+) -> list[dict]:
+    """按学生题号分组——一题一枚留痕（20261109：一道题只在作答空旁留一个痕）。
+
+    幽灵槽过滤：模板槽归属标准题与本组多数不符的子块（跨题投影错位，比如
+    Q2 的槽飘进 Q1 行）不参与判定，免得一题画出两个痕、分数被摊薄。
+    判词按组内已判定子块的实际得分：满分=对、0=错、中间=半对；全未作答
+    画未作答椭圆；整组待确认不画（交人工拍板，不预判）。
+    """
+    grouped: dict = {}
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            continue
+        grouped.setdefault(block.get("index"), []).append(block)
+
+    out: list[dict] = []
+    for key, subs in grouped.items():
+        stds = []
+        for block in subs:
+            slot = block.get("reference_vlm_template_slot_id")
+            std = None
+            if slot is not None and isinstance(template_slot_question, dict):
+                std = template_slot_question.get(slot)
+                if std is None:
+                    try:
+                        std = template_slot_question.get(int(slot))
+                    except (TypeError, ValueError):
+                        std = None
+            stds.append(std)
+        known = [(pos, std) for pos, std in enumerate(stds) if std is not None]
+        majority = None
+        if known:
+            counts: dict = {}
+            for _pos, std in known:
+                counts[std] = counts.get(std, 0) + 1
+            top = max(counts.values())
+            tied = [std for std, count in counts.items() if count == top]
+            majority = tied[0] if len(tied) == 1 else known[0][1]
+        if majority is not None:
+            kept = [block for block, std in zip(subs, stds) if std is None or std == majority]
+            std_qidx = majority
+        else:
+            kept = list(subs)
+            std_qidx = None
+
+        determined = []
+        has_pending = False
+        for block in kept:
+            if _reference_block_code(block) == PENDING:
+                has_pending = True
+            else:
+                determined.append(block)
+        n_kept = len(kept)
+
+        full = None
+        if isinstance(scoring_config, dict):
+            # 统分键是跨页全局重编号（第2页第N题→第(M+N)题）：先按偏移折算查，
+            # 再查原号——两套题号口径（学生页内号/标准全局号）都能命中（20261109）。
+            try:
+                offset = int(scoring_key_offset or 0)
+            except (TypeError, ValueError):
+                offset = 0
+            try:
+                key_no = int(key)
+            except (TypeError, ValueError):
+                key_no = None
+            candidates = []
+            if std_qidx is not None:
+                candidates.append(f"第{offset + std_qidx}题")
+                candidates.append(f"第{std_qidx}题")
+            if key_no is not None:
+                candidates.append(f"第{offset + key_no}题")
+            candidates.append(f"第{key}题")
+            for config_key in candidates:
+                value = scoring_config.get(config_key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    full = float(value)
+                    break
+        if full is None and std_qidx is not None:
+            value = (question_full_scores or {}).get(std_qidx)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                full = float(value)
+        if full is None:
+            full = float(max(1, n_kept))
+        per = full / n_kept if n_kept else 0.0
+
+        earned = 0.0
+        all_unanswered = bool(determined)
+        for block in determined:
+            code = _reference_block_code(block)
+            if code != UNANSWERED:
+                all_unanswered = False
+            score = block.get("score")
+            if isinstance(score, (int, float)) and not isinstance(score, bool):
+                earned += float(score)
+            elif code == CORRECT:
+                earned += per
+            elif code == PARTIAL:
+                ratio = block.get("partial_ratio")
+                if not isinstance(ratio, (int, float)) or isinstance(ratio, bool):
+                    ratio = 0.5
+                earned += per * max(0.0, min(1.0, float(ratio)))
+        earned = round(earned, 2)
+
+        if not determined:
+            result = "待确认"
+        elif all_unanswered:
+            result = "未作答"
+        elif earned >= full - 0.005:
+            result = "对"
+        elif earned <= 0.005:
+            result = "错"
+        else:
+            result = "半对"
+
+        anchor_bbox = None
+        for block in determined or kept:
+            anchor_bbox = _reference_effective_bbox(block)
+            if anchor_bbox:
+                break
+        out.append(
+            {
+                "key": key,
+                "anchor_bbox": anchor_bbox,
+                "result": result,
+                "earned": earned,
+                "full": full,
+                "pending": has_pending,
+                "drawn": bool(determined and anchor_bbox),
+            }
+        )
+    return out
+
+
+def _parse_printed_score(text) -> Optional[float]:
+    """题干括号里的（X分）——满分自动读（20261109），没读到返回 None。"""
+    if not isinstance(text, str):
+        return None
+    match = re.search("[（(][ 　]*([0-9]+(?:[.][0-9]+)?)[ 　]*分[ 　]*[）)]", text)
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def build_reference_draw_score_basis(folder_safe: str, page_no, slot_template) -> tuple[dict, dict]:
+    """画留痕的分数依据（20261109）：(模板槽→标准题号, 标准题→满分)。
+
+    满分两层：题干（X分）读到就用（比空分值权威）；否则作答区 max_score 合计，
+    口径同统分 _reference_layout_slot_scores（没填的空按 1 分、全没填不收）。
+    任何失败都退回空表——留痕照画，分数按默认每空 1 分。"""
+    slot_question: dict = {}
+    for template_slot in slot_template or []:
+        slot_id = getattr(template_slot, "slot_id", None)
+        question_index = getattr(template_slot, "question_index", None)
+        if slot_id is None or question_index is None:
+            continue
+        try:
+            slot_question[int(slot_id)] = int(question_index)
+        except (TypeError, ValueError):
+            continue
+    question_full: dict = {}
+    try:
+        layout_data = load_reference_layout(str(folder_safe or "")) or {}
+        saved_page = ((layout_data.get("pages") or {}).get(str(_to_int(page_no, 1))) or {})
+        for question in ((saved_page.get("layout") or {}).get("questions") or []):
+            if not isinstance(question, dict):
+                continue
+            question_index = _to_int(question.get("display_no"), 0)
+            if question_index <= 0:
+                match = re.match("q-([0-9]+)", str(question.get("question_id") or ""))
+                question_index = int(match.group(1)) if match else 0
+            if question_index <= 0:
+                continue
+            text_score = _parse_printed_score(question.get("question_text"))
+            if text_score is not None:
+                question_full[question_index] = text_score
+                continue
+            values: list[float] = []
+            explicit = False
+            for slot in question.get("answer_slots") or question.get("slots") or []:
+                if not isinstance(slot, dict):
+                    continue
+                try:
+                    value = float(slot.get("max_score"))
+                except (TypeError, ValueError):
+                    values.append(1.0)  # 没填过的空按 1 分（同统分口径）
+                    continue
+                explicit = True
+                values.append(max(0.0, value))
+            if explicit and values:
+                question_full[question_index] = round(
+                    question_full.get(question_index, 0.0) + sum(values), 2
+                )
+    except Exception:
+        pass
+    return slot_question, question_full
+
+
+def _spread_superimposed_boxes(
+    boxes: list,
+    image_size: tuple,
+    *,
+    key,
+) -> list:
+    """20261113 #5「应该要有12个勾」：同落点重合的一组 bbox 沿共用纵向跨度摊成 K 条带。
+
+    落笔点由 bbox 的 x_max 与垂直中心决定（pipeline.draw_real_marks_and_save 的
+    check_x/check_y）；表格列级框、多空并一框会让 K 空的 √/× 全叠印在同一点、
+    只看得见一枚（客户 11.12 实拍 12 空只剩 2 勾）。把同一落点的 K 个 bbox 纵向
+    分成 K 条带：每条带保原 x_min/x_max（落笔横坐标不动）、y 取条带区间，
+    K 枚痕沿框边各占一档都可见。返回新 bbox 列表（不改入参）。
+    key=碰撞键（痕迹传 (x_max, y_center)，椭圆传中心）；图幅无效时原样返回。"""
+    if len(boxes) < 2:
+        return [list(b) for b in boxes]
+    try:
+        width, height = int(image_size[0]), int(image_size[1])
+    except (TypeError, ValueError, IndexError):
+        return [list(b) for b in boxes]
+    if width <= 0 or height <= 0:
+        return [list(b) for b in boxes]
+    font_size, _offsets, _margin_x, _margin_y = _adaptive_mark_params(width, height)
+    glyph = max(36, int(font_size * 0.9))
+    tol = max(8, int(glyph * 0.6))
+
+    groups: list = []
+    for index, box in enumerate(boxes):
+        if not isinstance(box, (list, tuple)) or len(box) < 4:
+            groups.append([index])
+            continue
+        kx, ky = key(box)
+        merged = [index]
+        rest: list = []
+        for group in groups:
+            if any(
+                abs(key(boxes[i])[0] - kx) <= tol and abs(key(boxes[i])[1] - ky) <= tol
+                for i in group
+                if isinstance(boxes[i], (list, tuple)) and len(boxes[i]) >= 4
+            ):
+                merged.extend(group)
+            else:
+                rest.append(group)
+        rest.append(merged)
+        groups = rest
+
+    out = [list(b) if isinstance(b, (list, tuple)) else b for b in boxes]
+    for group in groups:
+        if len(group) < 2:
+            continue
+        valid = [
+            i for i in group if isinstance(out[i], (list, tuple)) and len(out[i]) >= 4
+        ]
+        if len(valid) < 2:
+            continue
+        valid.sort(key=lambda i: ((out[i][1] + out[i][3]) / 2.0, i))
+        span_y1 = min(out[i][1] for i in valid)
+        span_y2 = max(out[i][3] for i in valid)
+        band_h = max((span_y2 - span_y1) / len(valid), glyph * 1.2)
+        total_h = band_h * len(valid)
+        start_y = (span_y1 + span_y2) / 2.0 - total_h / 2.0
+        for slot, i in enumerate(valid):
+            y1 = int(round(start_y + slot * band_h))
+            y2 = int(round(start_y + (slot + 1) * band_h))
+            y1 = max(0, min(height - 2, y1))
+            y2 = max(y1 + 1, min(height - 1, y2))
+            out[i] = [int(out[i][0]), y1, int(out[i][2]), y2]
+    return out
+
+
+def _spread_superimposed_marks(mark_blocks: list, image_size: tuple) -> None:
+    """就地摊开同落点叠印的 √/×（每枚 copy 的 bbox 换成条带，x_min/x_max 不动）。"""
+    if len(mark_blocks) < 2:
+        return
+    boxes = [item.get("bbox") for item in mark_blocks]
+    spread = _spread_superimposed_boxes(
+        boxes,
+        image_size,
+        key=lambda b: (float(b[2]), (float(b[1]) + float(b[3])) / 2.0),
+    )
+    for item, bbox in zip(mark_blocks, spread):
+        item["bbox"] = bbox
+
+
 def draw_reference_vlm_marks_and_save(
     image_path: str,
     blocks_with_result: list,
@@ -6155,38 +7729,102 @@ def draw_reference_vlm_marks_and_save(
     check_cross_scale: float = 0.9,
     question_notes: Optional[dict] = None,
     paper_note: Optional[str] = None,
+    template_slot_question: Optional[dict] = None,
+    question_full_scores: Optional[dict] = None,
+    scoring_config: Optional[dict] = None,
+    scoring_key_offset: int = 0,
+    hide_score_marks: bool = False,
 ) -> tuple[str, str, str]:
-    """Draw checks/crosses for graded answer areas; unanswered slots get a hollow
-    circle (2026-10-16: never leave a blank with no mark at all). Pending slots
-    stay unmarked so the teacher's verdict isn't prejudged."""
-    mark_blocks: list[dict] = []
+    """参照答案批改留痕——逐空一痕仿批改君 ref_cls 画法（20261110）＋分数留痕（20261111 用户点名加回）：
+
+    - 每个作答块一枚 √/×/半勾，落在该空笔迹框右端（多空题每空各一枚）；
+    - 未作答：在作答区（槽位 answer_bbox，无则题目框右下角）画红椭圆圈住；
+    - 每题旁 "+N"/"0" 得分（贴该题首个痕右侧同一基线）＋左上角手写体"得分/满分"总分；
+      分数依据：统分设置 scoring_config → 题干（X分）/作答区 max_score → 默认每空 1 分；
+      左上角总分只在有真实满分依据（scoring_config / question_full_scores）时画，
+      全靠默认满分时不画，免得写出误导性的"满分"；
+    - 待确认整块不画（交人工拍板），但其满分照计总分口径。
+    question_* / scoring_* 参数即分数依据。
+    hide_score_marks（11.11-6 用户定开关）为真时分数留痕整层关掉：每题旁分数和左上角总分都不画。"""
 
     def valid_bbox(value: Any) -> Optional[list[int]]:
         if not isinstance(value, (list, tuple)) or len(value) < 4:
             return None
-        bbox = [int(_to_float(item)) for item in value[:4]]
+        try:
+            bbox = [int(_to_float(item)) for item in value[:4]]
+        except (TypeError, ValueError):
+            return None
         return bbox if bbox[2] > bbox[0] and bbox[3] > bbox[1] else None
 
+    code_to_result = {CORRECT: "对", WRONG: "错", PARTIAL: "半对"}
+    mark_blocks: list = []
+    blank_areas: list = []
     for block in blocks_with_result:
         if not isinstance(block, dict):
             continue
-        code = _to_int(block.get("baidu_correct_result"), WRONG)
+        code = _reference_block_code(block)
         if code == PENDING:
-            # 待确认交人工拍板，不画勾叉（错叉会误导成已判错）
             continue
-
-        if block.get("has_mark_anchor", block.get("has_handwriting_location")):
-            mark_blocks.append(block)
+        if code == UNANSWERED:
+            answer_bbox = valid_bbox(block.get("reference_vlm_answer_bbox"))
+            question_bbox = valid_bbox(block.get("baidu_question_bbox"))
+            if block.get("baidu_is_slot") and answer_bbox:
+                blank_areas.append(answer_bbox)
+            elif question_bbox:
+                blank_areas.append(_mark_bbox_from_area(question_bbox))
             continue
-
+        item = dict(block)
+        item["is_question"] = True
+        if code in code_to_result:
+            item["result"] = code_to_result[code]
+        if item.get("has_mark_anchor", item.get("has_handwriting_location")):
+            if not valid_bbox(item.get("bbox")):
+                # 20261113 #5「应该要有12个勾」：有锚块 bbox 无效不能再静默丢痕
+                # （draw_real_marks_and_save 会 continue），兜底链同无锚块。
+                anchor_bbox = valid_bbox(item.get("reference_vlm_answer_bbox"))
+                question_bbox = valid_bbox(item.get("baidu_question_bbox"))
+                if anchor_bbox:
+                    item["bbox"] = anchor_bbox
+                elif question_bbox:
+                    item["bbox"] = _mark_bbox_from_area(question_bbox, question_bbox)
+                else:
+                    continue
+                item["reference_vlm_anchor_source"] = "bbox_fallback"
+            mark_blocks.append(item)
+            continue
         question_bbox = valid_bbox(block.get("baidu_question_bbox"))
         if not question_bbox:
             continue
+        item["bbox"] = _mark_bbox_from_area(question_bbox, question_bbox)
+        item["reference_vlm_anchor_source"] = "question_bbox_fallback"
+        mark_blocks.append(item)
 
-        fallback_block = dict(block)
-        fallback_block["bbox"] = _mark_bbox_from_area(question_bbox, question_bbox)
-        fallback_block["reference_vlm_anchor_source"] = "question_bbox_fallback"
-        mark_blocks.append(fallback_block)
+    # 20261113 #5「应该要有12个勾」：多空共用/重合 bbox 时 √/× 叠印成一枚，
+    # 沿共用纵向跨度摊开，每空一枚都可见；未作答椭圆同理摊开。
+    try:
+        with Image.open(image_path) as _probe:
+            image_size = _probe.size
+    except Exception:
+        image_size = (0, 0)
+    _spread_superimposed_marks(mark_blocks, image_size)
+    if len(blank_areas) > 1:
+        blank_areas = _spread_superimposed_boxes(
+            blank_areas,
+            image_size,
+            key=lambda b: ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0),
+        )
+
+    # 20261111 用户点名加回：每题旁 "+N" + 左上角总分（1110 真身画法曾去掉）。
+    # 分组算分复用 1109 口径（幽灵槽过滤/满分折算/待确认不计得分照计满分）。
+    # hide_score_marks（11.11-6）：开着时分数整层不画（每题旁分数+左上角总分一起去掉）。
+    score_groups = [] if hide_score_marks else _reference_question_groups(
+        blocks_with_result,
+        template_slot_question=template_slot_question,
+        question_full_scores=question_full_scores,
+        scoring_config=scoring_config,
+        scoring_key_offset=scoring_key_offset,
+    )
+    total_basis = bool(question_full_scores) or bool(scoring_config)
 
     orig_name, ann_name = draw_real_marks_and_save(
         image_path,
@@ -6210,9 +7848,33 @@ def draw_reference_vlm_marks_and_save(
         with Image.open(output_path) as source:
             image = source.convert("RGB")
         draw = ImageDraw.Draw(image)
+        # 未作答红椭圆（批改君同款参数）：线宽随图幅、带 pad 圈住作答区
+        if blank_areas:
+            line_width = max(2, min(8, int(round(min(image.size) * 0.002))))
+            pad = max(4, line_width * 2)
+            for area in blank_areas:
+                x1 = max(0, min(image.width - 1, area[0] - pad))
+                y1 = max(0, min(image.height - 1, area[1] - pad))
+                x2 = max(x1 + 1, min(image.width - 1, area[2] + pad))
+                y2 = max(y1 + 1, min(image.height - 1, area[3] + pad))
+                draw.ellipse((x1, y1, x2, y2), outline="#FF4444", width=line_width)
         # 老师手动批注（每道题一句 + 整卷总评）写到卷面留痕上
-        img_w, img_h = image.size
-        draw_manual_annotations(draw, img_w, img_h, blocks_with_result, question_notes, paper_note)
+        draw_manual_annotations(draw, image.width, image.height, blocks_with_result, question_notes, paper_note)
+        # 分数留痕最后画（20261111）：每题旁 "+N"/"0" 贴首个痕右侧，左上角"得分/满分"
+        for group in score_groups:
+            if not group.get("drawn") or not group.get("anchor_bbox"):
+                continue
+            _draw_reference_question_score(
+                draw, image.width, image.height, group["anchor_bbox"], group.get("earned")
+            )
+        if total_basis and score_groups:
+            _draw_reference_total_score_mark(
+                draw,
+                image.width,
+                image.height,
+                sum(float(g.get("earned") or 0.0) for g in score_groups),
+                sum(float(g.get("full") or 0.0) for g in score_groups),
+            )
         image.save(output_path, quality=95)
     return orig_name, ann_name, marks_only
 
@@ -6581,7 +8243,9 @@ def grade_reference_vlm_paper(
     """Grade one paper and return (result_text, blocks, enriched_vlm_json, mark_image_path).
 
     answer_table：标准答案完整识别表（load_or_build_reference_answer_table 产出）。
-    判分提示词以表内文本为唯一判分依据；缺槽回退 answer_words，再回退 image 1。
+    20261108 照批改君判分协议：两图直接对照（image 1 标准 + image 2 学生，红框标签绑定），
+    手写宽容还原；标准答案文本（表/answer_words）随槽进元数据作权威文本，image 1 该槽
+    没写答案时以文本为准。判词 对/错/未作答（半对/待确认只留人工改判路径）。
     """
     if stop_event and stop_event.is_set():
         raise RuntimeError("已停止批改")
@@ -6623,7 +8287,7 @@ def grade_reference_vlm_paper(
         if answer_table:
             for task in tasks:
                 # 转写不可靠的表文本改落〈文本缺失〉哨兵（不给错文、也不给空——
-                # 空会漏进 answer_words 兜底）：判分转 image 1 红框，read_guard 不误伤
+                # 空会漏进 answer_words 兜底）：判分转 image 1 红框
                 task.standard_answer_text = _unreliable_as_text_missing(
                     _answer_table_slot_text(
                         answer_table,
@@ -6634,8 +8298,6 @@ def grade_reference_vlm_paper(
                         prefer_no=task.student_question.printed_no or task.standard_question.printed_no,
                     )
                 )
-        # 完整答案表进提示词：先认题号，再对照本表（用户要求 AI 明确知道每道题答案）
-        answer_table_text = _answer_table_summary_text(answer_table)
         batches = _group_grading_tasks(tasks)
         # C3 判分缓存预查：同（题, 作答）命中直接复用判分。全命中 batch 不提交
         # VL（省图省调用）；部分命中照调 VL，结果回来后对命中槽覆盖为缓存值。
@@ -6678,7 +8340,7 @@ def grade_reference_vlm_paper(
 
     workers = max(
         1,
-        min(len(qwen_tasks), int(os.environ.get("REFERENCE_VLM_QWEN_WORKERS", "6") or "6")),
+        min(len(qwen_tasks), env_workers("REFERENCE_VLM_QWEN_WORKERS", 6, 8)),
     )
 
     decisions: dict[int, dict[int, dict]] = {}
@@ -6694,7 +8356,6 @@ def grade_reference_vlm_paper(
             stu_url,
             student_name,
             family_hint=family_hint,
-            answer_table_text=answer_table_text,
         )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -6824,8 +8485,40 @@ def grade_reference_vlm_paper(
         for std in (standard_questions or [])
         if isinstance(std, VlmQuestion)
     }
+    # 答案集合无序比对（20261112 用户定规则）：整题各空只是填的顺序不同也算对。
+    _apply_answer_set_rule(student_questions)
     blocks = _build_blocks(student_questions, standard_by_id=standard_by_id)
-    result_text = _summarize_result_text(student_questions)
+    # 台账#7 题目漏批哨兵：标准侧有号却没任务的题进结果文本（⚠️待确认+手动批改提示）
+    ungraded_questions = _find_ungraded_standard_questions(standard_questions, tasks)
+    # 2026-11-17 P1 覆盖原子性：逐题枚举比对「应有题号 vs 已判定题号」，
+    # 第 14 题这类整题被模型跳过的情况必须显式暴露（日志 + 块标待确认），
+    # 绝不允许「未判定」静默消失在结果里。
+    try:
+        from app.grading.grading_coverage import coverage_report, ensure_atomicity
+
+        coverage = coverage_report(standard_questions, blocks)
+        actions = ensure_atomicity(blocks, coverage)
+        if coverage.get("missing") or coverage.get("unjudged"):
+            print(
+                f"[coverage] {student_name} 应有{len(coverage.get('expected') or [])}题 "
+                f"缺题={coverage.get('missing')} 未判定={coverage.get('unjudged')} "
+                f"覆盖率={coverage.get('stats', {}).get('coverage')}"
+            )
+        for action in actions or []:
+            if action.get("action") == "missing_question":
+                print(f"[coverage] {student_name} {action.get('reason')}")
+                # 缺题也进结果文本的「待确认」清单：老师端能看到并且能手工补批
+                no = action.get("index")
+                if no is not None:
+                    ungraded_questions = list(ungraded_questions or [])
+                    label = f"第{no}题"
+                    if label not in ungraded_questions:
+                        ungraded_questions.append(label)
+    except Exception as exc:  # 覆盖率只是哨兵，失败不挡批改
+        print(f"[coverage] 覆盖率检查失败（不影响批改）: {type(exc).__name__}: {exc}")
+    result_text = _summarize_result_text(
+        student_questions, ungraded_questions=ungraded_questions
+    )
     _save_reference_vlm_artifacts(
         folder_safe=folder_safe,
         paper_name=student_name,

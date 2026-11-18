@@ -1,4 +1,5 @@
 import { API_PREFIX, API_BASE_URL } from "@/config/api";
+import { readGlobalPrintPrefs } from "@/lib/globalPrintPrefs";
 import {
   getAuthToken,
   submitGrading,
@@ -404,6 +405,26 @@ export async function confirmReferenceLayout(
   );
 }
 
+/** 11.11-11 每面切完单独保存：单页并进已保存布局，其余页不动（整卷 confirm 仍可用）。 */
+export async function saveReferenceLayoutPage(
+  folderName: string,
+  prepareId: string,
+  page: ReferenceLayoutPage,
+): Promise<{
+  ok: boolean;
+  confirmed: boolean;
+  reference_layout: ReferenceLayoutStatus;
+  updated_at?: string;
+}> {
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/reference-layout/save-page`,
+    {
+      method: "POST",
+      body: { prepare_id: prepareId, page },
+    },
+  );
+}
+
 export type ReferenceAnswerSlotItem = {
   sub_index: number;
   bbox?: [number, number, number, number];
@@ -613,6 +634,7 @@ export async function fetchGradingHistory(
   major_order?: string[] | null;
   major_titles?: Record<string, string> | null;
   paper_subs?: Record<string, { num: string; score: number }[]> | null;
+  hide_score_marks?: boolean;
 }> {
   // manual 系引擎（manual_reference/manual_paper）与 manual 共用 __manual.json，
   // 后端 _grading_history_path 只认 "manual"——在此归一，免得每个调用点各自防。
@@ -747,6 +769,24 @@ export async function uploadAnswerSheet(
   );
 }
 
+/** 上传带标准答案的答题卡（参照批改（答题卡）单上传）：按印刷框线切格，
+ * 逐格读出标准答案并保存，返回答案键值（与学生作答区同编号）+ 原文行 */
+export async function extractAnswerKeyFromCard(
+  folderName: string,
+  file: File,
+): Promise<{
+  ok: boolean;
+  answers: Record<string, string>;
+  raw: string;
+}> {
+  const form = new FormData();
+  form.append("file", file);
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/answer-key-from-card`,
+    { method: "POST", body: form },
+  );
+}
+
 /** 识别原始试卷上每题的分值（返回逐题清单，供确认页核对） */
 export async function recognizePaperScores(folderName: string): Promise<{
   ok: boolean;
@@ -780,9 +820,14 @@ export async function startScanImport(
   });
 }
 
-/** 停止扫描导入 */
-export async function stopScanImport(): Promise<{ ok: boolean; msg?: string }> {
-  return gradingFetch("/grading/scan-import/stop", { method: "POST" });
+/** 停止扫描导入。deleteImported=true =「取消并清除」：删掉本次会话已导入的文件并清残留、退面数（11.9-4） */
+export async function stopScanImport(
+  deleteImported = false,
+): Promise<{ ok: boolean; msg?: string; deleted_imported?: number; deleted_pending?: number; refunded_pages?: number }> {
+  return gradingFetch("/grading/scan-import/stop", {
+    method: "POST",
+    body: { delete_imported: deleteImported },
+  });
 }
 
 /** 扫描导入状态 */
@@ -863,7 +908,14 @@ export async function startReferenceGrade(
   singleFilename?: string | null,
   selectedFilenames?: string[] | null,
   pushDingtalk: boolean = true,
-): Promise<{ ok: boolean; job_id: string; total: number }> {
+): Promise<{
+  ok: boolean;
+  job_id: string | null;
+  total: number;
+  /** ① 续批：全部试卷都已批改完成，没有需要续批的（job_id 为 null） */
+  skipped_all?: boolean;
+  skipped?: number;
+}> {
   if (engine === "essay") {
     throw new Error("作文批改请使用 startEssayGrade()");
   }
@@ -899,6 +951,16 @@ export async function referenceGradeStatus(
   total: number;
   current_name?: string | null;
   in_progress?: string[];
+  /** 任务引擎（aliyun/baidu/smart_ref/manual/manual_paper/answer_key），前端选文案用 */
+  engine?: string | null;
+  /** true=在 heavy_slot 队列里等前面的重活，还没开始批 */
+  queued?: boolean;
+  /** ② 预处理阶段：recognizing=正在识别试卷（phase_done/phase_total），grading=逐卷批改中 */
+  phase?: string | null;
+  phase_done?: number;
+  phase_total?: number;
+  /** ② 重试中提示（如「网络异常，正在重试(2/3)…」），有值时优先显示 */
+  retry_note?: string | null;
   completed: Array<{
     name: string;
     result: string;
@@ -975,10 +1037,15 @@ export async function saveAnswerKey(
   });
 }
 
-/** 读取已保存的标准答案（回显）。 */
-export async function getAnswerKey(folderName: string): Promise<AnswerKeySaveResult> {
+/** 读取已保存的标准答案（回显）。includeTable=识别答案（识别列表）一并回显补缺。 */
+export async function getAnswerKey(
+  folderName: string,
+  includeTable = false,
+): Promise<AnswerKeySaveResult> {
   return gradingFetch<AnswerKeySaveResult>(
-    `/grading/folders/${encodeURIComponent(folderName)}/answer-key`,
+    `/grading/folders/${encodeURIComponent(folderName)}/answer-key${
+      includeTable ? "?include_table=1" : ""
+    }`,
   );
 }
 
@@ -1002,6 +1069,10 @@ export async function answerKeyGradeStatus(
   total: number;
   current_name?: string | null;
   in_progress?: string[];
+  /** 任务引擎（answer_key），前端选文案用 */
+  engine?: string | null;
+  /** true=在 heavy_slot 队列里等前面的重活，还没开始批 */
+  queued?: boolean;
   completed: Array<{
     name: string;
     result: string;
@@ -1167,6 +1238,7 @@ export async function startEssayGrade(
     scoring_prompt?: string;
     topic_text?: string;
     topic_image_base64?: string;
+    dimensions_json?: string | null;
     push_dingtalk?: boolean;
   } = {
     rubric_text: String(rubricText || "").trim(),
@@ -1196,6 +1268,8 @@ export async function essayGradeStatus(
   ok: boolean;
   total: number;
   current_name?: string | null;
+  /** 任务引擎（essay），前端选文案用 */
+  engine?: string | null;
   completed: Array<{
     name: string;
     result: string;
@@ -1204,6 +1278,7 @@ export async function essayGradeStatus(
     score_total?: number | null;
     essay_grade?: string | null;
     dimension_scores?: Record<string, number> | null;
+    dimensions?: EssayDimension[] | null;
   }>;
   failed: Array<{ name: string; msg: string }>;
   done?: boolean;
@@ -1229,6 +1304,7 @@ export type EssayCompletedItem = {
   score_total?: number | null;
   essay_grade?: string | null;
   dimension_scores?: Record<string, number> | null;
+  dimensions?: EssayDimension[] | null;
 };
 
 /** 作文改分：默认仅改分写记录（不重跑 AI）；regenerate_report=true 时用已存 OCR 重新生成点评 */
@@ -1305,6 +1381,9 @@ export async function downloadEssayGradePdf(
     mode?: "report" | "images";
     includeOriginal?: boolean;
     includeAnnotated?: boolean;
+    /** 11.13 台账 #1/#2：按打印用途排版——双面=逐生独占整张纸，短边翻页=首面转 180°。
+     *  仅打印走 true；下载保存保持自然页序（便于屏幕阅读）。 */
+    duplexForPrint?: boolean;
   },
 ): Promise<Blob> {
   const token = await getAuthToken();
@@ -1312,6 +1391,16 @@ export async function downloadEssayGradePdf(
     "Content-Type": "application/json",
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  const isDoublePrint = (() => {
+    try {
+      return readGlobalPrintPrefs().print_mode === "double";
+    } catch {
+      return false;
+    }
+  })();
+  const duplexDouble = !!options?.duplexForPrint && items.length > 1 && isDoublePrint;
+  const duplexBinding =
+    options?.duplexForPrint && isDoublePrint ? currentDuplexBinding() : "long";
   const res = await fetch(
     buildUrl(
       `/api/v1/grading/folders/${encodeURIComponent(folderName)}/essay-grade/pdf`,
@@ -1325,6 +1414,8 @@ export async function downloadEssayGradePdf(
         mode: options?.mode ?? "report",
         include_original: options?.includeOriginal ?? true,
         include_annotated: options?.includeAnnotated ?? true,
+        duplex_double: duplexDouble,
+        duplex_binding: duplexBinding,
       }),
     },
   );
@@ -1346,8 +1437,21 @@ export async function downloadEssayGradePdf(
   return await res.blob();
 }
 
-/** 输出留痕 PDF：把多张留痕图（modify 目录下文件名）合成一个 PDF 下载（每图一页），替代物理打印。 */
-export async function downloadMarksPdf(filenames: string[]): Promise<Blob> {
+/** 11.13 台账 #2：双面打印的翻页方式（全局偏好）；单面打印时传 long（后端只在双面生效） */
+function currentDuplexBinding(): "long" | "short" {
+  try {
+    return readGlobalPrintPrefs().duplex_binding === "short" ? "short" : "long";
+  } catch {
+    return "long";
+  }
+}
+
+/** 输出留痕 PDF：把多张留痕图（modify 目录下文件名）合成一个 PDF 下载（每图一页），替代物理打印。
+ *  printMode：single=单面页序原样；double/缺省=双面逐对对调送打（12→21、1234→2143，参照批改君）。 */
+export async function downloadMarksPdf(
+  filenames: string[],
+  printMode?: "single" | "double",
+): Promise<Blob> {
   const token = await getAuthToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -1356,7 +1460,11 @@ export async function downloadMarksPdf(filenames: string[]): Promise<Blob> {
   const res = await fetch(buildUrl(`/api/v1/grading/print-marks-pdf`), {
     method: "POST",
     headers,
-    body: JSON.stringify({ filenames }),
+    body: JSON.stringify({
+      filenames,
+      print_mode: printMode,
+      duplex_binding: currentDuplexBinding(),
+    }),
   });
   if (!res.ok) {
     let msg = "导出失败";
@@ -1411,8 +1519,11 @@ export async function rotateImage(
 }
 
 /** 浏览器打印：下载留痕 PDF 并在新标签页打开，用浏览器自带打印对话框输出到本地物理打印机。 */
-export async function browserPrintMarksPdf(filenames: string[]): Promise<void> {
-  const blob = await downloadMarksPdf(filenames);
+export async function browserPrintMarksPdf(
+  filenames: string[],
+  printMode?: "single" | "double",
+): Promise<void> {
+  const blob = await downloadMarksPdf(filenames, printMode);
   const url = URL.createObjectURL(blob);
   const win = window.open(url, "_blank");
   if (!win) {
@@ -1446,9 +1557,10 @@ export function openBlobInNewTab(blob: Blob): void {
 /** 导出留痕 PDF（下载保存），替代物理打印 */
 export async function exportMarksPdf(
   filenames: string[],
+  printMode?: "single" | "double",
   filename = "批改留痕.pdf",
 ): Promise<void> {
-  const blob = await downloadMarksPdf(filenames);
+  const blob = await downloadMarksPdf(filenames, printMode);
   triggerBlobDownload(blob, filename);
 }
 
@@ -1467,7 +1579,9 @@ export async function browserPrintEssayGradePdf(
   folderName: string,
   items: EssayPdfItem[],
 ): Promise<void> {
-  const blob = await downloadEssayGradePdf(folderName, items);
+  const blob = await downloadEssayGradePdf(folderName, items, undefined, {
+    duplexForPrint: true,
+  });
   openBlobInNewTab(blob);
 }
 
@@ -1480,7 +1594,12 @@ export async function printEssayGradePdf(
   paperSource?: number | null,
   printMode: "single" | "double" = "single",
 ): Promise<{ ok: boolean; msg?: string }> {
-  const body: any = { items, paper_size: paperSize, print_mode: printMode };
+  const body: any = {
+    items,
+    paper_size: paperSize,
+    print_mode: printMode,
+    duplex_binding: currentDuplexBinding(),
+  };
   if (printerName) body.printer_name = printerName;
   if (paperSize === "custom" && customPaperMm) {
     body.custom_paper_width_mm = customPaperMm.widthMm;
@@ -1493,6 +1612,27 @@ export async function printEssayGradePdf(
     {
       method: "POST",
       body,
+    },
+  );
+}
+
+/** 11.13 台账 #3：按需生成作文留痕「只保留分数」变体（「打印批注」关时用）。
+ * 已生成的会复用；返回 files[原文件名] = { marks_only_filename, image_marks_only } 或 { error }。 */
+export async function ensureEssayScoreOnlyMarksApi(
+  folderName: string,
+  files: string[],
+): Promise<{
+  ok?: boolean;
+  files: Record<
+    string,
+    { marks_only_filename?: string; image_marks_only?: string; error?: string }
+  >;
+}> {
+  return gradingFetch(
+    `/grading/folders/${encodeURIComponent(folderName)}/essay-grade/score-only-marks`,
+    {
+      method: "POST",
+      body: { files },
     },
   );
 }
@@ -1600,6 +1740,7 @@ export async function printMarksBatch(
   const body: any = {
     filenames,
     paper_size: paperSize,
+    duplex_binding: currentDuplexBinding(),
   };
   if (printerName) body.printer_name = printerName;
   if (paperSize === "custom" && customPaperMm) {
@@ -1623,6 +1764,7 @@ export async function startPrintMarksBatch(
   const body: any = {
     filenames,
     print_mode: printMode,
+    duplex_binding: currentDuplexBinding(),
     paper_size: paperSize,
   };
   if (printerName) body.printer_name = printerName;
@@ -2011,6 +2153,26 @@ export async function saveHomeWrongAnnotations(
   );
 }
 
+/** 首页作业手动修正逐题对错/得分/评语（改小程序批改记录的主通道，进改分台账） */
+export interface HomeAiCorrectBlock {
+  index: number | string;
+  sub_index?: number | string | null;
+  result?: "对" | "错" | "半对" | "未作答";
+  comment?: string;
+  score?: number | null;
+  partial_ratio?: number | null;
+}
+
+export async function correctHomeAiBlocks(
+  jobId: string,
+  blocks: HomeAiCorrectBlock[],
+): Promise<{ ok: boolean; message?: string; item?: GradingJobItem }> {
+  return gradingFetch(`/grading/home/${encodeURIComponent(jobId)}/ai-correct`, {
+    method: "POST",
+    body: { blocks },
+  });
+}
+
 /** 首页作业判错批注：AI 生成/重生成（带 questionKey 单题覆盖，不带整卷补齐） */
 export async function generateHomeWrongAnnotation(
   jobId: string,
@@ -2068,6 +2230,7 @@ export async function saveScoringConfig(
   majorOrder?: string[] | null,
   majorTitles?: Record<string, string> | null,
   paperSubs?: Record<string, { num: string; score: number }[]> | null,
+  hideScoreMarks?: boolean | null,
 ): Promise<{ ok: boolean; message?: string }> {
   return gradingFetch(
     `/grading/folders/${encodeURIComponent(folderName)}/scoring-config`,
@@ -2081,6 +2244,8 @@ export async function saveScoringConfig(
         major_order: majorOrder ?? undefined,
         major_titles: majorTitles ?? undefined,
         paper_subs: paperSubs ?? undefined,
+        // 「留痕不显示分数」开关（11.11-6）：null/undefined 不动已有持久值
+        hide_score_marks: hideScoreMarks ?? undefined,
       },
     },
   );

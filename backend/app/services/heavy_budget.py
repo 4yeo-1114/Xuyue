@@ -24,6 +24,8 @@ import time
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
+from app.services import keep_awake
+
 
 def _slots_from_env() -> int:
     try:
@@ -48,6 +50,7 @@ def heavy_slot(name: str) -> Iterator[float]:
     t0 = time.monotonic()
     _semaphore.acquire()
     waited = time.monotonic() - t0
+    keep_awake.acquire()  # 重活在跑不让系统睡眠（客户机一睡批改白等几小时）
     with _lock:
         _waiting -= 1
         _running[name] = _running.get(name, 0) + 1
@@ -60,6 +63,7 @@ def heavy_slot(name: str) -> Iterator[float]:
                 _running.pop(name, None)
             else:
                 _running[name] = left
+        keep_awake.release()
         _semaphore.release()
 
 

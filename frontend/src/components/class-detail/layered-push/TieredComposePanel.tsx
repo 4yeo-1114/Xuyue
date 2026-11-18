@@ -97,10 +97,18 @@ function difficultyLine(
 function downloadPaperTxt(paper: TieredPaperItem) {
   const lines: string[] = [paper.title, ""];
   (paper.questions || []).forEach((q, i) => {
-    lines.push(`${i + 1}. ${q.stem || ""}`);
-    (q.options || []).forEach((opt, oi) => {
-      lines.push(`   ${String.fromCharCode(65 + oi)}. ${opt}`);
-    });
+    // 题干两段：stem=背景材料（可能空）、content=具体问题（AI 出题约定），拼全才不缺题干
+    lines.push(`${i + 1}. ${[q.stem, q.content].filter(Boolean).join("\n")}`);
+    // 有配图的题标注位置（txt 放不下真图；打印/预览/PDF 里有真图）
+    if (q.figure_img) lines.push("   【图】");
+    // 选项横排一行（A. x  B. x  C. x  D. x），跟卷面一致
+    if ((q.options || []).length) {
+      lines.push(
+        `   ${(q.options || [])
+          .map((opt, oi) => `${String.fromCharCode(65 + oi)}. ${opt}`)
+          .join("    ")}`,
+      );
+    }
     if (q.answer) lines.push(`   【答案】${q.answer}`);
     if (q.analysis) lines.push(`   【解析】${q.analysis}`);
     lines.push("");
@@ -496,14 +504,30 @@ export function TieredComposePanel({
               </p>
               {(preview.questions || []).map((q, i) => (
                 <div key={q.id || i} className="rounded-lg border p-3 space-y-1">
-                  <div className="font-medium">
-                    {i + 1}. {q.stem}
+                  {/* stem=背景材料、content=具体问题（AI 出题时 stem 常为空）——两段都画，缺一就丢题干 */}
+                  <div className="font-medium whitespace-pre-wrap">
+                    {i + 1}. {[q.stem, q.content].filter(Boolean).join("\n")}
                   </div>
-                  {(q.options || []).map((opt, oi) => (
-                    <div key={oi} className="pl-4 text-muted-foreground">
-                      {String.fromCharCode(65 + oi)}. {opt}
+                  {/* 配图（后端按 figure 规格画的真图）：贴题干下、选项前 */}
+                  {q.figure_img && (
+                    <div className="pl-4 py-1 break-inside-avoid print:break-inside-avoid">
+                      <img
+                        src={q.figure_img}
+                        alt="题图"
+                        className="max-w-[320px] w-full h-auto"
+                      />
                     </div>
-                  ))}
+                  )}
+                  {/* 选项横排（flex-wrap 一排一排排，长选项自动换行），不竖着叠 */}
+                  {(q.options || []).length > 0 && (
+                    <div className="flex flex-wrap gap-x-6 gap-y-1 pl-4 text-muted-foreground">
+                      {(q.options || []).map((opt, oi) => (
+                        <div key={oi} className="whitespace-pre-wrap">
+                          {String.fromCharCode(65 + oi)}. {opt}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {q.answer && (
                     <div className="pl-4 text-xs text-emerald-600">
                       【答案】{q.answer}

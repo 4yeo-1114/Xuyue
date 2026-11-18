@@ -1,0 +1,61 @@
+<view class="page">
+
+  <picker mode="selector" range="{{gradeLabels}}" value="{{gradeIndex}}" bindchange="onGradeChange">
+    <view class="card field">
+      <text class="field-label">年级</text>
+      <view class="field-value field-arrow">{{gradeLabels[gradeIndex] || '请选择年级'}}</view>
+    </view>
+  </picker>
+
+  <picker mode="selector" range="{{classLabels}}" value="{{classIndex}}" bindchange="onClassChange">
+    <view class="card field">
+      <text class="field-label">班级</text>
+      <view class="field-value field-arrow">{{classLabels[classIndex] || '请选择班级'}}</view>
+    </view>
+  </picker>
+
+  <view class="card">
+    <view class="card-title">
+      学生名单
+      <view class="add-btn" bindtap="onOpenAdd">＋ 添加学生</view>
+    </view>
+
+    <view wx:if="{{loading}}" class="muted">正在加载…</view>
+    <view wx:elif="{{students.length === 0}}" class="muted">该班级还没有学生，点右上角添加</view>
+
+    <view class="stu-row" wx:for="{{students}}" wx:key="id">
+      <view class="stu-idx">{{index + 1}}</view>
+      <view class="stu-info">
+        <view class="stu-name">{{item.name}}</view>
+        <view class="stu-meta">{{item.student_number || '无学号'}} · {{item.gender || '未知'}}<text wx:if="{{item.tier}}"> · {{item.tier}}层</text></view>
+      </view>
+      <view class="stu-del" data-index="{{index}}" bindtap="onDeleteStudent">删除</view>
+    </view>
+  </view>
+
+  <!-- 添加学生弹窗 -->
+  <view class="add-mask" wx:if="{{showAdd}}" bindtap="onCloseAdd">
+    <view class="add-box" catchtap="noop">
+      <view class="add-title">添加学生</view>
+      <view class="field">
+        <text class="field-label">姓名</text>
+        <input class="field-input" placeholder="必填" value="{{addName}}" bindinput="onNameInput" />
+      </view>
+      <view class="field">
+        <text class="field-label">学号</text>
+        <input class="field-input" placeholder="选填" value="{{addNumber}}" bindinput="onNumberInput" />
+      </view>
+      <picker mode="selector" range="{{genderLabels}}" value="{{genderIndex}}" bindchange="onGenderChange">
+        <view class="field">
+          <text class="field-label">性别</text>
+          <view class="field-value field-arrow">{{genderLabels[genderIndex]}}</view>
+        </view>
+      </picker>
+      <view class="add-actions">
+        <view class="btn btn-ghost" bindtap="onCloseAdd">取消</view>
+        <view class="btn" bindtap="onSaveStudent">{{saving ? '保存中…' : '保存'}}</view>
+      </view>
+    </view>
+  </view>
+
+</view>

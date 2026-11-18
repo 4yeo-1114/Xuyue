@@ -226,6 +226,15 @@ export interface GradingJobItem {
       generated_at?: string;
     }
   > | null;
+  /** 逐题判定块（百度/千问批改落盘的 blocks）；手动修正按 (index, sub_index) 对齐 */
+  blocks?: Array<{
+    index: number | string;
+    sub_index?: number | string | null;
+    result?: string;
+    comment?: string;
+    score?: number | null;
+    partial_ratio?: number | null;
+  }> | null;
 }
 
 /** 首页最近作业列表项（GET /grading/home/recent 的 items） */
@@ -1318,11 +1327,20 @@ export async function generateExamQuestionsByAI(
 }
 
 // ---- 智能组卷试卷库 API ----
+// 卷头可编辑字段（11.9-2）：只存老师改过的键，缺省键=前端默认文案
+export interface ExamHeaderFields {
+  class?: string;
+  name?: string;
+  number?: string;
+  totalScore?: string;
+}
+
 export interface SmartExamPaperRecord {
   id: string;
   title: string;
   subject: string;
   questions: any[];
+  header_fields?: ExamHeaderFields | null;
   updatedAt: string;
 }
 
@@ -1334,6 +1352,7 @@ export async function createExamPaper(body: {
   title: string;
   subject: string;
   questions: any[];
+  header_fields?: ExamHeaderFields | null;
 }): Promise<SmartExamPaperRecord> {
   return request<SmartExamPaperRecord>("/exams/papers", {
     method: "POST",
@@ -1343,7 +1362,12 @@ export async function createExamPaper(body: {
 
 export async function updateExamPaper(
   id: string,
-  body: { title: string; subject: string; questions: any[] },
+  body: {
+    title: string;
+    subject: string;
+    questions: any[];
+    header_fields?: ExamHeaderFields | null;
+  },
 ): Promise<SmartExamPaperRecord> {
   return request<SmartExamPaperRecord>(`/exams/papers/${id}`, {
     method: "PATCH",

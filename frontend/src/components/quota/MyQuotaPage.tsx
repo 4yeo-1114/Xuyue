@@ -9,16 +9,8 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { QuotaProgressBar, usedPct } from "./QuotaProgressBar";
-import { fetchMyQuota, fetchQuotaTiers } from "@/services/quotaApi";
+import { fetchMyQuota } from "@/services/quotaApi";
 import {
   Wallet,
   Zap,
@@ -65,10 +57,6 @@ export function MyQuotaPage() {
     queryKey: ["quota", "me"],
     queryFn: fetchMyQuota,
   });
-  const { data: tiers } = useQuery({
-    queryKey: ["quota", "tiers"],
-    queryFn: fetchQuotaTiers,
-  });
 
   if (isLoading) {
     return (
@@ -108,7 +96,7 @@ export function MyQuotaPage() {
     statusText = "已用满总量，即将停止";
   } else if (pct >= 90) {
     statusBadge = <Badge className="bg-amber-500 text-white">接近上限</Badge>;
-    statusText = "已用超过 90%，请及时充值";
+    statusText = "已用超过 90%，请联系管理员加额";
   }
 
   return (
@@ -131,7 +119,7 @@ export function MyQuotaPage() {
           <AlertTriangle className="w-4 h-4" />
           <AlertTitle>批改额度已用尽</AlertTitle>
           <AlertDescription>
-            已用面数超过总量的 105%，系统已自动停止批改功能，请联系管理员充值。
+            已用面数超过总量的 105%，系统已自动停止批改功能，请联系管理员加额。
           </AlertDescription>
         </Alert>
       )}
@@ -164,37 +152,6 @@ export function MyQuotaPage() {
             <span>0</span>
             <span>总量 {data.total_pages} 面（105% = {Math.ceil(data.total_pages * 1.05)} 面停）</span>
           </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>充值档位</CardTitle>
-          <CardDescription>当前为管理员手动加额，如需充值请联系管理员</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>档位（元）</TableHead>
-                <TableHead>基准面数</TableHead>
-                <TableHead>赠送面数</TableHead>
-                <TableHead>到手总面数</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {(tiers ?? []).map((t) => (
-                <TableRow key={t.amount_yuan}>
-                  <TableCell className="font-medium">¥{t.amount_yuan}</TableCell>
-                  <TableCell>{t.base_pages}</TableCell>
-                  <TableCell className={t.bonus_pages > 0 ? "text-emerald-600" : ""}>
-                    {t.bonus_pages > 0 ? `+${t.bonus_pages}` : "0"}
-                  </TableCell>
-                  <TableCell className="font-semibold">{t.total_pages}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
         </CardContent>
       </Card>
     </div>

@@ -1,0 +1,164 @@
+/* 我的 · 个人中心 */
+
+.mine-page {
+  padding-top: 24rpx;
+}
+
+/* ── 个人信息 ── */
+.profile-card {
+  background: linear-gradient(135deg, #8e7cff, #6c8cff);
+  border-radius: 36rpx;
+  padding: 52rpx 40rpx 44rpx;
+  text-align: center;
+  color: #fff;
+  margin-bottom: 28rpx;
+  box-shadow: 0 12rpx 28rpx rgba(124, 107, 255, 0.28);
+  animation: pop-in 0.25s ease-out;
+}
+
+.profile-avatar {
+  width: 132rpx;
+  height: 132rpx;
+  line-height: 132rpx;
+  margin: 0 auto 22rpx;
+  font-size: 68rpx;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 44rpx;
+  animation: floaty 3s ease-in-out infinite;
+}
+
+.profile-name {
+  font-size: 40rpx;
+  font-weight: 700;
+  letter-spacing: 2rpx;
+}
+
+.profile-email {
+  font-size: 24rpx;
+  color: rgba(255, 255, 255, 0.85);
+  margin-top: 10rpx;
+}
+
+.profile-chips {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin-top: 22rpx;
+}
+
+.profile-chip {
+  font-size: 22rpx;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.22);
+  padding: 8rpx 22rpx;
+  border-radius: 999rpx;
+}
+
+/* ── 分组标题 ── */
+.menu-title {
+  display: inline-block;
+  background: #efeaff;
+  color: #7c6bff;
+  font-size: 22rpx;
+  font-weight: 700;
+  padding: 8rpx 22rpx;
+  border-radius: 999rpx;
+  margin: 4rpx 0 16rpx 8rpx;
+}
+
+/* ── 我的数据 ── */
+.mine-stats {
+  display: flex;
+  background: #fff;
+  border-radius: 32rpx;
+  padding: 28rpx 0;
+  margin-bottom: 28rpx;
+  box-shadow: 0 8rpx 24rpx rgba(124, 107, 255, 0.08);
+  animation: pop-in 0.3s ease-out;
+}
+
+.mine-stat {
+  flex: 1;
+  text-align: center;
+}
+
+.mine-stat:active {
+  transform: scale(0.92);
+}
+
+.mine-num {
+  font-size: 42rpx;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.mine-num-purple { color: #7c6bff; }
+.mine-num-mint   { color: #1fb384; }
+.mine-num-pink   { color: #ff6b8b; }
+
+.mine-label {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #a89bc4;
+}
+
+/* ── 常用功能宫格 ── */
+.menu-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+  margin-bottom: 8rpx;
+}
+
+.menu-tile {
+  width: calc((100% - 48rpx) / 4);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 22rpx 8rpx 18rpx;
+  background: #fff;
+  border-radius: 28rpx;
+  box-shadow: 0 6rpx 18rpx rgba(124, 107, 255, 0.07);
+}
+
+.menu-tile:active {
+  transform: scale(0.92);
+}
+
+.menu-emoji {
+  width: 80rpx;
+  height: 80rpx;
+  line-height: 80rpx;
+  text-align: center;
+  font-size: 42rpx;
+  border-radius: 26rpx;
+  margin-bottom: 12rpx;
+  animation: floaty 3s ease-in-out infinite;
+}
+
+.menu-tile:nth-child(2) .menu-emoji { animation-delay: 0.4s; }
+.menu-tile:nth-child(3) .menu-emoji { animation-delay: 0.8s; }
+.menu-tile:nth-child(4) .menu-emoji { animation-delay: 1.2s; }
+
+.bg-purple { background: #efeaff; }
+.bg-mint   { background: #e2f8ef; }
+.bg-pink   { background: #ffe4ea; }
+.bg-yellow { background: #fff3d9; }
+.bg-blue   { background: #e4ecff; }
+
+.menu-label {
+  font-size: 22rpx;
+  color: #4a3f5c;
+  font-weight: 500;
+  text-align: center;
+}
+
+/* ── 退出 ── */
+.mine-logout {
+  text-align: center;
+  color: #a89bc4;
+  font-size: 26rpx;
+  padding: 32rpx 0 8rpx;
+}

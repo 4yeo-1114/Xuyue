@@ -45,7 +45,6 @@ import {
   Users,
   Receipt,
   BarChart4,
-  Wallet,
 } from "lucide-react";
 import { toast } from "sonner";
 import { exitPackagedApp } from "@/services/gradingApi";
@@ -180,6 +179,11 @@ export const NAV_ITEMS: NavGroup[] = [
         featureKey: "ai_grading",
       },
       {
+        id: "print-jobs",
+        label: "布置作业",
+        icon: ClipboardList,
+      },
+      {
         id: "flow-tasks",
         label: "流水阅卷",
         icon: ClipboardList,
@@ -275,27 +279,6 @@ export const NAV_ITEMS: NavGroup[] = [
       { id: "usage-summary", label: "用量汇总", icon: BarChart4 },
     ],
   },
-  {
-    id: "payment",
-    label: "我的账户",
-    icon: Wallet,
-    children: [
-      // 支付入口对**所有登录账号**开放（2026-09-30 需求「所有账号都要可以支付」）：
-      // 原 adminOnly: true 只放行平台管理员，班主任/校级/年级组长/教务/测试账号全看不到。
-      // 后端 POST /payment/orders 本就只要登录、无角色闸；此处去掉可见性门槛即可。
-      // 「仅任课教师」账号走 TEACHER_NAV_WHITELIST（两项均在册），行为不变。
-      {
-        id: "payment-wallet",
-        label: "我的余额",
-        icon: Wallet,
-      },
-      {
-        id: "payment-ledger",
-        label: "资金流水",
-        icon: Receipt,
-      },
-    ],
-  },
 ];
 
 /* ── 视觉分组：将顶级组归入小节（仅视觉呈现，不改 NAV_ITEMS 的 id 契约） ── */
@@ -336,11 +319,6 @@ const NAV_SECTIONS: NavSection[] = [
     label: { zh: "教育局", en: "Education Bureau" },
     items: ["bureau"],
   },
-  {
-    key: "wallet",
-    label: { zh: "我的账户", en: "My Account" },
-    items: ["payment"],
-  },
   { key: "system", label: { zh: "系统", en: "System" }, items: ["settings"] },
   {
     key: "system-ops",
@@ -362,6 +340,7 @@ export const TEACHER_NAV_ITEMS: NavGroup[] = [
       { id: "grading-history", label: "批改历史", icon: History },
       { id: "grading-errors", label: "错题本", icon: FileText },
       { id: "grading-ledger", label: "改分台账", icon: ClipboardList },
+      { id: "print-jobs", label: "布置作业", icon: ClipboardList },
     ],
   },
   {

@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
-import { Lock, Loader2, Mail, Smartphone } from "lucide-react";
+import { Lock, Loader2, Mail } from "lucide-react";
 import { z } from "zod";
 import { useProjectBranding } from "@/contexts/ProjectBrandingContext";
 import { BrandLogo } from "@/components/BrandLogo";
@@ -59,20 +59,16 @@ export default function Auth() {
   });
   const [remember, setRemember] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [mode, setMode] = useState<"login" | "register" | "phone">("login");
+  const [mode, setMode] = useState<"login" | "register">("login");
   const [regEmail, setRegEmail] = useState("");
   const [regPassword, setRegPassword] = useState("");
   const [regEmailCode, setRegEmailCode] = useState("");
   const [regDisplayName, setRegDisplayName] = useState("");
   const [regSubject, setRegSubject] = useState("");
   const [regGrade, setRegGrade] = useState("");
-  const [phone, setPhone] = useState("");
-  const [phoneCode, setPhoneCode] = useState("");
   const [sendingRegCode, setSendingRegCode] = useState(false);
-  const [sendingPhoneCode, setSendingPhoneCode] = useState(false);
   const regCode = useCountdown();
-  const phoneCd = useCountdown();
-  const { signIn, register, sendCode, phoneLogin } = useAuth();
+  const { signIn, register, sendCode } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const { projectName } = useProjectBranding();
@@ -81,7 +77,6 @@ export default function Auth() {
 
   const emailSchema = z.string().email(t("auth.invalidEmail"));
   const passwordSchema = z.string().min(6, t("auth.passwordMin"));
-  const phoneSchema = z.string().regex(/^1\d{10}$/, t("auth.invalidPhone"));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -233,69 +228,6 @@ export default function Auth() {
     }
   };
 
-  const handleSendPhoneCode = async () => {
-    const phoneResult = phoneSchema.safeParse(phone);
-    if (!phoneResult.success) {
-      toast({
-        title: t("auth.inputError"),
-        description: phoneResult.error.errors[0].message,
-        variant: "destructive",
-      });
-      return;
-    }
-    setSendingPhoneCode(true);
-    const { error } = await sendCode(phone, "sms", "login");
-    setSendingPhoneCode(false);
-    if (error) {
-      toast({
-        title: t("auth.sendCodeFailed"),
-        description: error.message,
-        variant: "destructive",
-      });
-    } else {
-      phoneCd.start(60);
-      toast({ title: t("auth.sendCodeSent") });
-    }
-  };
-
-  const handlePhoneLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    const phoneResult = phoneSchema.safeParse(phone);
-    if (!phoneResult.success) {
-      toast({
-        title: t("auth.inputError"),
-        description: phoneResult.error.errors[0].message,
-        variant: "destructive",
-      });
-      return;
-    }
-    if (!phoneCode.trim()) {
-      toast({
-        title: t("auth.inputError"),
-        description: t("auth.smsCodeRequired"),
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      const { error } = await phoneLogin(phone, phoneCode.trim());
-      if (error) {
-        toast({
-          title: t("auth.loginFailed"),
-          description: error.message,
-          variant: "destructive",
-        });
-      } else {
-        navigate("/");
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4 relative">
       <div className="absolute top-4 right-4">
@@ -316,12 +248,13 @@ export default function Auth() {
             value={mode}
             onValueChange={(v) => setMode(v as "login" | "register")}
           >
-            <TabsList className="grid w-full grid-cols-3 mb-6">
-              <TabsTrigger value="login">{t("auth.login")}</TabsTrigger>
-              <TabsTrigger value="register">
+            <TabsList className="grid w-full grid-cols-2 mb-6">
+              <TabsTrigger value="login" className="whitespace-nowrap">
+                {t("auth.login")}
+              </TabsTrigger>
+              <TabsTrigger value="register" className="whitespace-nowrap">
                 {t("auth.registerTab")}
               </TabsTrigger>
-              <TabsTrigger value="phone">{t("auth.phoneLogin")}</TabsTrigger>
             </TabsList>
 
             <TabsContent value="login">
@@ -497,70 +430,6 @@ export default function Auth() {
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                   )}
                   {submitting ? t("auth.registering") : t("auth.register")}
-                </Button>
-              </form>
-            </TabsContent>
-
-            <TabsContent value="phone">
-              <form onSubmit={handlePhoneLogin} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="phone">{t("auth.phone")}</Label>
-                  <div className="relative">
-                    <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                    <Input
-                      id="phone"
-                      type="tel"
-                      placeholder={t("auth.phonePlaceholder")}
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      className="pl-10"
-                      maxLength={11}
-                      inputMode="numeric"
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="phoneCode">{t("auth.smsCode")}</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="phoneCode"
-                      placeholder={t("auth.smsCodePlaceholder")}
-                      value={phoneCode}
-                      onChange={(e) => setPhoneCode(e.target.value)}
-                      className="flex-1"
-                      maxLength={6}
-                      inputMode="numeric"
-                      required
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="shrink-0"
-                      onClick={handleSendPhoneCode}
-                      disabled={phoneCd.seconds > 0 || sendingPhoneCode}
-                    >
-                      {sendingPhoneCode ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : phoneCd.seconds > 0 ? (
-                        `${phoneCd.seconds}s`
-                      ) : (
-                        t("auth.sendCode")
-                      )}
-                    </Button>
-                  </div>
-                </div>
-
-                <p className="text-xs text-muted-foreground">
-                  {t("auth.phoneLoginHint")}
-                </p>
-
-                <Button type="submit" className="w-full" disabled={submitting}>
-                  {submitting && (
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  )}
-                  {submitting ? t("auth.signingIn") : t("auth.phoneLogin")}
                 </Button>
               </form>
             </TabsContent>

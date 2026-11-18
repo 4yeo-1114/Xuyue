@@ -35,7 +35,12 @@ type Props = {
   loading?: boolean;
   saving?: boolean;
   onOpenChange: (open: boolean) => void;
-  onSave: (pageNo: number, questions: AnswerTableEdit[]) => Promise<void> | void;
+  onSave: (
+    pageNo: number,
+    questions: AnswerTableEdit[],
+    /** quiet=11.11-11 每面自动保存：不弹 toast、不占全局 saving */
+    opts?: { quiet?: boolean },
+  ) => Promise<void> | void;
   onRebuild: (resetEdits: boolean) => Promise<void> | void;
   /** 空白卷模式第二上传：答案单独一张纸，上传后按印刷题号把答案合并进本表 */
   onUploadAnswerSheets?: (files: File[]) => Promise<void> | void;
@@ -67,6 +72,33 @@ function isDirty(entry: ReferenceAnswerEntry, draft?: Draft): boolean {
     if ((draft.slots[slot.sub_index] ?? "") !== (slot.answer_text || "")) return true;
   }
   return false;
+}
+
+/** 11.11-12 前半：一个空多个可接受答案的显式设置——答案文本 | 分隔（全角｜同义），
+ *  不足两段不算多解。批改端命中任一个即判对。 */
+function acceptedVariants(text: string): string[] {
+  const parts = String(text || "")
+    .split(/[|｜]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.length >= 2 ? parts : [];
+}
+
+/** 多可接受答案登记回执：老师写了 | 就把拆出来的候选亮出来，确认「系统认到了」。 */
+function VariantChips({ text }: { text: string }) {
+  const { t } = useLocale();
+  const variants = acceptedVariants(text);
+  if (!variants.length) return null;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-emerald-700">
+      <span>{t("grading.answerTable.acceptedVariants")}:</span>
+      {variants.map((variant, index) => (
+        <span key={index} className="rounded bg-emerald-100 px-1.5 py-0.5">
+          {index + 1}. {variant}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 /** 答题区缩略图：服务端按 bbox 裁好的 JPEG 直链（跨域画布裁剪会污染，只能后端裁）。
@@ -257,25 +289,35 @@ export function StandardAnswerTableDialog({
     }
   }, [open, pages, activePageNo]);
 
-  const dirtyEdits = useMemo(() => {
-    if (!activePage) return [] as AnswerTableEdit[];
-    const edits: AnswerTableEdit[] = [];
-    for (const entry of activePage.questions || []) {
-      if (!entry || !isDirty(entry, drafts[draftKey(activePage.page_no, entry.display_index)])) {
-        continue;
+  // 11.11-11 每面单独保存：把「哪几页有未保存修改」整体算出来（关窗/切页要补存所有脏页）
+  const dirtyByPage = useMemo(() => {
+    const map: Record<number, AnswerTableEdit[]> = {};
+    for (const pageItem of pages) {
+      const edits: AnswerTableEdit[] = [];
+      for (const entry of pageItem.questions || []) {
+        const draft = entry
+          ? drafts[draftKey(pageItem.page_no, entry.display_index)]
+          : undefined;
+        if (!entry || !isDirty(entry, draft)) continue;
+        edits.push({
+          display_index: entry.display_index,
+          printed_no: (draft!.printed_no || "").trim() || undefined,
+          slots: (entry.slots || []).map((slot) => ({
+            sub_index: slot.sub_index,
+            answer_text: draft!.slots[slot.sub_index] ?? "",
+          })),
+        });
       }
-      const draft = drafts[draftKey(activePage.page_no, entry.display_index)]!;
-      edits.push({
-        display_index: entry.display_index,
-        printed_no: (draft.printed_no || "").trim() || undefined,
-        slots: (entry.slots || []).map((slot) => ({
-          sub_index: slot.sub_index,
-          answer_text: draft.slots[slot.sub_index] ?? "",
-        })),
-      });
+      if (edits.length) map[pageItem.page_no] = edits;
     }
-    return edits;
-  }, [activePage, drafts]);
+    return map;
+  }, [pages, drafts]);
+
+  const dirtyEdits = activePage ? dirtyByPage[activePage.page_no] ?? [] : [];
+  const totalDirty = Object.values(dirtyByPage).reduce(
+    (count, edits) => count + edits.length,
+    0,
+  );
 
   const setSlotText = (
     pageNo: number,
@@ -305,21 +347,106 @@ export function StandardAnswerTableDialog({
     });
   };
 
-  const handleSave = async () => {
-    if (!activePage || saving || loading || !dirtyEdits.length) return;
+  // 只清「和落盘内容还一致」的草稿：保存期间老师又改过的留着，别把新改动误删
+  const clearSavedDrafts = (pageNo: number, edits: AnswerTableEdit[]) => {
+    setDrafts((prev) => {
+      const next = { ...prev };
+      for (const edit of edits) {
+        const key = draftKey(pageNo, edit.display_index);
+        const cur = next[key];
+        if (!cur) continue;
+        const slotsUnchanged = edit.slots.every(
+          (slot) => (cur.slots[slot.sub_index] ?? "") === slot.answer_text,
+        );
+        const noUnchanged =
+          (cur.printed_no || "").trim() === (edit.printed_no || "");
+        if (slotsUnchanged && noUnchanged) delete next[key];
+      }
+      return next;
+    });
+  };
+
+  // 保存串行队列：自动保存和手动保存共用一条队列，避免乱序落盘把新改动盖掉
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const [saveStatus, setSaveStatus] = useState<{
+    phase: "saving" | "saved" | "error";
+    pageNo: number;
+  } | null>(null);
+
+  const runSave = async (
+    pageNo: number,
+    edits: AnswerTableEdit[],
+    quiet: boolean,
+  ) => {
+    setSaveStatus({ phase: "saving", pageNo });
     try {
-      await onSave(activePage.page_no, dirtyEdits);
-      setDrafts((prev) => {
-        const next = { ...prev };
-        for (const edit of dirtyEdits) {
-          delete next[draftKey(activePage.page_no, edit.display_index)];
-        }
-        return next;
-      });
-    } catch {
-      // 保存失败保留草稿，老师可继续改
+      if (quiet) await onSave(pageNo, edits, { quiet: true });
+      else await onSave(pageNo, edits);
+      clearSavedDrafts(pageNo, edits);
+      setSaveStatus({ phase: "saved", pageNo });
+    } catch (error) {
+      setSaveStatus({ phase: "error", pageNo });
+      throw error;
     }
   };
+
+  const enqueueSave = (
+    pageNo: number,
+    edits: AnswerTableEdit[],
+    quiet: boolean,
+  ): Promise<void> => {
+    const done = saveChainRef.current.then(() => runSave(pageNo, edits, quiet));
+    saveChainRef.current = done.catch(() => {});
+    return done;
+  };
+
+  // 11.11-11 每面切完单独保存：离开页/关闭/去改框之前，把所有脏页静默补存
+  const sweepDirtyPages = () => {
+    for (const [pageNoStr, edits] of Object.entries(dirtyByPage)) {
+      if (edits.length) void enqueueSave(Number(pageNoStr), edits, true);
+    }
+  };
+
+  const switchPage = (targetNo: number) => {
+    if (activePage && activePage.page_no !== targetNo) {
+      const edits = dirtyByPage[activePage.page_no];
+      if (edits?.length) void enqueueSave(activePage.page_no, edits, true);
+    }
+    setActivePageNo(targetNo);
+  };
+
+  const handleOpenChange = (next: boolean) => {
+    if (!next) sweepDirtyPages();
+    onOpenChange(next);
+  };
+
+  // 去改框前先落盘答案修改：改框回来列表会按新框重建，脏草稿可能对不上号
+  const handleEditBoxes = (pageNo: number) => {
+    if (!onEditBoxes) return;
+    sweepDirtyPages();
+    void onEditBoxes(pageNo);
+  };
+
+  const handleSaveAll = async () => {
+    if (saving || loading) return;
+    for (const [pageNoStr, edits] of Object.entries(dirtyByPage)) {
+      if (!edits.length) continue;
+      try {
+        await enqueueSave(Number(pageNoStr), edits, false);
+      } catch {
+        // 保存失败保留草稿，老师可继续改（父级已 toast）
+      }
+    }
+  };
+
+  // 「已保存」提示 4 秒后自动收起
+  useEffect(() => {
+    if (saveStatus?.phase !== "saved") return;
+    const timer = window.setTimeout(() => {
+      setSaveStatus((cur) => (cur?.phase === "saved" ? null : cur));
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [saveStatus]);
 
   const handleRebuild = async (resetEdits: boolean) => {
     if (loading || saving) return;
@@ -334,7 +461,7 @@ export function StandardAnswerTableDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         data-testid="standard-answer-table-dialog"
         className="max-w-3xl max-h-[86vh] flex flex-col overflow-hidden"
@@ -343,6 +470,10 @@ export function StandardAnswerTableDialog({
           <DialogTitle>{t("grading.answerTable.title")}</DialogTitle>
           <DialogDescription>
             {t("grading.answerTable.description")}
+            {/* 11.11-12 前半：一个空多个可接受答案的设置口径 */}
+            <span className="mt-1 block text-xs text-emerald-700">
+              {t("grading.answerTable.multiAnswerHint")}
+            </span>
           </DialogDescription>
         </DialogHeader>
 
@@ -356,9 +487,22 @@ export function StandardAnswerTableDialog({
                 variant={
                   activePage?.page_no === page.page_no ? "default" : "outline"
                 }
-                onClick={() => setActivePageNo(page.page_no)}
+                title={
+                  dirtyByPage[page.page_no]?.length
+                    ? t("grading.answerTable.unsaved", {
+                        count: dirtyByPage[page.page_no].length,
+                      })
+                    : undefined
+                }
+                onClick={() => switchPage(page.page_no)}
               >
                 {t("grading.answerTable.pageTab", { page: page.page_no })}
+                {dirtyByPage[page.page_no]?.length ? (
+                  <span
+                    aria-hidden
+                    className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400"
+                  />
+                ) : null}
               </Button>
             ))}
           </div>
@@ -377,6 +521,24 @@ export function StandardAnswerTableDialog({
                 {t("grading.answerTable.unsaved", { count: dirtyEdits.length })}
               </span>
             )}
+            {/* 11.11-11 顶部保存状态提示：每面切完自动落盘，让老师一眼看到存没存 */}
+            {saveStatus && (
+              <span
+                className={cn(
+                  "ml-2",
+                  saveStatus.phase === "saving" && "text-muted-foreground",
+                  saveStatus.phase === "saved" && "text-emerald-600",
+                  saveStatus.phase === "error" && "text-red-600",
+                )}
+              >
+                {saveStatus.phase === "saving" &&
+                  t("grading.answerTable.savingPage", { page: saveStatus.pageNo })}
+                {saveStatus.phase === "saved" &&
+                  t("grading.answerTable.savedPage", { page: saveStatus.pageNo })}
+                {saveStatus.phase === "error" &&
+                  t("grading.answerTable.saveFailedPage", { page: saveStatus.pageNo })}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             {onEditBoxes && activePage && (
@@ -386,7 +548,7 @@ export function StandardAnswerTableDialog({
                 variant="outline"
                 disabled={loading || saving}
                 title={t("grading.answerTable.boxEditHint")}
-                onClick={() => void onEditBoxes(activePage.page_no)}
+                onClick={() => handleEditBoxes(activePage.page_no)}
               >
                 <Frame className="w-4 h-4" />
                 {t("grading.answerTable.boxEdit")}
@@ -479,7 +641,7 @@ export function StandardAnswerTableDialog({
               </div>
             ) : null}
             {activePage && !loading ? (
-              <BoxMap page={activePage} onEditBoxes={onEditBoxes} />
+              <BoxMap page={activePage} onEditBoxes={onEditBoxes ? handleEditBoxes : undefined} />
             ) : null}
             <div className="space-y-3">
               {(activePage?.questions || []).map((entry) => {
@@ -518,22 +680,29 @@ export function StandardAnswerTableDialog({
                         <RegionThumb
                           slot={(entry.slots || [])[0] ?? { sub_index: 1, answer_text: "" }}
                           pageNo={activePage!.page_no}
-                          onEditBoxes={onEditBoxes}
+                          onEditBoxes={onEditBoxes ? handleEditBoxes : undefined}
                         />
-                        <Textarea
-                          className="min-h-[44px] flex-1 text-sm"
-                          value={
-                            draft.slots[(entry.slots || [])[0]?.sub_index ?? 1] ?? ""
-                          }
-                          onChange={(event) =>
-                            setSlotText(
-                              activePage!.page_no,
-                              entry,
-                              (entry.slots || [])[0]?.sub_index ?? 1,
-                              event.target.value,
-                            )
-                          }
-                        />
+                        <div className="min-w-0 flex-1">
+                          <Textarea
+                            className="min-h-[44px] text-sm"
+                            value={
+                              draft.slots[(entry.slots || [])[0]?.sub_index ?? 1] ?? ""
+                            }
+                            onChange={(event) =>
+                              setSlotText(
+                                activePage!.page_no,
+                                entry,
+                                (entry.slots || [])[0]?.sub_index ?? 1,
+                                event.target.value,
+                              )
+                            }
+                          />
+                          <VariantChips
+                            text={
+                              draft.slots[(entry.slots || [])[0]?.sub_index ?? 1] ?? ""
+                            }
+                          />
+                        </div>
                       </div>
                     ) : (
                       <div className="space-y-1.5">
@@ -550,20 +719,25 @@ export function StandardAnswerTableDialog({
                             <RegionThumb
                               slot={slot}
                               pageNo={activePage!.page_no}
-                              onEditBoxes={onEditBoxes}
+                              onEditBoxes={onEditBoxes ? handleEditBoxes : undefined}
                             />
-                            <Textarea
-                              className="min-h-[36px] flex-1 text-sm"
-                              value={draft.slots[slot.sub_index] ?? ""}
-                              onChange={(event) =>
-                                setSlotText(
-                                  activePage!.page_no,
-                                  entry,
-                                  slot.sub_index,
-                                  event.target.value,
-                                )
-                              }
-                            />
+                            <div className="min-w-0 flex-1">
+                              <Textarea
+                                className="min-h-[36px] text-sm"
+                                value={draft.slots[slot.sub_index] ?? ""}
+                                onChange={(event) =>
+                                  setSlotText(
+                                    activePage!.page_no,
+                                    entry,
+                                    slot.sub_index,
+                                    event.target.value,
+                                  )
+                                }
+                              />
+                              <VariantChips
+                                text={draft.slots[slot.sub_index] ?? ""}
+                              />
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -580,8 +754,8 @@ export function StandardAnswerTableDialog({
             {t("grading.answerTable.close")}
           </Button>
           <Button
-            onClick={() => void handleSave()}
-            disabled={loading || saving || dirtyEdits.length === 0}
+            onClick={() => void handleSaveAll()}
+            disabled={loading || saving || totalDirty === 0}
             className="gap-2"
           >
             {saving ? (

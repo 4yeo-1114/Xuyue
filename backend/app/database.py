@@ -22,10 +22,30 @@ def _ensure_database(cfg: Optional[Settings] = None):
 
 
 def _create_engine(cfg: Settings):
+    # 1026 全站僵死根因修复：连接池防吊死。
+    # 当晚 DB 链路瞬间劣化后，正在用连接的请求/后台线程吊死在 pymysql 无超时的 recv() 上
+    # 永不归还，5+10=15 条连接全被吊死会话占光 → 之后每个请求排队 30s QueuePool 超时，
+    # 全站僵死 10 小时直到重启。两道保险：
+    # ① read/write/connect_timeout：卡死的查询到点抛错、连接归还，不再永久占线
+    #    （pool_pre_ping 只防「取用时」的死连接，防不了「使用中」吊死，必须配超时）；
+    # ② 池扩到 10+20 且 pool_timeout=5：突发排队扛得住，真满了 5 秒快速失败不堆积线程。
+    # 注：read/write/connect_timeout 是 pymysql 专有参数，PG 方言不能带；
+    # Settings.database_url 只会是 mysql+pymysql 或 postgresql+psycopg2，按前缀分流保险。
+    connect_args = {}
+    if cfg.database_url.startswith("mysql"):
+        connect_args = {
+            "connect_timeout": 10,
+            "read_timeout": 120,
+            "write_timeout": 120,
+        }
     return create_engine(
         cfg.database_url,
         pool_pre_ping=True,
         pool_recycle=3600,
+        pool_size=10,
+        max_overflow=20,
+        pool_timeout=5,
+        connect_args=connect_args,
         echo=False,
     )
 
@@ -93,15 +113,6 @@ def init_db():
     _ensure_flow_tables()
     # 批改额度：AUTO_DDL=false 时靠此幂等建表（同 _ensure_grading_daily_stats_table 模式）
     _ensure_grading_quota_tables()
-    # 口径 B 独立老师支付：7 张表（payment_accounts / usage_events / ledger_entries /
-    # payment_plans / subscriptions / payment_orders / payment_invoices）。同上：挂在**无条件段**，
-    # ⛔ 不许上移回 sync_database_schema() 的 return 之后（生产默认 AUTO_DDL=false）。
-    _ensure_payment_tables()
-    _ensure_payment_order_tax_columns()   # 价税分离补列（§10 Q3）：必须排在建表**之后**
-    # ⚠️ payment_invoices 的 order_id 外键仍指向旧 payment_orders（生产），未迁移到
-    #    payment_orders_v2 —— 用户 2026-09-28 决定「不改库，先跳过」⇒ 本批开票(P3-1)
-    #    对新订单会 1452，充值主流程不受影响。要开票时再补
-    #    `_ensure_payment_invoices_order_fk()`（幂等 DROP/ADD FK，挂本无条件段）。
     # 登录/注册合规：验证码表 + 手机号普通索引（幂等兜底，同 _ensure_flow_tables 模式）
     _ensure_verification_codes_table()
     _ensure_user_phone_index()
@@ -119,6 +130,11 @@ def init_db():
     _ensure_targeted_improvement_tasks_table()
     # 轻成绩表（对齐批改君 exam_scores）：同上幂等建表
     _ensure_grading_score_summaries_table()
+    # 布置作业/打印记录落库（2026-10-23 前是内存队列重启即清）：同上幂等建表
+    _ensure_print_jobs_tables()
+    # 作文批改标准文本列加宽（2026-11-11）：题目图片 base64 原图直存超 TEXT 64KB → 1406 → 保存标准 500。
+    # 同 _ensure_class_review_sessions_longtext 模式幂等 MODIFY，挂无条件段（⛔ 不许上移）。
+    _ensure_essay_rubric_longtext()
 
 
 def sync_database_schema():
@@ -201,17 +217,8 @@ def sync_database_schema():
         canteen_record,
         # 流水阅卷 / 集体阅卷（flow_* 六表）
         flow_grading,
-        # 批改额度账户 / 充值流水
+        # 批改额度账户
         grading_quota,
-        # ── 口径 B 独立老师支付七表（AUTO_DDL=true 时 create_all 建表）──
-        payment_account,
-        usage_event,
-        ledger_entry,
-        payment_plan,
-        subscription,
-        payment_order,
-        # P3-1 发票（payment_invoices；新表 ⇒ AUTO_DDL=false 时靠 _ensure_payment_tables）
-        payment_invoice,
         # B 项修正/复核记账（correction_ledger；新表 ⇒ AUTO_DDL=false 时靠 _ensure_correction_ledger_table）
         correction_ledger,
         # C 项判分缓存（verdict_cache；新表 ⇒ AUTO_DDL=false 时靠 _ensure_verdict_cache_table）
@@ -234,10 +241,10 @@ def sync_database_schema():
     _ensure_system_settings_extra_columns()
     _ensure_essay_rubric_extra_columns()
     _ensure_student_wrong_questions_extra_columns()
+    _ensure_smart_exam_paper_header_column()
     _ensure_class_review_sessions_longtext()
     _ensure_sanfeng_alter_columns()
     _ensure_flow_tables()
-    _ensure_payment_tables()
 
 
 def _ensure_grading_daily_stats_table():
@@ -270,9 +277,9 @@ def _ensure_grading_daily_stats_table():
 
 
 def _ensure_grading_quota_tables():
-    """批改额度账户 / 充值流水表（幂等兜底，CREATE TABLE IF NOT EXISTS）。"""
-    stmts = [
-        """
+    """批改额度账户表（幂等兜底，CREATE TABLE IF NOT EXISTS）。
+    （充值流水表 grading_quota_recharge_logs 随充值功能 20261111 移除；存量库里的旧表不碰。）"""
+    stmt = """
         CREATE TABLE IF NOT EXISTS grading_quota (
             id VARCHAR(36) NOT NULL PRIMARY KEY,
             user_id VARCHAR(36) NOT NULL,
@@ -285,41 +292,10 @@ def _ensure_grading_quota_tables():
             UNIQUE KEY uq_grading_quota_user_id (user_id),
             CONSTRAINT fk_grading_quota_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        """,
         """
-        CREATE TABLE IF NOT EXISTS grading_quota_recharge_logs (
-            id VARCHAR(36) NOT NULL PRIMARY KEY,
-            user_id VARCHAR(36) NOT NULL,
-            amount_yuan INT NOT NULL DEFAULT 0,
-            base_pages INT NOT NULL DEFAULT 0,
-            bonus_pages INT NOT NULL DEFAULT 0,
-            total_pages INT NOT NULL DEFAULT 0,
-            operator_id VARCHAR(36) NULL,
-            source_order_id VARCHAR(36) NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            KEY ix_grading_quota_recharge_logs_user_id (user_id),
-            UNIQUE KEY uq_grading_quota_recharge_source_order (source_order_id),
-            CONSTRAINT fk_grading_quota_recharge_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-        """,
-    ]
-    for stmt in stmts:
-        try:
-            with engine.connect() as conn:
-                conn.execute(text(stmt))
-                conn.commit()
-        except Exception:
-            pass
-    # 已有库补列（支付桥：支付订单 → 额度面数入账的幂等键）
     try:
         with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE grading_quota_recharge_logs ADD COLUMN source_order_id VARCHAR(36) NULL"))
-            conn.commit()
-    except Exception:
-        pass
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE grading_quota_recharge_logs ADD UNIQUE KEY uq_grading_quota_recharge_source_order (source_order_id)"))
+            conn.execute(text(stmt))
             conn.commit()
     except Exception:
         pass
@@ -416,6 +392,24 @@ def _ensure_grading_score_summaries_table():
         pass
 
 
+def _ensure_print_jobs_tables():
+    """布置作业/打印记录幂等建表（print_jobs / print_uploads）。
+
+    2026-10-23 前 print_jobs 是纯内存队列（重启即清空、不留痕），网页端无法
+    留痕/修改；落库后小程序与网页共享同一批作业记录。AUTO_DDL=true 时 create_all
+    已建；此处显式 ensure，失败不阻断启动。模型 __table_args__ 带
+    mysql_collate=utf8mb4_0900_ai_ci（DDL 漂移口径）。
+    """
+    try:
+        from app.models.print_job import PrintJobRow, PrintUploadRow  # noqa: F401
+
+        Base.metadata.create_all(
+            bind=engine, tables=[PrintJobRow.__table__, PrintUploadRow.__table__]
+        )
+    except Exception:
+        pass
+
+
 def _ensure_targeted_improvement_tasks_table():
     """靶向提升任务清单幂等建表（targeted_improvement_tasks，客户功能 #15）。
 
@@ -495,106 +489,6 @@ def _ensure_flow_tables():
         )
     except Exception:
         pass
-
-
-def _ensure_payment_order_tax_columns():
-    """口径 B 价税分离补列（`payment_orders` 3 列）幂等 ALTER。
-
-    设计依据：docs/payment/payment-design.md §10 Q3 逐字 ——「**开普票/专票** ⇒ 必须价税分离：
-    `payment_orders` 增 `amount_excl_tax_fen` / `tax_amount_fen` / `tax_rate_bps`」
-    （P3-2 的**数据层**提前到 Phase 2；⛔ 不含 P3-1 的发票实体/开票流程）。
-
-    ⚠️ **必须显式 ALTER，不能只靠 create_all**：Phase 0 已经把 `payment_orders` 建出来了，
-       `create_all` 对**已存在的表**是空操作（`checkfirst` 只判表在不在，不判列齐不齐）
-       ⇒ 生产库（AUTO_DDL=false）永远不会长出这 3 列，直到首次写发票才发现 1054。
-    ⚠️ **幂等**：先 `inspect(engine).get_columns()` 比对，只 ALTER **缺的**列；
-       重复调用不抛、库态不变（本仓硬纪律：必须有回归用例钉住二次调用幂等）。
-    ⚠️ 列类型从**模型**取（`CreateColumn` 按当前方言编译）⇒ 模型是唯一真值来源，
-       不在这里手抄 `INTEGER`/`INT`（SQLite 与 MySQL 的类型串不同）。
-    ⚠️ **挂载位置**：`init_db()` 的**无条件段**，且必须排在 `_ensure_payment_tables()` **之后**
-       （先保证表在，再补列）。⛔ 不许上移回 `sync_database_schema()` 的
-       `if not AUTO_DDL: return` 之后 —— 否则生产默认配置下一次都不执行（D-1 事故同因）。
-    """
-    from sqlalchemy import inspect as sa_inspect
-    from sqlalchemy.schema import CreateColumn
-
-    from app.models.payment_order import PaymentOrder
-
-    try:
-        inspector = sa_inspect(engine)
-        if not inspector.has_table(PaymentOrder.__tablename__):
-            return  # 表都没有 ⇒ 交给 _ensure_payment_tables（create_all 会带上这 3 列）
-        existing = {c["name"] for c in inspector.get_columns(PaymentOrder.__tablename__)}
-        table = PaymentOrder.__tablename__
-        for name in ("amount_excl_tax_fen", "tax_amount_fen", "tax_rate_bps"):
-            column = PaymentOrder.__table__.columns.get(name)
-            if column is None:  # pragma: no cover - 模型被改名时才会走到
-                logging.getLogger(__name__).error(
-                    "价税分离列 %s 不在 PaymentOrder 模型里 —— 补列清单与模型脱节，请立即核查", name
-                )
-                continue
-            if name in existing:
-                continue  # 幂等：已在则一字不动
-            ddl = CreateColumn(column).compile(dialect=engine.dialect)
-            with engine.begin() as conn:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
-    except Exception:
-        logging.getLogger(__name__).error(
-            "口径 B 价税分离补列（payment_orders.amount_excl_tax_fen/tax_amount_fen/"
-            "tax_rate_bps）失败：开票时拆税会 1054 Unknown column，请立即核查 DDL 权限与库结构",
-            exc_info=True,
-        )
-
-
-def _ensure_payment_tables():
-    """口径 B 独立老师支付七表幂等建表。
-
-    表：payment_accounts / usage_events / ledger_entries / payment_plans /
-        subscriptions / payment_orders / payment_invoices
-        （docs/payment/payment-design.md §3.2 §5.1 §9-Phase3「P3-1 发票」）。
-
-    AUTO_DDL=true 时 create_all 已建；此处显式 ensure（照抄 `_ensure_flow_tables` 范式，
-    §7.2 明文要求），**失败不阻断启动**。
-    ⚠️ 与既有 `_ensure_*` 的唯一差异：**失败要打 error 日志**（§12 第 3 条）——
-    本仓既有范式是 `except Exception: pass`，建表失败静默 ⇒ 首次记账才 500，无从排查。
-    ⚠️ 挂载位置：`init_db()` 的**无条件段**（与 `_ensure_flow_tables` 并列），
-    ⛔ 不许上移回 `sync_database_schema()` 的 `if not AUTO_DDL: return` 之后 ——
-    否则生产默认配置（AUTO_DDL=false）下一次都不执行（D-1 事故同因）。
-
-    ⚠️ **P3-1 的 `payment_invoices` 为什么只需建表、不需要 `_ensure_*_columns()` 补列**：
-      本表是**全新表**（P3-1 之前全仓无载体），没有「已存在的表缺列」这种存量对象
-       ⇒ `create_all(checkfirst)` 建出来的就是全列。
-      `_ensure_payment_order_tax_columns()` 那种显式 ALTER 是**改已存在的表**（P3-2 给
-      Phase 0 建好的 `payment_orders` 补 3 列）才需要的；将来本表真加列时，照它写一个即可。
-      ⛔ 现在不写空壳 ALTER —— 没有可补的列 = 死代码（增生源）。
-    """
-    try:
-        from app.models.payment_account import PaymentAccount
-        from app.models.usage_event import UsageEvent
-        from app.models.ledger_entry import LedgerEntry
-        from app.models.payment_plan import PaymentPlan
-        from app.models.subscription import Subscription
-        from app.models.payment_order import PaymentOrder
-        from app.models.payment_invoice import PaymentInvoice
-
-        Base.metadata.create_all(
-            bind=engine,
-            tables=[
-                PaymentAccount.__table__,
-                UsageEvent.__table__,
-                LedgerEntry.__table__,
-                PaymentPlan.__table__,
-                Subscription.__table__,
-                PaymentOrder.__table__,
-                PaymentInvoice.__table__,
-            ],
-        )
-    except Exception:
-        logging.getLogger(__name__).error(
-            "口径 B 支付表（payment_* / usage_events / ledger_entries）幂等建表失败："
-            "首次记账/查账/开票将 500，请立即核查 DDL 权限与库结构",
-            exc_info=True,
-        )
 
 
 def _ensure_ai_generation_history_table():
@@ -777,6 +671,34 @@ def _ensure_essay_rubric_extra_columns():
             pass
 
 
+def _ensure_essay_rubric_longtext():
+    """essay_rubrics 文本列加宽（幂等 MODIFY）。
+
+    2026-11-11 实锤：作文标准的题目图片走 FileReader 原图 base64 直存，
+    create_all 建出来的 TEXT 列只有 64KB，任何真实图片都撑爆 → 1406 Data too
+    long → 保存/修改标准报 500 Internal Server Error。同
+    _ensure_class_review_sessions_longtext 模式，启动即幂等加宽。
+    """
+    cols = [
+        ("content", "MEDIUMTEXT"),
+        ("summary_prompt", "MEDIUMTEXT"),
+        ("comment_prompt", "MEDIUMTEXT"),
+        ("rewrite_prompt", "MEDIUMTEXT"),
+        ("guidance_prompt", "MEDIUMTEXT"),
+        ("scoring_prompt", "MEDIUMTEXT"),
+        ("topic_text", "MEDIUMTEXT"),
+        ("topic_image_base64", "LONGTEXT"),
+        ("dimensions_json", "MEDIUMTEXT"),
+    ]
+    for name, typ in cols:
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(f"ALTER TABLE essay_rubrics MODIFY COLUMN {name} {typ} NULL"))
+                conn.commit()
+        except Exception:
+            pass
+
+
 def _ensure_student_wrong_questions_extra_columns():
     """已有库补列：student_wrong_questions 多校归属与订正状态列（P3-B3 错题实体统一）。
 
@@ -800,6 +722,19 @@ def _ensure_student_wrong_questions_extra_columns():
         from app.models.student_analysis import StudentWrongQuestion
 
         _ensure_single_column_indexes(StudentWrongQuestion.__table__, [n for n, _ in cols])
+    except Exception:
+        pass
+
+
+def _ensure_smart_exam_paper_header_column():
+    """已有库补列：smart_exam_papers.header_fields（11.9-2 智能组卷卷头可编辑字段）。
+
+    幂等加列；重复执行 ADD COLUMN 已存在时 MySQL 抛错被 except 吞掉。
+    """
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE smart_exam_papers ADD COLUMN header_fields JSON NULL"))
+            conn.commit()
     except Exception:
         pass
 

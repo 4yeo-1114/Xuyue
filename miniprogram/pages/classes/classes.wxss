@@ -1,0 +1,92 @@
+/* 班级 · 学生管理 */
+
+.add-btn {
+  font-size: 24rpx;
+  color: #7c6bff;
+  font-weight: 500;
+}
+
+.stu-row {
+  display: flex;
+  align-items: center;
+  padding: 18rpx 0;
+  border-bottom: 1rpx solid #f3effa;
+}
+
+.stu-row:last-child {
+  border-bottom: none;
+}
+
+.stu-idx {
+  width: 56rpx;
+  height: 56rpx;
+  line-height: 56rpx;
+  text-align: center;
+  border-radius: 999rpx;
+  background: #efeaff;
+  color: #7c6bff;
+  font-size: 24rpx;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.stu-info {
+  flex: 1;
+  margin-left: 16rpx;
+}
+
+.stu-name {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #4a3f5c;
+}
+
+.stu-meta {
+  margin-top: 4rpx;
+  font-size: 22rpx;
+  color: #a89bc4;
+}
+
+.stu-del {
+  font-size: 24rpx;
+  color: #f2647c;
+  padding: 10rpx 16rpx;
+}
+
+/* ── 添加弹窗 ── */
+.add-mask {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(74, 63, 92, 0.5);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.add-box {
+  width: 620rpx;
+  background: #fff;
+  border-radius: 32rpx;
+  padding: 32rpx 28rpx;
+}
+
+.add-title {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: #4a3f5c;
+  margin-bottom: 12rpx;
+}
+
+.add-actions {
+  display: flex;
+  gap: 20rpx;
+  margin-top: 28rpx;
+}
+
+.add-actions .btn {
+  flex: 1;
+}

@@ -55,6 +55,9 @@ Page({
     uploads: [],
     uploading: false,
 
+    // 试卷库预填（一键布置带进来的题目）
+    paperQuestions: null,
+
     // 打印设置
     answerLineIndex: 0,
     copiesIndex: 0,
@@ -66,13 +69,39 @@ Page({
     generating: false,
   },
 
-  onLoad: function () {
+  onLoad: function (options) {
     if (!api.getToken()) {
       wx.reLaunch({ url: '/pages/login/login' })
       return
     }
     this.prefillTeacher()
     this.refreshLayoutHint()
+    // 从「试卷库」一键布置进来：整份题目预填，提交时直接成卷
+    if (options && options.paper) {
+      try {
+        const paper = JSON.parse(decodeURIComponent(options.paper))
+        this.applyPaperPrefill(paper)
+      } catch (e) {
+        wx.showToast({ title: '试卷数据读取失败', icon: 'none' })
+      }
+    }
+  },
+
+  applyPaperPrefill: function (paper) {
+    const subjects = config.subjects
+    let subjectIndex = this.data.subjectIndex
+    for (let i = 0; i < subjects.length; i++) {
+      if (subjects[i].label === paper.subject || subjects[i].value === paper.subject) {
+        subjectIndex = i
+        break
+      }
+    }
+    this.setData({
+      title: paper.title || '',
+      subjectIndex: subjectIndex,
+      paperQuestions: paper.questions || [],
+    })
+    wx.showToast({ title: '已载入《' + (paper.title || '试卷') + '》', icon: 'none' })
   },
 
   prefillTeacher: function () {
@@ -401,6 +430,15 @@ Page({
     }
 
     this.setData({ generating: true })
+
+    // 试卷库预填的题目优先（一键布置）
+    if (d.paperQuestions && d.paperQuestions.length) {
+      this.submitPlain(base, {
+        question_items: d.paperQuestions,
+        answer_lines_override: d.answerLineIndex > 0 ? d.answerLineIndex : null,
+      })
+      return
+    }
 
     if (d.mode === 'ai') {
       this.submitAi(base)

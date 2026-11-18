@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""批改额度服务：档位、扣减、105% 硬停（口径：1 张上传图/页 = 1 面）。
+"""批改额度服务：计面、105% 硬停（口径：1 张上传图/页 = 1 面）。
 
 - 计数：每上传一张学生试卷图 = 1 面；标准答案/原始试卷不占额度。
 - 硬停：total_pages > 0 且 used_pages >= total_pages * 105% 时锁定。
+（充值/档位/支付桥 20261111 随「余额/充值/支付整体移除」删掉。）
 """
 from __future__ import annotations
 
@@ -12,51 +13,12 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
-from app.models.grading_quota import GradingQuota, GradingQuotaRechargeLog
+from app.models.grading_quota import GradingQuota
 
 logger = logging.getLogger(__name__)
-
-# 充值档位：100→300、500→1600、1000→3300、2000→7500、5000→20000
-QUOTA_TIERS: list[dict] = [
-    {"amount_yuan": 100, "base_pages": 300, "bonus_pages": 0, "total_pages": 300},
-    {"amount_yuan": 500, "base_pages": 1500, "bonus_pages": 100, "total_pages": 1600},
-    {"amount_yuan": 1000, "base_pages": 3000, "bonus_pages": 300, "total_pages": 3300},
-    {"amount_yuan": 2000, "base_pages": 6000, "bonus_pages": 1500, "total_pages": 7500},
-    {"amount_yuan": 5000, "base_pages": 15000, "bonus_pages": 5000, "total_pages": 20000},
-]
-
-
-def tier_by_amount(amount_yuan: int) -> Optional[dict]:
-    return next((t for t in QUOTA_TIERS if t["amount_yuan"] == amount_yuan), None)
-
-
-# 基准费率：3 面/元（所有档位 base_pages = amount_yuan * 3，赠送仅固定档位专享）。
-BASE_PAGES_PER_YUAN = 3
-
-
-def pages_for_amount(amount_yuan: int) -> Optional[dict]:
-    """按金额算「加面」方案：命中档位走档位（含赠送），否则走基准费率（无赠送）。
-
-    自定义金额（非档位）按 `BASE_PAGES_PER_YUAN` 面/元计，⛔ 无赠送 —— 赠送是固定档位的激励。
-    金额 <= 0 返回 None（非法，调用方需人工核查）。
-    """
-    amount = int(amount_yuan or 0)
-    if amount <= 0:
-        return None
-    tier = tier_by_amount(amount)
-    if tier is not None:
-        return tier
-    base = amount * BASE_PAGES_PER_YUAN
-    return {
-        "amount_yuan": amount,
-        "base_pages": base,
-        "bonus_pages": 0,
-        "total_pages": base,
-    }
 
 
 def is_locked(total_pages: int, used_pages: int) -> bool:
@@ -142,6 +104,29 @@ def record_page(user_id: str, filename: str, pages: int = 1) -> None:
     add_usage(user_id, pages)
 
 
+def refund_page(user_id: str, filename: str, pages: int = 1) -> None:
+    """退还额度：按文件名退（标准答案/原始试卷跳过），下限 0。
+
+    11.9-4 取消扫描清残留：取消的批次不该扣老师的面数，删掉的文件把已扣的退回。
+    """
+    if _is_reference_filename(filename):
+        return
+    uid = str(user_id or "").strip()
+    if not uid:
+        return
+    pages = max(1, int(pages or 1))
+    db = SessionLocal()
+    try:
+        q = get_or_create_quota(db, uid)
+        q.used_today_pages = max(0, int(q.used_today_pages or 0) - pages)
+        q.used_pages = max(0, int(q.used_pages or 0) - pages)
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
 def is_user_locked(user_id: str) -> bool:
     uid = str(user_id or "").strip()
     if not uid:
@@ -163,95 +148,6 @@ def ensure_user_available(user_id: str) -> None:
     if is_user_locked(user_id):
         raise HTTPException(
             status_code=403,
-            detail="批改额度已用尽（已超总量 105%），请联系管理员充值",
+            detail="批改额度已用尽（已超总量 105%），请联系管理员",
         )
 
-
-def recharge(
-    db: Session,
-    user_id: str,
-    amount_yuan: int,
-    operator_id: Optional[str] = None,
-) -> dict:
-    """管理员手动加额，返回充值结果。档位无效时抛 400。"""
-    tier = tier_by_amount(amount_yuan)
-    if tier is None:
-        raise HTTPException(status_code=400, detail="无效的充值档位")
-    q = get_or_create_quota(db, user_id)
-    q.total_pages = int(q.total_pages or 0) + tier["total_pages"]
-    db.add(
-        GradingQuotaRechargeLog(
-            user_id=user_id,
-            amount_yuan=tier["amount_yuan"],
-            base_pages=tier["base_pages"],
-            bonus_pages=tier["bonus_pages"],
-            total_pages=tier["total_pages"],
-            operator_id=operator_id,
-        )
-    )
-    db.flush()
-    return {
-        "ok": True,
-        "base_pages": tier["base_pages"],
-        "bonus_pages": tier["bonus_pages"],
-        "total_pages": tier["total_pages"],
-        "new_total": int(q.total_pages or 0),
-    }
-
-
-def credit_from_payment(
-    db: Session,
-    *,
-    user_id: str,
-    order_id: str,
-    amount_yuan: int,
-) -> Optional[dict]:
-    """支付桥：通道确认收款后按档位加面（同事支付系统 → 我的额度体系）。
-
-    幂等：`GradingQuotaRechargeLog.source_order_id` 唯一约束兜底 —— 同一订单重复回调
-    只加一次面（与账本侧 `pay-confirm|{order_id}` 的幂等语义对齐，两层各自独立兜底）。
-    档位金额走档位（含赠送）；自定义金额按基准费率 3 面/元（无赠送）。
-    """
-    oid = str(order_id or "").strip()
-    if not oid:
-        return None
-    tier = pages_for_amount(int(amount_yuan or 0))
-    if tier is None:
-        logger.error(
-            "支付确认金额非正，不加面（需人工核查）：order_id=%s amount_yuan=%s",
-            oid,
-            amount_yuan,
-        )
-        return None
-    # 幂等快路径：同订单已加过面 ⇒ 直接返回
-    already = (
-        db.query(GradingQuotaRechargeLog)
-        .filter(GradingQuotaRechargeLog.source_order_id == oid)
-        .first()
-    )
-    if already is not None:
-        return None
-    q = get_or_create_quota(db, user_id)
-    q.total_pages = int(q.total_pages or 0) + tier["total_pages"]
-    db.add(
-        GradingQuotaRechargeLog(
-            user_id=str(user_id).strip(),
-            amount_yuan=tier["amount_yuan"],
-            base_pages=tier["base_pages"],
-            bonus_pages=tier["bonus_pages"],
-            total_pages=tier["total_pages"],
-            operator_id=None,
-            source_order_id=oid,
-        )
-    )
-    try:
-        db.commit()
-    except IntegrityError:
-        # 并发/重复投递：唯一约束冲突 ⇒ 已加过面，回滚（不重复加）
-        db.rollback()
-        return None
-    return {
-        "ok": True,
-        "total_pages": tier["total_pages"],
-        "new_total": int(q.total_pages or 0),
-    }

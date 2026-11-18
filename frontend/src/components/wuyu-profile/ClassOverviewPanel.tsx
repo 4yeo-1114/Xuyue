@@ -1,4 +1,16 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  LabelList,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { useLocale } from "@/contexts/LocaleContext";
 import { Loader2, School, Users2, Trophy, BarChart3 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,6 +22,13 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -222,6 +241,7 @@ function TierDistribution({
 
 function StudentRow({ student }: { student: ClassPortfolioStudent }) {
   const { t } = useLocale();
+  const [detailOpen, setDetailOpen] = useState(false);
   const hasDataCount = DIMENSIONS.filter((dim) => student.data_status?.[dim] === "has_data").length;
   const rank = student.rank?.total;
   const n = student.n?.total;
@@ -231,7 +251,19 @@ function StudentRow({ student }: { student: ClassPortfolioStudent }) {
     <TableRow>
       <TableCell className="font-medium text-foreground">{student.name || "—"}</TableCell>
       <TableCell>
-        <DomainBars student={student} />
+        <button
+          type="button"
+          className="rounded-md px-1 py-0.5 transition-colors hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          title={t("wuyu.classOverview.clickHint")}
+          onClick={() => setDetailOpen(true)}
+        >
+          <DomainBars student={student} />
+        </button>
+        <FiveDimDetailDialog
+          student={student}
+          open={detailOpen}
+          onOpenChange={setDetailOpen}
+        />
       </TableCell>
       <TableCell className="text-right">
         <span className="font-semibold text-foreground">{toNum(student.total_growth_point).toFixed(1)}</span>
@@ -279,6 +311,197 @@ function DomainBars({ student }: { student: ClassPortfolioStudent }) {
         );
       })}
     </div>
+  );
+}
+
+interface DomainChartDatum {
+  key: string;
+  label: string;
+  value: number | null;
+  has: boolean;
+}
+
+function fmtPercentile(v?: number | null): string {
+  return v == null ? "—" : `${toNum(v).toFixed(0)}%`;
+}
+
+function fmtRank(r?: number | null, n?: number | null): string {
+  return r == null ? "—" : `${r}${n != null ? ` / ${n}` : ""}`;
+}
+
+/** 弹窗柱状图 tooltip：综合分/数据不足 */
+function DomainTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: DomainChartDatum }>;
+}) {
+  const { t } = useLocale();
+  if (!active || !payload?.length) return null;
+  const d = payload[0].payload;
+  return (
+    <div className="rounded-lg border bg-background px-3 py-2 text-xs shadow-md">
+      <div className="font-medium text-foreground mb-1">{d.label}</div>
+      <div className="text-muted-foreground">
+        {t("wuyu.classOverview.compositeScore")}：
+        {d.has && d.value != null
+          ? toNum(d.value).toFixed(1)
+          : t("wuyu.classOverview.dataInsufficient")}
+      </div>
+    </div>
+  );
+}
+
+/** 五维表现大图弹窗：大柱状图 + 维度明细表 */
+function FiveDimDetailDialog({
+  student,
+  open,
+  onOpenChange,
+}: {
+  student: ClassPortfolioStudent;
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+}) {
+  const { t } = useLocale();
+  const chartData: DomainChartDatum[] = DIMENSIONS.map((dim) => {
+    const has = student.data_status?.[dim] === "has_data";
+    const v = student.composite?.[dim];
+    return {
+      key: dim,
+      label: t(DIMENSION_LABEL_KEY[dim]),
+      value: has && v != null ? toNum(v) : null,
+      has,
+    };
+  });
+  const totalActivity = DIMENSIONS.reduce(
+    (sum, dim) => sum + (student.activity_track?.[dim]?.count ?? 0),
+    0,
+  );
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>
+            {student.name || "—"} · {t("wuyu.classOverview.detailTitle")}
+          </DialogTitle>
+          <DialogDescription>{t("wuyu.classOverview.chartCaption")}</DialogDescription>
+        </DialogHeader>
+
+        {/* 大柱状图 */}
+        <div className="h-72 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chartData} margin={{ top: 24, right: 8, left: -12, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+              <XAxis
+                dataKey="label"
+                tick={{ fontSize: 12 }}
+                tickLine={false}
+                axisLine={{ stroke: "#e2e8f0" }}
+              />
+              <YAxis
+                domain={[0, 100]}
+                tick={{ fontSize: 12 }}
+                tickLine={false}
+                axisLine={false}
+              />
+              <Tooltip content={<DomainTooltip />} cursor={{ fill: "rgba(148,163,184,0.12)" }} />
+              <Bar dataKey="value" maxBarSize={72} radius={[8, 8, 0, 0]}>
+                <LabelList
+                  dataKey="value"
+                  position="top"
+                  formatter={(v: number | null) => (v == null ? "" : toNum(v).toFixed(1))}
+                />
+                {chartData.map((d) => (
+                  <Cell
+                    key={d.key}
+                    fill={d.has ? DIMENSION_COLORS[d.key] : "#cbd5e1"}
+                    fillOpacity={d.has ? 0.85 : 0.5}
+                  />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* 明细表 */}
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>{t("wuyu.classOverview.fiveDomains")}</TableHead>
+              <TableHead className="text-right">{t("wuyu.classOverview.compositeScore")}</TableHead>
+              <TableHead className="text-right">{t("wuyu.classOverview.rawScore")}</TableHead>
+              <TableHead className="text-right">{t("wuyu.classOverview.activityCount")}</TableHead>
+              <TableHead className="text-right">{t("wuyu.classOverview.percentile")}</TableHead>
+              <TableHead>{t("wuyu.classOverview.tier")}</TableHead>
+              <TableHead className="text-right">{t("wuyu.classOverview.rank")}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {DIMENSIONS.map((dim) => {
+              const has = student.data_status?.[dim] === "has_data";
+              return (
+                <TableRow key={dim}>
+                  <TableCell>
+                    <span className="flex items-center gap-2">
+                      <span
+                        className="w-2 h-2 rounded-full"
+                        style={{ backgroundColor: DIMENSION_COLORS[dim] }}
+                      />
+                      {t(DIMENSION_LABEL_KEY[dim])}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {has ? (
+                      toNum(student.composite?.[dim]).toFixed(1)
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        {t("wuyu.classOverview.dataInsufficient")}
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {toNum(student.dimensions?.[dim]).toFixed(1)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {student.activity_track?.[dim]?.count ?? "—"}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {fmtPercentile(student.percentile?.[dim])}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={tierVariant(student.tier?.[dim])}>{student.tier?.[dim] ?? "—"}</Badge>
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {fmtRank(student.rank?.[dim], student.n?.[dim])}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+            <TableRow className="bg-muted/40">
+              <TableCell className="font-semibold">{t("wuyu.dim.total")}</TableCell>
+              <TableCell className="text-right tabular-nums font-semibold">
+                {student.composite?.total != null ? toNum(student.composite.total).toFixed(1) : "—"}
+              </TableCell>
+              <TableCell className="text-right tabular-nums font-semibold">
+                {toNum(student.total_growth_point).toFixed(1)}
+              </TableCell>
+              <TableCell className="text-right tabular-nums font-semibold">{totalActivity}</TableCell>
+              <TableCell className="text-right tabular-nums font-semibold">
+                {fmtPercentile(student.percentile?.total)}
+              </TableCell>
+              <TableCell>
+                <Badge variant={tierVariant(student.tier?.total)}>{student.tier?.total ?? "—"}</Badge>
+              </TableCell>
+              <TableCell className="text-right tabular-nums font-semibold">
+                {fmtRank(student.rank?.total, student.n?.total)}
+              </TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+      </DialogContent>
+    </Dialog>
   );
 }
 

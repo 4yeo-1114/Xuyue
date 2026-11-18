@@ -1,0 +1,222 @@
+/* 额度 · 充值 */
+
+/* ── 用量卡片 ── */
+.quota-card {
+  background: linear-gradient(150deg, #ffb56b, #ff8f6b);
+  color: #fff;
+}
+
+.quota-title {
+  font-size: 26rpx;
+  opacity: 0.9;
+}
+
+.quota-big {
+  font-size: 80rpx;
+  font-weight: 700;
+  line-height: 1.2;
+  margin: 8rpx 0 20rpx;
+}
+
+.quota-meter {
+  height: 14rpx;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 999rpx;
+  overflow: hidden;
+}
+
+.quota-meter-fill {
+  height: 100%;
+  background: #fff;
+  border-radius: 999rpx;
+}
+
+.quota-sub {
+  margin-top: 14rpx;
+  font-size: 24rpx;
+  opacity: 0.9;
+}
+
+.quota-card .hint-warn {
+  margin-top: 20rpx;
+  margin-bottom: 0;
+}
+
+/* ── 档位 ── */
+.tier-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+  margin-bottom: 28rpx;
+}
+
+.tier {
+  width: calc((100% - 32rpx) / 3);
+  box-sizing: border-box;
+  border: 2rpx solid #e6dff2;
+  border-radius: 32rpx;
+  padding: 20rpx 12rpx;
+  text-align: center;
+}
+
+.tier-on {
+  border-color: #7c6bff;
+  background: #efeaff;
+}
+
+.tier-yuan {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: #4a3f5c;
+}
+
+.tier-pages {
+  font-size: 22rpx;
+  color: #7d6f99;
+  margin-top: 6rpx;
+}
+
+.tier-bonus {
+  font-size: 20rpx;
+  color: #e0870f;
+  margin-top: 4rpx;
+}
+
+/* ── 支付方式 ── */
+.channel-row {
+  display: flex;
+  gap: 16rpx;
+  margin-bottom: 28rpx;
+}
+
+.channel {
+  flex: 1;
+  height: 80rpx;
+  line-height: 80rpx;
+  text-align: center;
+  border-radius: 32rpx;
+  border: 2rpx solid #e6dff2;
+  font-size: 28rpx;
+  color: #7d6f99;
+}
+
+.channel-on {
+  border-color: #7c6bff;
+  color: #7c6bff;
+  background: #efeaff;
+}
+
+/* ── 充值记录 ── */
+.log-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18rpx 0;
+  border-bottom: 1rpx solid #f3effa;
+}
+
+.log-row:last-child {
+  border-bottom: none;
+}
+
+.log-amount {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: #4a3f5c;
+}
+
+.log-meta {
+  font-size: 22rpx;
+  color: #a89bc4;
+  margin-top: 4rpx;
+}
+
+.log-pages {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #1fb384;
+}
+
+/* ── 支付弹窗 ── */
+.pay-mask {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(74, 63, 92, 0.5);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pay-box {
+  width: 600rpx;
+  background: #fff;
+  border-radius: 32rpx;
+  padding: 40rpx 32rpx;
+  text-align: center;
+}
+
+.pay-title {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: #4a3f5c;
+}
+
+.pay-tip {
+  font-size: 22rpx;
+  color: #a89bc4;
+  margin: 12rpx 0 24rpx;
+}
+
+.qr-wrap {
+  display: flex;
+  justify-content: center;
+}
+
+.qr-canvas {
+  width: 400rpx;
+  height: 400rpx;
+}
+
+/* 二维码转成图片：支持长按「识别图中二维码」同机付款 */
+.qr-img {
+  width: 400rpx;
+  height: 400rpx;
+  background: #fff;
+}
+
+.pay-qr-hint {
+  margin-top: 12rpx;
+  font-size: 22rpx;
+  color: #a89bc4;
+  line-height: 1.5;
+}
+
+.pay-retry {
+  width: 400rpx;
+  margin: 40rpx 0;
+}
+
+.pay-status {
+  margin: 20rpx 0;
+  font-size: 26rpx;
+  color: #7d6f99;
+}
+
+.pay-status-ok {
+  color: #1fb384;
+  font-weight: 600;
+}
+
+.pay-link {
+  color: #7c6bff;
+  font-size: 26rpx;
+  padding: 12rpx;
+}
+
+.pay-close {
+  margin-top: 12rpx;
+}

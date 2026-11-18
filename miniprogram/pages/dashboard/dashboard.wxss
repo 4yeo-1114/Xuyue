@@ -1,0 +1,225 @@
+/* 数据看板 · 卡通软萌风 */
+
+.dash-page {
+  padding-top: 24rpx;
+}
+
+/* ── 顶部横幅 ── */
+.dash-hero {
+  padding: 44rpx 40rpx;
+  background: linear-gradient(135deg, #4ecdc4, #6c8cff);
+  border-radius: 36rpx;
+  margin-bottom: 24rpx;
+  color: #fff;
+  box-shadow: 0 12rpx 28rpx rgba(62, 196, 188, 0.28);
+  animation: pop-in 0.25s ease-out;
+}
+
+.dash-hero-title {
+  font-size: 44rpx;
+  font-weight: 700;
+  letter-spacing: 2rpx;
+}
+
+.dash-hero-sub {
+  margin-top: 12rpx;
+  font-size: 24rpx;
+  opacity: 0.92;
+}
+
+/* ── 四宫格统计 ── */
+.dash-stats {
+  display: flex;
+  gap: 16rpx;
+  margin-bottom: 24rpx;
+}
+
+.dash-stat {
+  flex: 1;
+  background: #fff;
+  border-radius: 28rpx;
+  padding: 26rpx 8rpx 22rpx;
+  text-align: center;
+  box-shadow: 0 8rpx 22rpx rgba(124, 107, 255, 0.08);
+  animation: pop-in 0.3s ease-out;
+}
+
+.dash-stat:active {
+  transform: scale(0.92);
+}
+
+.dash-stat-num {
+  font-size: 42rpx;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.num-purple { color: #7c6bff; }
+.num-mint   { color: #1fb384; }
+.num-pink   { color: #ff6b8b; }
+.num-blue   { color: #38b6c9; }
+
+.dash-stat-label {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #a89bc4;
+}
+
+/* ── 卡片 ── */
+.dash-card {
+  background: #fff;
+  border-radius: 32rpx;
+  padding: 28rpx;
+  margin-bottom: 24rpx;
+  box-shadow: 0 8rpx 24rpx rgba(124, 107, 255, 0.08);
+  animation: pop-in 0.3s ease-out;
+}
+
+.dash-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20rpx;
+}
+
+.dash-card-title {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: #4a3f5c;
+}
+
+.dash-card-more {
+  font-size: 22rpx;
+  color: #7c6bff;
+  padding: 6rpx 12rpx;
+}
+
+.dash-empty {
+  text-align: center;
+  color: #a89bc4;
+  font-size: 24rpx;
+  padding: 32rpx 0;
+}
+
+/* ── 额度进度条 ── */
+.dash-meter-bg {
+  height: 22rpx;
+  background: #f0ecff;
+  border-radius: 999rpx;
+  overflow: hidden;
+}
+
+.dash-meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #8e7cff, #6c8cff);
+  border-radius: 999rpx;
+  transition: width 0.4s ease;
+}
+
+.dash-meter-meta {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 14rpx;
+  font-size: 22rpx;
+  color: #a89bc4;
+}
+
+/* ── 班级列表 ── */
+.dash-class-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+}
+
+.dash-class {
+  width: calc((100% - 16rpx) / 2);
+  box-sizing: border-box;
+  background: #f7f4ff;
+  border-radius: 24rpx;
+  padding: 20rpx;
+}
+
+.dash-class:active {
+  transform: scale(0.95);
+}
+
+.dash-class-badge {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: #efeaff;
+  color: #7c6bff;
+  font-size: 24rpx;
+  font-weight: 700;
+  padding: 8rpx 18rpx;
+  border-radius: 999rpx;
+}
+
+.dash-class-meta {
+  margin-top: 12rpx;
+  font-size: 22rpx;
+  color: #a89bc4;
+}
+
+/* ── 最近批改时间轴 ── */
+.dash-recent {
+  display: flex;
+  align-items: center;
+  gap: 18rpx;
+  padding: 16rpx 4rpx;
+  border-bottom: 2rpx solid #f3f0fb;
+}
+
+.dash-recent:last-child {
+  border-bottom: none;
+}
+
+.dash-recent:active {
+  background: #f7f4ff;
+  border-radius: 16rpx;
+}
+
+.dash-recent-dot {
+  width: 18rpx;
+  height: 18rpx;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dot-done    { background: #1fb384; }
+.dot-failed  { background: #ff6b8b; }
+.dot-pending { background: #f5b83d; }
+
+.dash-recent-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.dash-recent-name {
+  font-size: 26rpx;
+  color: #4a3f5c;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-recent-time {
+  margin-top: 6rpx;
+  font-size: 20rpx;
+  color: #a89bc4;
+}
+
+.dash-tag {
+  flex-shrink: 0;
+  font-size: 20rpx;
+  padding: 6rpx 16rpx;
+  border-radius: 999rpx;
+  font-weight: 500;
+}
+
+.tag-done    { background: #e2f8ef; color: #1fb384; }
+.tag-failed  { background: #ffe4ea; color: #ff6b8b; }
+.tag-pending { background: #fff3d9; color: #d99a1f; }

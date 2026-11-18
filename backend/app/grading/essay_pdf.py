@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-import textwrap
+import unicodedata
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional
@@ -132,6 +132,54 @@ def _report_name_from_filename(name: str) -> str:
     return f"{stem}作文批改报告"
 
 
+def _display_units(text: str) -> float:
+    """显示宽度折算：全角（CJK/全角标点）按 1 个字宽，半角按 0.5 个字宽。
+
+    11.11-7：英语作文正文是半角字，按「字数」硬裁会挤成半宽窄栏、右边大片空白。
+    """
+    units = 0.0
+    for ch in text:
+        units += 1.0 if unicodedata.east_asian_width(ch) in ("F", "W") else 0.5
+    return units
+
+
+# 拉丁词尽量整体成词、空白单独成 token、其余（CJK/标点）逐字
+_MIXED_WRAP_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9'\-]*|\s+|.", re.S)
+
+
+def _wrap_mixed_line(text: str, width: float) -> list[str]:
+    """按显示宽度贪心折行（width 为全角字宽预算）：拉丁词不拆词，CJK 逐字断。"""
+    lines: list[str] = []
+    cur = ""
+    cur_units = 0.0
+    for tok in _MIXED_WRAP_TOKEN_RE.findall(text):
+        tok_units = _display_units(tok)
+        if cur and cur_units + tok_units > width:
+            lines.append(cur)
+            cur = ""
+            cur_units = 0.0
+        if not cur:
+            # 续行行首丢掉折叠点空白；段首行（还没产生行）保留原有缩进
+            if lines and tok.isspace():
+                continue
+            if tok_units > width:
+                # 超宽词（长 URL 等）硬拆，宁可断词也不越出右缘
+                chunk = ""
+                for ch in tok:
+                    if chunk and _display_units(chunk + ch) > width:
+                        lines.append(chunk)
+                        chunk = ""
+                    chunk += ch
+                cur = chunk
+                cur_units = _display_units(chunk)
+                continue
+        cur += tok
+        cur_units += tok_units
+    if cur or not lines:
+        lines.append(cur)
+    return lines
+
+
 def _split_body_lines(text: str, width: int) -> list[str]:
     lines: list[str] = []
     for para in (text or "").splitlines():
@@ -139,13 +187,7 @@ def _split_body_lines(text: str, width: int) -> list[str]:
         if not p:
             lines.append("")
             continue
-        wrapped = textwrap.wrap(
-            p,
-            width=width,
-            break_long_words=True,
-            replace_whitespace=False,
-            drop_whitespace=False,
-        )
+        wrapped = _wrap_mixed_line(p, width=width)
         wrapped = fix_punctuation_line_starts(wrapped or [p])
         lines.extend(wrapped)
     return lines or ["（暂无批改结果）"]
@@ -162,6 +204,8 @@ def _compact_body_text(text: str) -> str:
 def _chars_per_line(usable_width: float, fontsize: float) -> int:
     # CJK 字体大致接近方块字；中文字符宽度大约等于字体大小。
     # 使用 1.05 的系数作为安全余量，避免任何一行文字溢出右侧。
+    # 返回值是「全角字宽预算」：半角字符按 0.5 折算（见 _display_units），
+    # 英语正文一行约 90 个字母也能排满整幅宽，不再挤半宽窄栏（11.11-7）。
     return max(34, int(usable_width / max(1.0, fontsize * 1.05)))
 
 
@@ -227,11 +271,17 @@ def build_essay_report_pdf_bytes(
     *,
     folder_name: str,
     items: List[EssayPdfItem],
+    duplex_double: bool = False,
+    duplex_binding: str = "long",
 ) -> bytes:
     """
     生成作文批改报告 PDF。
     注意：此 PDF 仅包含「AI 批改评语」的排版输出，不包含试卷图片与 OCR 原文。
     PDF 只负责 A4 固定字号排版，不截断正文、不动态缩小文字；单页长度由作文批改 prompt 控制。
+    duplex_double（11.13 台账 #1/#2）：双面合印时每个学生的报告独占整张纸——
+    页数为奇数时补一张空白背页，避免两个学生拼在一张纸上。
+    duplex_binding="short"：短边翻页（像台历）——每对页的第 1 张（驱动首面）转 180°，
+    打印窗口的翻页方式保持默认「沿长边」即可。
     """
     # A4 portrait in points (72dpi): 595 x 842
     page_w, page_h = 595, 842
@@ -257,6 +307,7 @@ def build_essay_report_pdf_bytes(
         report_name = _report_name_from_filename(it.name)
         body_text = _prepare_essay_pdf_text(it.result or "")
 
+        item_start_page = doc.page_count
         page = doc.new_page(width=page_w, height=page_h)
         current_font, current_fontfile = _ensure_page_font(page, fontname, cn_font)
 
@@ -351,6 +402,16 @@ def build_essay_report_pdf_bytes(
             line_index += 1
             
         # (已按要求移除 PDF 右下角的总分单独绘制逻辑，现在总分会作为文本里的【作文得分】一块自然排版)
+
+        # 双面合印：学生报告页数为奇数时补一张空白背页，保证独占整张纸
+        if duplex_double and (doc.page_count - item_start_page) % 2 == 1:
+            doc.new_page(width=page_w, height=page_h)
+
+    # 短边翻页：每对页的第 1 张（驱动首面，翻面后读到的那页）转 180°。
+    # 只转完整对；末尾落单页（单页报告）不转（单面打印时它就是正面）。
+    if duplex_binding == "short":
+        for i in range(0, doc.page_count - 1, 2):
+            doc[i].set_rotation(180)
 
     try:
         return doc.tobytes(garbage=4, deflate=True)

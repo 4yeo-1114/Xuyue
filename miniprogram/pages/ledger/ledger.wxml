@@ -1,0 +1,59 @@
+<view class="page">
+
+  <!-- 搜索 -->
+  <view class="search-box">
+    <input class="search-input" placeholder="搜学生卷名 / 考试名 / 评语" placeholder-class="field-placeholder"
+      value="{{q}}" bindinput="onQueryInput" bindconfirm="onSearch" confirm-type="search" />
+    <view class="search-btn" bindtap="onSearch">搜索</view>
+  </view>
+
+  <!-- 来源分类 -->
+  <scroll-view class="chips" scroll-x>
+    <view class="chip {{source === '' ? 'chip-on' : ''}}" data-source="" bindtap="onSourceChip">全部</view>
+    <view class="chip {{source === item.key ? 'chip-on' : ''}}" wx:for="{{sourceChips}}" wx:key="key"
+      data-source="{{item.key}}" bindtap="onSourceChip">
+      {{item.label}}{{item.count ? ' ' + item.count : ''}}
+    </view>
+  </scroll-view>
+
+  <!-- 时间窗 -->
+  <view class="chips">
+    <view class="chip {{days === item ? 'chip-on' : ''}}" wx:for="{{dayOptions}}" wx:key="*this"
+      data-days="{{item}}" bindtap="onDaysChip">{{item}} 天</view>
+  </view>
+
+  <view wx:if="{{loading && page === 1}}" class="empty">正在加载…</view>
+
+  <view wx:elif="{{rows.length === 0}}" class="empty">
+    <text class="empty-emoji">📒</text>
+    没有找到改分记录
+  </view>
+
+  <block wx:else>
+    <view class="card ledger-row" wx:for="{{rows}}" wx:key="id">
+      <view class="ledger-top">
+        <view class="ledger-name">{{item.paper_name}}</view>
+        <view class="tag {{item.kindClass}}">{{item.kindLabel}}</view>
+      </view>
+      <view class="ledger-change">
+        <view class="ledger-q">第 {{item.qLabel}} 题</view>
+        <view class="ledger-diff">
+          <text class="ledger-was">{{item.wasLabel}}</text>
+          <text class="ledger-arrow">→</text>
+          <text class="ledger-new">{{item.newLabel}}</text>
+        </view>
+      </view>
+      <view wx:if="{{item.commentText}}" class="ledger-comment">{{item.commentText}}</view>
+      <view class="ledger-meta">
+        <text>{{item.timeText}}</text>
+        <text wx:if="{{item.voided}}" class="ledger-voided">已作废</text>
+      </view>
+    </view>
+
+    <view wx:if="{{hasMore}}" class="load-more" bindtap="onLoadMore">
+      {{loading ? '加载中…' : '加载更多'}}
+    </view>
+    <view wx:else class="muted load-more">没有更多了</view>
+  </block>
+
+</view>

@@ -146,7 +146,7 @@ def test_run_ref_grade_queues_then_runs(monkeypatch):
     seen = {}
     started = threading.Event()
 
-    def fake_impl(job_id, folder_name, engine, only_filename=None, only_filenames=None):
+    def fake_impl(job_id, folder_name, engine, only_filename=None, only_filenames=None, resume_skip=None):
         with r._ref_grade_lock:
             seen["queued"] = r._ref_grade_results[job_id].get("queued")
             seen["waited"] = r._ref_grade_results[job_id].get("queue_waited_s")

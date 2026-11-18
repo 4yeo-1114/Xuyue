@@ -1,0 +1,80 @@
+<view class="register-page">
+  <view class="brand">
+    <view class="brand-logo">叙</view>
+    <view class="brand-name">注册账号</view>
+    <view class="brand-sub">注册即自动登录 · 任课教师</view>
+  </view>
+
+  <view class="form-card">
+    <view class="field">
+      <text class="field-label">邮箱</text>
+      <input
+        class="field-input"
+        type="text"
+        placeholder="请输入邮箱账号"
+        placeholder-class="field-placeholder"
+        value="{{email}}"
+        bindinput="onEmailInput"
+      />
+    </view>
+    <view class="field">
+      <text class="field-label">验证码</text>
+      <input
+        class="field-input"
+        type="text"
+        placeholder="邮箱验证码"
+        placeholder-class="field-placeholder"
+        value="{{code}}"
+        bindinput="onCodeInput"
+      />
+      <button
+        class="code-btn {{countdown > 0 ? 'code-btn--off' : ''}}"
+        disabled="{{countdown > 0 || sendingCode}}"
+        bindtap="onSendCode"
+      >{{countdown > 0 ? countdown + 's' : '发送验证码'}}</button>
+    </view>
+    <view class="field">
+      <text class="field-label">密码</text>
+      <input
+        class="field-input"
+        password
+        placeholder="至少 6 位"
+        placeholder-class="field-placeholder"
+        value="{{password}}"
+        bindinput="onPasswordInput"
+      />
+    </view>
+    <view class="field">
+      <text class="field-label">姓名</text>
+      <input
+        class="field-input"
+        placeholder="选填，用于展示"
+        placeholder-class="field-placeholder"
+        value="{{displayName}}"
+        bindinput="onNameInput"
+      />
+    </view>
+    <view class="field">
+      <text class="field-label">任教科目</text>
+      <input
+        class="field-input"
+        placeholder="选填，如 数学"
+        placeholder-class="field-placeholder"
+        value="{{subject}}"
+        bindinput="onSubjectInput"
+      />
+    </view>
+    <view class="field">
+      <text class="field-label">任教年级</text>
+      <picker mode="selector" range="{{grades}}" value="{{gradeIndex}}" bindchange="onGradeChange">
+        <view class="picker-value {{gradeIndex === 0 ? 'picker-placeholder' : ''}}">{{grades[gradeIndex]}}</view>
+      </picker>
+    </view>
+  </view>
+
+  <button class="btn register-btn" loading="{{loading}}" disabled="{{loading}}" bindtap="onSubmit">
+    注册并登录
+  </button>
+
+  <view class="login-link" bindtap="onGoLogin">已有账号？<text class="link">去登录</text></view>
+</view>

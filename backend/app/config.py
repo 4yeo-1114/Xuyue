@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     PAYMENT_WECHAT_API_V3_KEY: str = ""        # APIv3 密钥（32 字符），回调 resource 解密用
     PAYMENT_WECHAT_PUBLIC_KEY: str = ""        # 微信支付公钥（验签回调用）
     PAYMENT_WECHAT_API_BASE: str = "https://api.mch.weixin.qq.com"
+    # 小程序 AppSecret（appid = PAYMENT_WECHAT_APP_ID，即叙阅小程序）：
+    # jscode2session 换 openid，走「小程序支付」直连（wx.requestPayment）用。
+    # 缺省 ⇒ 直连不可用，自动回落扫码单（Native code_url），⛔ 不影响已有充值。
+    WX_MINIPROGRAM_APP_SECRET: str = ""
     # 支付宝（开放平台 RSA2）
     PAYMENT_ALIPAY_APP_ID: str = ""
     PAYMENT_ALIPAY_PRIVATE_KEY: str = ""       # 应用私钥
@@ -134,6 +138,16 @@ class Settings(BaseSettings):
     ASSETS_DB_USER: str = ""
     ASSETS_DB_PASSWORD: str = ""
     ASSETS_DB_NAME: str = "grade"
+
+    # 台账#8：复印机横向扫描的竖版卷，上传进门摆正开关。
+    # 1=顺时针90°、2=逆时针90°、空/0=关；装机包默认 1（客户横扫 A4 竖卷），生产不配置=关。
+    # 方向按实测定：扫一张横放卷批改后，留痕印记若仍相对内容歪 90°，把 1↔2 对调。
+    GRADING_UPLOAD_FORCE_PORTRAIT: str = ""
+
+    # 本地安装包不设免费额度（20261110 用户拍板）：1=批改额度双闸（钱包 402/面数 105% 403）
+    # 全关、计面也不记，客户想用多少用多少（模型钱花在用户自己的百度/阿里云账户上）。
+    # 装机包 .env 默认 1；生产不配置=闸门照旧生效。
+    QUOTA_GATES_DISABLED: str = ""
 
     @model_validator(mode="after")
     def _validate_required_config(self):

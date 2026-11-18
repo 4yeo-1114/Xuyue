@@ -150,6 +150,117 @@ export function groupWrongPaperImagesByStudent(
   }));
 }
 
+// ── 高频错题附录（客户 11.12 反馈「导出 151 页太多了，只需要展示几个高频错题就可以了」）──
+/** 附录取错误人数最多的前 N 题 */
+export const HIGH_FREQ_TOP_QUESTIONS = 5;
+/** 每题至多展示的学生示例数 */
+export const HIGH_FREQ_EXAMPLES_PER_QUESTION = 3;
+
+export type WrongPaperQuestionGroup = {
+  /** 题号（「第N题」的 N） */
+  q: number;
+  /** 错误人数（question_accuracy 缺失时退化为该题错题图涉及的学生数） */
+  wrongCount: number;
+  /** 小节标题，如「第7题」 */
+  title: string;
+  /** 示例条目（至多 examplesPerQuestion 条，尽量分散到不同学生） */
+  items: WrongPaperImage[];
+};
+
+/** 示例挑选：按学生轮流取（学生按条目数降序、同数按姓名），尽量让示例分散在不同学生 */
+function pickWrongPaperExamples(items: WrongPaperImage[], cap: number): WrongPaperImage[] {
+  const byStudent = new Map<string, WrongPaperImage[]>();
+  for (const raw of items) {
+    const img = (raw || {}) as WrongPaperImage;
+    const student = String(img.student_name || "").trim() || "未命名学生";
+    const bucket = byStudent.get(student);
+    if (bucket) bucket.push(img);
+    else byStudent.set(student, [img]);
+  }
+  const queues = Array.from(byStudent.entries())
+    .map(([student, list]) => ({
+      student,
+      list: [...list].sort((a, b) => {
+        const ka = parseWrongPaperSortKey(a.title);
+        const kb = parseWrongPaperSortKey(b.title);
+        return ka.q - kb.q || ka.slot - kb.slot;
+      }),
+    }))
+    .sort(
+      (a, b) =>
+        b.list.length - a.list.length || a.student.localeCompare(b.student, "zh-Hans-CN"),
+    );
+  const out: WrongPaperImage[] = [];
+  for (let round = 0; out.length < cap; round += 1) {
+    let took = false;
+    for (const queue of queues) {
+      if (out.length >= cap) break;
+      const item = queue.list[round];
+      if (item) {
+        out.push(item);
+        took = true;
+      }
+    }
+    if (!took) break;
+  }
+  return out;
+}
+
+/**
+ * 高频错题挑选：按题聚合错题图，按错误人数降序取前 topN 题，每题取至多 examplesPerQuestion 条示例。
+ * 错误人数优先取 source_summary.question_accuracy 的 wrong_count；缺统计时退化为该题错题图的学生数。
+ */
+export function selectHighFrequencyWrongImages(
+  images: unknown,
+  questionAccuracy: unknown,
+  topN: number = HIGH_FREQ_TOP_QUESTIONS,
+  examplesPerQuestion: number = HIGH_FREQ_EXAMPLES_PER_QUESTION,
+): WrongPaperQuestionGroup[] {
+  const list = Array.isArray(images) ? (images as WrongPaperImage[]) : [];
+  if (!list.length || topN <= 0 || examplesPerQuestion <= 0) return [];
+
+  const wrongCountByQ = new Map<number, number>();
+  for (const raw of Array.isArray(questionAccuracy) ? questionAccuracy : []) {
+    const entry = (raw || {}) as {
+      display_title?: unknown;
+      question_key?: unknown;
+      wrong_count?: unknown;
+    };
+    const m = /第\s*(\d+)\s*题/.exec(
+      String(entry.display_title || entry.question_key || ""),
+    );
+    if (!m) continue;
+    const q = Number(m[1]);
+    const wc = Number(entry.wrong_count || 0);
+    wrongCountByQ.set(q, Math.max(wrongCountByQ.get(q) ?? 0, wc));
+  }
+
+  const byQ = new Map<number, WrongPaperImage[]>();
+  for (const raw of list) {
+    const img = (raw || {}) as WrongPaperImage;
+    const { q } = parseWrongPaperSortKey(img.title);
+    if (!Number.isFinite(q) || q === Number.MAX_SAFE_INTEGER) continue;
+    const bucket = byQ.get(q);
+    if (bucket) bucket.push(img);
+    else byQ.set(q, [img]);
+  }
+
+  const groups: WrongPaperQuestionGroup[] = [];
+  for (const [q, items] of byQ.entries()) {
+    const students = new Set(
+      items.map((i) => String(i.student_name || "").trim() || "未命名学生"),
+    );
+    groups.push({
+      q,
+      wrongCount: wrongCountByQ.get(q) ?? students.size,
+      title: `第${q}题`,
+      items: pickWrongPaperExamples(items, examplesPerQuestion),
+    });
+  }
+  groups.sort((a, b) => b.wrongCount - a.wrongCount || a.q - b.q);
+  return groups.slice(0, topN);
+}
+
 interface PdfLayout {
   marginX: number;
   marginTop: number;
@@ -382,8 +493,8 @@ export function hasConsolidationContent(report: ClassReviewReport | null | undef
 }
 
 /** 错题原卷单题卡片：原卷图 + 作答区域图（URL 经 exportImageSrc 转同源，html2canvas 才画） */
-function renderWrongPaperCard(img: WrongPaperImage) {
-  const title = escapeHtml(img.title || "错题");
+function renderWrongPaperCard(img: WrongPaperImage, titleText?: string) {
+  const title = escapeHtml(titleText || img.title || "错题");
   const questionUrl = img.image_url ? exportImageSrc(img.image_url) : "";
   const answerUrl = img.answer_url ? exportImageSrc(img.answer_url) : "";
   const questionHtml = questionUrl
@@ -412,28 +523,31 @@ function renderWrongPaperCard(img: WrongPaperImage) {
 }
 
 /**
- * 「错题原卷」附录：按学生分节，节内按题号/作答区排序。
+ * 「错题原卷」附录：按高频错题分节（错误人数最多的前 N 题，每题至多 M 名学生示例）。
+ * 客户 11.12 反馈「导出 151 页太多了，只需要展示几个高频错题就可以了」。
  * 无图时返回空串，不占导出篇幅。
  */
-function renderWrongPaperSection(images: unknown) {
-  const groups = groupWrongPaperImagesByStudent(images);
+function renderWrongPaperSection(images: unknown, questionAccuracy: unknown) {
+  const groups = selectHighFrequencyWrongImages(images, questionAccuracy);
   if (!groups.length) return "";
   const parts: string[] = [
     exportBlock(
       sectionPart(
         "错题原卷",
-        `<p class="muted">按学生汇总的错题原卷与作答区域，供课堂讲评对照使用。</p>`
+        `<p class="muted">高频错题：错误人数最多的前 ${HIGH_FREQ_TOP_QUESTIONS} 题，每题展示至多 ${HIGH_FREQ_EXAMPLES_PER_QUESTION} 名学生示例，供课堂讲评对照使用。</p>`
       )
     ),
   ];
   for (const group of groups) {
     parts.push(
       exportBlock(
-        `<p class="wrong-student-name">学生：${escapeHtml(group.student)}</p>`
+        `<p class="wrong-student-name">${escapeHtml(group.title)}（错 ${group.wrongCount} 人）</p>`
       )
     );
     for (const img of group.items) {
-      parts.push(renderWrongPaperCard(img));
+      const student = String(img.student_name || "").trim() || "未命名学生";
+      const label = `学生：${student} · ${img.title || "错题"}`;
+      parts.push(renderWrongPaperCard(img, label));
     }
   }
   return parts.join("");
@@ -491,7 +605,10 @@ function createReviewPlanElement(
       : `<p class="muted">暂无导入考试</p>`;
 
   const wrongPaperHtml = includeWrongPaper
-    ? renderWrongPaperSection(preClass.all_wrong_images)
+    ? renderWrongPaperSection(
+        preClass.all_wrong_images,
+        report.source_summary?.question_accuracy,
+      )
     : "";
 
   const innerHtml = `

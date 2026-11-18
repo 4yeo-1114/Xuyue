@@ -60,6 +60,21 @@ export const homeZh: TranslationDict = {
   "home.grading.timeMinutesAgo": "{min}分钟前",
   "home.grading.timeHoursAgo": "{hr}小时前",
 
+  // 手动修正逐题判定（网页改小程序批改记录）
+  "home.grading.correct.open": "修正判定",
+  "home.grading.correct.title": "手动修正批改结果",
+  "home.grading.correct.desc": "逐题改对错/得分/评语，保存后小程序立即可见，并记入改分台账",
+  "home.grading.correct.score": "分数",
+  "home.grading.correct.comment": "评语",
+  "home.grading.correct.commentPlaceholder": "这题的评语（可空）",
+  "home.grading.correct.save": "保存修正",
+  "home.grading.correct.saving": "保存中…",
+  "home.grading.correct.saved": "批改结果已修正",
+  "home.grading.correct.saveFailed": "修正保存失败",
+  "home.grading.correct.noBlocks": "该作业缺少逐题数据，无法手动修正",
+  "home.grading.correct.partialRatio": "半对比例",
+  "home.grading.correct.unset": "（不改分）",
+
   // KnowledgeCard 难度星级
   "home.difficulty.easy": "简单",
   "home.difficulty.basic": "基础",
@@ -358,6 +373,22 @@ export const homeEn: TranslationDict = {
   "home.grading.timeJustNow": "Just now",
   "home.grading.timeMinutesAgo": "{min} min ago",
   "home.grading.timeHoursAgo": "{hr} hr ago",
+
+  // Manual per-question correction (web edits mini-program grading records)
+  "home.grading.correct.open": "Correct Marks",
+  "home.grading.correct.title": "Correct Grading Results",
+  "home.grading.correct.desc":
+    "Change per-question verdict/score/comment; visible in the mini program and logged in the ledger",
+  "home.grading.correct.score": "Score",
+  "home.grading.correct.comment": "Comment",
+  "home.grading.correct.commentPlaceholder": "Comment for this question (optional)",
+  "home.grading.correct.save": "Save Corrections",
+  "home.grading.correct.saving": "Saving…",
+  "home.grading.correct.saved": "Grading results corrected",
+  "home.grading.correct.saveFailed": "Failed to save corrections",
+  "home.grading.correct.noBlocks": "No per-question data; cannot correct manually",
+  "home.grading.correct.partialRatio": "Partial ratio",
+  "home.grading.correct.unset": "(keep score)",
 
   // KnowledgeCard difficulty stars
   "home.difficulty.easy": "Easy",

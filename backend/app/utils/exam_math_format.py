@@ -21,6 +21,40 @@ MATH_EXAM_FORMAT_PROMPT = """
 7. 变量名用单个字母或常见代数写法（ab 表示 a×b 时可写 2ab），不要用 LaTeX 间距命令。
 """
 
+# ── 图形引用检测（1026：数学卷出现「如图所示」却没图）────────────────────────
+# 新口径（figure_render.FIGURE_POLICY_PROMPT）：要图的题必须给 figure 规格、系统画真图；
+# 这里只负责「文字是否还在引用图/表」的判定 + 开头「如图，」剥除，供出题收尾闸用。
+
+# 判「还在引用图/表」：保守词表，命中即认为这题离不开图
+_FIGURE_REF_RE = re.compile(
+    r"如图|下图|上图|左图|右图|见图|图中|图示|示意图|看图|读图|插图|下列图|给出图|图形中|阴影部分|"
+    r"图\s*[0-9１-９一二三四五六七八九十]|"
+    r"如表|下表|上表|见表|表中|表\s*[0-9１-９一二三四五六七八九十]"
+)
+
+# 开头「如图，」这类引导语：若条件其实在文字里写全了，剥掉就救回一题
+_FIGURE_LEAD_RE = re.compile(r"^\s*(如图(?:所示)?|如下图(?:所示)?|见下图|见图)[，,：:．.]*\s*")
+
+
+def strip_figure_leading_ref(text: str) -> str:
+    return _FIGURE_LEAD_RE.sub("", text or "")
+
+
+def question_has_figure_reference(q: Dict[str, Any]) -> bool:
+    if not isinstance(q, dict):
+        return False
+    for key in ("stem", "content", "answer", "analysis"):
+        val = q.get(key)
+        if isinstance(val, str) and _FIGURE_REF_RE.search(val):
+            return True
+    for key in ("options", "subQuestions"):
+        items = q.get(key)
+        if isinstance(items, list):
+            for it in items:
+                if isinstance(it, str) and _FIGURE_REF_RE.search(it):
+                    return True
+    return False
+
 
 def is_math_related_subject(subject: str) -> bool:
     s = (subject or "").strip()

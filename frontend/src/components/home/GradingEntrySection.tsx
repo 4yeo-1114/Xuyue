@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Loader2,
   Trash2,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,6 +31,7 @@ import {
   gradingImageUrl,
   saveHomeWrongAnnotations,
   generateHomeWrongAnnotation,
+  correctHomeAiBlocks,
   type HomeRecentItem,
   type WrongAnnotationsMap,
 } from "@/services/gradingApi";
@@ -186,6 +188,94 @@ export function GradingEntrySection({
     const { [questionKey]: _removed, ...rest } = wrongAnnotations;
     setWrongAnnotations(rest);
     void persistHomeWrongAnnotations(rest);
+  };
+
+  // ── 手动修正逐题判定（网页改小程序批改记录） ──
+  type AiCorrectResult = "对" | "错" | "半对" | "未作答";
+  const [aiCorrectOpen, setAiCorrectOpen] = useState(false);
+  const [aiCorrectSaving, setAiCorrectSaving] = useState(false);
+  const [aiCorrections, setAiCorrections] = useState<
+    Record<string, AiCorrectResult>
+  >({});
+  const [aiScores, setAiScores] = useState<Record<string, string>>({});
+  const [aiComments, setAiComments] = useState<Record<string, string>>({});
+
+  const blockKey = (b: { index: number | string; sub_index?: number | string | null }) =>
+    `${b.index}::${b.sub_index ?? ""}`;
+
+  const openAiCorrect = () => {
+    if (!detail?.blocks?.length) {
+      toast.error(t("home.grading.correct.noBlocks"));
+      return;
+    }
+    const results: Record<string, AiCorrectResult> = {};
+    const scores: Record<string, string> = {};
+    const comments: Record<string, string> = {};
+    for (const b of detail.blocks) {
+      const key = blockKey(b);
+      if (b.result === "对" || b.result === "错" || b.result === "半对" || b.result === "未作答") {
+        results[key] = b.result;
+      }
+      scores[key] =
+        b.score === null || b.score === undefined ? "" : String(b.score);
+      comments[key] = b.comment || "";
+    }
+    setAiCorrections(results);
+    setAiScores(scores);
+    setAiComments(comments);
+    setAiCorrectOpen(true);
+  };
+
+  const saveAiCorrect = async () => {
+    if (!detail?.blocks?.length) return;
+    setAiCorrectSaving(true);
+    try {
+      // 只回传真变了的块（后端按 (index,sub_index) 对齐覆盖，diff 进台账）
+      const payload = detail.blocks
+        .map((b) => {
+          const key = blockKey(b);
+          const result = aiCorrections[key] ?? b.result;
+          const scoreRaw = (aiScores[key] ?? "").trim();
+          const score =
+            scoreRaw === "" ? null : Number.isFinite(Number(scoreRaw)) ? Number(scoreRaw) : b.score;
+          const comment = aiComments[key] ?? b.comment ?? "";
+          const changed =
+            result !== b.result ||
+            (score ?? null) !== (b.score ?? null) ||
+            comment !== (b.comment ?? "");
+          if (!changed) return null;
+          return {
+            index: b.index,
+            sub_index: b.sub_index ?? null,
+            result: result as AiCorrectResult,
+            score: score ?? null,
+            comment,
+          };
+        })
+        .filter(Boolean) as Parameters<typeof correctHomeAiBlocks>[1];
+      if (!payload.length) {
+        setAiCorrectOpen(false);
+        return;
+      }
+      const r = await correctHomeAiBlocks(detail.id, payload);
+      if (r.item) {
+        // 留痕图同名覆盖，URL 加缓存破坏参数强制重拉
+        const bust = (url?: string | null) =>
+          url ? `${url}${url.includes("?") ? "&" : "?"}v=${Date.now()}` : url;
+        setDetail({
+          ...r.item,
+          image_annotated: bust(r.item.image_annotated),
+          image_marks_only: bust(r.item.image_marks_only),
+          image_original: bust(r.item.image_original),
+        });
+      }
+      toast.success(r.message || t("home.grading.correct.saved"));
+      setAiCorrectOpen(false);
+    } catch (e: any) {
+      toast.error(e?.message || t("home.grading.correct.saveFailed"));
+    } finally {
+      setAiCorrectSaving(false);
+    }
   };
 
   /** 块底部批注卡：有批注，或错/半对/未作答时显示（全对且无批注不显示） */
@@ -623,9 +713,21 @@ export function GradingEntrySection({
               </ScrollArea>
             </div>
             <div className="flex min-h-0 flex-col gap-3 p-4 lg:h-full">
-              <Label className="shrink-0 text-sm font-semibold text-foreground">
-                {t("home.grading.aiAnalysis")}
-              </Label>
+              <div className="flex shrink-0 items-center justify-between gap-2">
+                <Label className="text-sm font-semibold text-foreground">
+                  {t("home.grading.aiAnalysis")}
+                </Label>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  disabled={detailLoading || !detail?.blocks?.length}
+                  onClick={openAiCorrect}
+                >
+                  <Pencil className="mr-1 h-3 w-3" />
+                  {t("home.grading.correct.open")}
+                </Button>
+              </div>
               <ScrollArea className="h-[min(52vh,480px)] w-full rounded-xl border border-border/80 bg-card p-4 text-sm leading-relaxed shadow-sm lg:h-[min(68vh,calc(92vh-11rem))]">
                 {detailLoading ? (
                   <div className="text-sm text-muted-foreground flex items-center">
@@ -676,6 +778,112 @@ export function GradingEntrySection({
                 )}
               </ScrollArea>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={aiCorrectOpen} onOpenChange={setAiCorrectOpen}>
+        <DialogContent className="max-h-[88vh] w-full max-w-[min(94vw,720px)] flex flex-col gap-0 overflow-hidden p-0">
+          <div className="shrink-0 border-b px-6 py-4 pr-14">
+            <DialogHeader className="space-y-1 text-left">
+              <DialogTitle>{t("home.grading.correct.title")}</DialogTitle>
+              <DialogDescription>
+                {t("home.grading.correct.desc")}
+              </DialogDescription>
+            </DialogHeader>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <div className="space-y-2">
+              {(detail?.blocks ?? []).map((b) => {
+                const key = blockKey(b);
+                const value = aiCorrections[key] ?? b.result ?? "";
+                return (
+                  <div
+                    key={key}
+                    className="space-y-1.5 rounded-md border px-3 py-2.5"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="w-20 shrink-0 text-xs font-medium text-muted-foreground">
+                        {t("home.grading.questionTitle", { n: b.index })}
+                        {b.sub_index ? `-${b.sub_index}` : ""}
+                      </span>
+                      <div className="flex gap-1">
+                        {(["对", "错", "半对", "未作答"] as const).map((opt) => (
+                          <button
+                            key={opt}
+                            type="button"
+                            onClick={() =>
+                              setAiCorrections((prev) => ({ ...prev, [key]: opt }))
+                            }
+                            className={cn(
+                              "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                              value === opt
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-muted text-muted-foreground hover:bg-muted/70",
+                            )}
+                          >
+                            {opt}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="whitespace-nowrap text-xs text-muted-foreground">
+                          {t("home.grading.correct.score")}
+                        </span>
+                        <input
+                          type="number"
+                          min={0}
+                          value={aiScores[key] ?? ""}
+                          placeholder={t("home.grading.correct.unset")}
+                          onChange={(e) =>
+                            setAiScores((prev) => ({
+                              ...prev,
+                              [key]: e.target.value,
+                            }))
+                          }
+                          className="h-7 w-16 rounded-md border border-input bg-background px-2 text-xs"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="whitespace-nowrap text-xs text-muted-foreground">
+                        {t("home.grading.correct.comment")}
+                      </span>
+                      <input
+                        type="text"
+                        value={aiComments[key] ?? ""}
+                        placeholder={t("home.grading.correct.commentPlaceholder")}
+                        onChange={(e) =>
+                          setAiComments((prev) => ({
+                            ...prev,
+                            [key]: e.target.value,
+                          }))
+                        }
+                        className="h-7 flex-1 rounded-md border border-input bg-background px-2 text-xs"
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center justify-end gap-2 border-t px-6 py-3">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setAiCorrectOpen(false)}
+              disabled={aiCorrectSaving}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button size="sm" onClick={() => void saveAiCorrect()} disabled={aiCorrectSaving}>
+              {aiCorrectSaving ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : null}
+              {aiCorrectSaving
+                ? t("home.grading.correct.saving")
+                : t("home.grading.correct.save")}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

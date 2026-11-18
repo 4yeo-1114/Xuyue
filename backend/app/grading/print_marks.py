@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import OrderedDict
 from typing import Optional, Tuple
 
 try:
@@ -373,37 +374,104 @@ def _norm_path(path: str) -> str:
         return str(path or "")
 
 
-def _should_swap_essay_duplex_sides(paths: list[str]) -> bool:
+def _should_swap_duplex_sides() -> bool:
     """
-    纸盒原稿 P1 朝上时，GDI 长边双面常把「先提交的一页」印在与朝上侧相反的一面，
-    导致朝上侧出现 P2 留痕。作文留痕默认互换提交顺序 [P1,P2]→[P2,P1] 以对齐物理纸面。
-    设 GRADING_DUPLEX_ESSAY_SWAP_SIDES=0 可关闭。
+    反顺序送打开关（默认开）：GDI 长边双面出纸时「后提交的一页」落在朝上侧，
+    预览 12 出纸 21、1234 出纸 2143（客户 2026-11-09 台账 #3）。
+    按反顺序逐对送打（[P1,P2]→[P2,P1]）后出纸恢复 12 / 1234。
+    GRADING_DUPLEX_SWAP_SIDES=0 关闭；兼容旧开关 GRADING_DUPLEX_ESSAY_SWAP_SIDES=0。
     """
-    if len(paths) != 2:
-        return False
-    if not all(_is_essay_marks_file(p) for p in paths):
+    if os.environ.get("GRADING_DUPLEX_SWAP_SIDES", "").strip() == "0":
         return False
     return os.environ.get("GRADING_DUPLEX_ESSAY_SWAP_SIDES", "1").strip() != "0"
 
 
+def _group_by_student(paths: list) -> list:
+    """按「学生」分组，**保持学生首次出现的先后顺序**；组内按页码（P1、P2…）排序。
+
+    ⚠️ 不能对整表做「全局按页码排序」：那会把 A1,A2,B1,B2 重排成 A1,B1,A2,B2，
+    双面逐对送打时每张纸的正反面就是两个不同学生的页面（用户反馈"每张纸留痕相反/
+    数字对不上"的根因）。
+    """
+    groups: "OrderedDict[str, list]" = OrderedDict()
+    for p in paths:
+        base = _student_base_from_marks_filename(p)
+        groups.setdefault(base, []).append(p)
+    out: list = []
+    for base, items in groups.items():
+        items = sorted(items, key=lambda p: (_page_no_from_marks_filename(p), _norm_path(p)))
+        out.extend(items)
+    return out
+
+
 def _duplex_job_paths(image_paths) -> list:
     """
-    双面同一任务：先按页码整理为 P1、P2…；作文留痕再按纸盒 P1 朝上习惯互换 sides。
+    双面同一任务：先按「学生块 + 页码」整理（每人的 P1、P2 相邻）；
+    再按「反顺序」在每个学生块内逐对对调送打——[P1,P2]→[P2,P1]，
+    让出纸时同一张纸正面是 P1、背面是 P2。
+
+    ⚠️ 对调必须**限制在学生块内部**：跨学生对调会让两个学生的页面印到同一张纸上。
     """
     paths = list(image_paths)
     if len(paths) <= 1:
         return paths
-    paths = sorted(paths, key=lambda p: (_page_no_from_marks_filename(p), _norm_path(p)))
-    if _should_swap_essay_duplex_sides(paths):
-        paths = [paths[1], paths[0]]
-    return paths
+    grouped = _group_by_student(paths)
+    if not _should_swap_duplex_sides():
+        return grouped
+    out: list = []
+    for base, items in _iter_student_blocks(grouped):
+        for i in range(0, len(items), 2):
+            pair = items[i : i + 2]
+            out.extend(reversed(pair))
+    return out
+
+
+def _iter_student_blocks(paths: list) -> list:
+    """把「已按学生块排好」的扁平列表重新切成 [(学生键, [该生各页]), ...]。"""
+    blocks: list = []
+    current_base = None
+    current: list = []
+    for p in paths:
+        base = _student_base_from_marks_filename(p)
+        if current_base is None or base == current_base:
+            current_base = base
+            current.append(p)
+        else:
+            blocks.append((current_base, current))
+            current_base = base
+            current = [p]
+    if current:
+        blocks.append((current_base or "", current))
+    return blocks
+
+
+# 留痕文件名的「变体后缀」：打印/预览派生图在末尾多一段 _wa / _nocomment。
+# 它们不是页码，解析页码/学生分组前必须先剥掉，否则 `_1_wa` 会让页码恒为 1、
+# 同一学生的 P1/P2 被当成两个学生（2026-11-17 用户反馈「P1P2 相反、顺序乱」根因）。
+_VARIANT_SUFFIX_RE = re.compile(r"_(?:wa|nocomment)$", re.I)
+
+
+def _marks_stem(path: str) -> str:
+    """去掉扩展名、marks_only_/annotated_ 前缀与 _wa/_nocomment 变体后缀的留痕名主干。"""
+    stem = os.path.splitext(os.path.basename(str(path or "")))[0]
+    for prefix in ("marks_only_", "annotated_", "original_"):
+        if stem.startswith(prefix):
+            stem = stem[len(prefix):]
+            break
+    prev = None
+    while prev != stem:
+        prev = stem
+        stem = _VARIANT_SUFFIX_RE.sub("", stem)
+    return stem
 
 
 def _page_no_from_marks_filename(path: str) -> int:
-    """从留痕文件名解析页码：无 _数字 后缀为第 1 页，_2 为第 2 页（背面）。"""
-    stem = os.path.splitext(os.path.basename(str(path or "")))[0]
-    if stem.startswith("marks_only_"):
-        stem = stem[len("marks_only_") :]
+    """从留痕文件名解析页码：无 _数字 后缀为第 1 页，_2 为第 2 页（背面）。
+
+    变体后缀（_wa / _nocomment）先剥掉再取页码；学生姓名里的数字不会被误认
+    （只有「末尾 _数字」才算页码）。
+    """
+    stem = _marks_stem(path)
     m = re.search(r"_(\d+)$", stem)
     if m:
         try:
@@ -414,11 +482,8 @@ def _page_no_from_marks_filename(path: str) -> int:
 
 
 def _student_base_from_marks_filename(path: str) -> str:
-    """同一学生多页留痕的分组键（去掉 marks_only_ 前缀与末尾页码）。"""
-    stem = os.path.splitext(os.path.basename(str(path or "")))[0]
-    if stem.startswith("marks_only_"):
-        stem = stem[len("marks_only_") :]
-    return re.sub(r"_\d+$", "", stem)
+    """同一学生多页留痕的分组键（去掉前缀、变体后缀与末尾页码）。"""
+    return re.sub(r"_\d+$", "", _marks_stem(path))
 
 
 def sort_marks_filenames_for_print(filenames: list[str]) -> list[str]:
@@ -452,26 +517,43 @@ def sort_marks_filenames_for_print(filenames: list[str]) -> list[str]:
     return out
 
 
+def duplex_submission_paths(image_paths: list) -> list:
+    """PDF / 云端打印的页面顺序：只按「学生块 + 页码」排序，**坚决不对调**。
+
+    2026-11-18 客户反馈「云端打印留痕 P1 出现在第二页、P2 在第一页」的根因：
+    PDF 合成后交给浏览器/系统打印，双面出纸严格按 PDF 页序（第 1 页=正面、第 2 页=背面）。
+    旧实现套用了 GDI 直打才需要的「反顺序对调」（[P1,P2]→[P2,P1]），在 PDF 路径上
+    等于把 P2 排到了正面 —— 一定反。
+
+    `_should_swap_duplex_sides()` 只对 GDI 直打（print_images）有效，PDF 路径不受它影响。
+    """
+    return _group_by_student([str(p or "") for p in (image_paths or [])])
+
+
 def _is_essay_marks_file(path: str) -> bool:
     """作文留痕按原扫描方向保存，双面打印时默认不额外旋转背面。"""
     bn = os.path.basename(str(path or "")).lower()
     return bn.startswith("marks_only_essay_")
 
 
-def _duplex_back_orig_index(original_paths: list[str]) -> int:
-    """双面 2 页时，传入顺序固定为：第 1 张正面，第 2 张背面。"""
-    if len(original_paths) != 2:
+def _duplex_back_job_index(job_paths: list) -> int:
+    """双面 2 页时，送打顺序的第 2 张落在打印机 180° 翻转的「背面」。
+
+    注意：反顺序送打后该面落的是用户第 1 张（P1），所以按送打位次取，
+    不能按用户页序取。
+    """
+    if len(job_paths) != 2:
         return -1
     return 1
 
 
-def _apply_duplex_back_rotation(image, path: str, *, orig_idx: int, duplex_back_idx: int) -> object:
+def _apply_duplex_back_rotation(image, path: str, *, job_idx: int, duplex_back_idx: int) -> object:
     """
-    长边双面：打印机印背面时常整体翻转 180°（旁批从右变左且文字倒置）。
-    普通留痕对背面图预旋转 180° 抵消；作文纸正反面叠印更依赖原扫描方向，
+    长边双面：打印机印背面（送打第 2 张的面）时常整体翻转 180°（旁批从右变左且文字倒置）。
+    普通留痕对该面图预旋转 180° 抵消；作文纸正反面叠印更依赖原扫描方向，
     默认不旋转作文背面，避免正面准确时背面被额外翻转。
     """
-    if duplex_back_idx < 0 or orig_idx != duplex_back_idx:
+    if duplex_back_idx < 0 or job_idx != duplex_back_idx:
         return image
     if _is_essay_marks_file(path) and os.environ.get("GRADING_DUPLEX_ROTATE_ESSAY_BACK", "0").strip() != "1":
         return image
@@ -486,10 +568,15 @@ def print_images(
     paper_size: str = "a4",
     custom_paper_mm: Optional[Tuple[float, float]] = None,
     paper_source: Optional[int] = None,
+    duplex_binding: str = "long",
 ) -> tuple:
     """
     一次打印多页（同一个打印任务）。
-    duplex=True 时，同一任务内按「正面、背面」输出（例如 1页正面、2页背面）。
+    duplex=True 时，同一任务内按「正面、背面」输出（例如 1页正面、2页背面），
+    送打顺序按 _duplex_job_paths 反顺序逐对提交（预览 1234 → 送打 2143）。
+    duplex_binding（11.13 台账 #2 翻页方式）："long"=长边翻页（左右翻，像书本，默认，
+    与旧行为逐字节一致）；"short"=短边翻页（上下翻，像台历）——送打第 1 张（驱动首面，
+    翻面后读到的那页）额外转 180°，与长边正好差半圈，两种翻法必有一种读正。
     """
     if not _WIN32_AVAILABLE:
         return False, "打印功能仅支持 Windows 系统，请安装 pywin32 并在本机执行打印。"
@@ -501,7 +588,7 @@ def print_images(
         original_paths = [_norm_path(p) for p in image_paths]
         job_paths = _duplex_job_paths(original_paths) if duplex else list(original_paths)
         duplex_pair = duplex and len(original_paths) == 2
-        duplex_back_idx = _duplex_back_orig_index(original_paths) if duplex_pair else -1
+        duplex_back_idx = _duplex_back_job_index(job_paths) if duplex_pair else -1
         path_to_orig_idx = {_norm_path(p): i for i, p in enumerate(original_paths)}
         for p in job_paths:
             if not p or not os.path.isfile(p):
@@ -616,9 +703,14 @@ def print_images(
                     work = _apply_duplex_back_rotation(
                         work,
                         path,
-                        orig_idx=orig_idx,
+                        job_idx=page_idx,
                         duplex_back_idx=duplex_back_idx if duplex_pair else -1,
                     )
+
+                    # 11.13 台账 #2 翻页方式：短边翻页=送打第 1 张（驱动首面）再转 180°。
+                    # 长边选项保持旧行为不动；两选项正好差半圈，两种翻法必有一种读正。
+                    if duplex_binding == "short" and duplex_pair and page_idx == 0:
+                        work = work.transpose(Image.ROTATE_180)
 
                     if physical_width > 0 and physical_height > 0:
                         print_width, print_height = _compute_scaled_print_size(
@@ -675,11 +767,13 @@ def print_images(
         return False, f"打印失败: {str(e)}"
 
 
-def images_to_pdf_bytes(image_paths, resolution: float = 150.0) -> bytes:
+def images_to_pdf_bytes(image_paths, resolution: float = 150.0, rotate_first_of_pairs: bool = False) -> bytes:
     """
     把多张留痕图按顺序合成一个 PDF（每图一页），用于「输出 PDF」替代物理打印。
     留痕图为白底红字（RGB），直接按图片尺寸/DPI 作为页尺寸，与叠印打印效果一致。
     纯 Pillow 实现，不依赖 pywin32 / 系统打印机，任何环境（含局域网访问）均可用。
+    rotate_first_of_pairs（11.13 台账 #2 翻页方式=短边）：每对送打页的第 1 张
+    （驱动首面，翻面后读到的那页）整体转 180°，让「上下翻（像台历）」读正。
     """
     import io
 
@@ -690,11 +784,13 @@ def images_to_pdf_bytes(image_paths, resolution: float = 150.0) -> bytes:
         raise ValueError("没有可导出的留痕图片")
     images = []
     try:
-        for p in image_paths:
+        for index, p in enumerate(image_paths):
             if not p or not os.path.isfile(p):
                 raise FileNotFoundError(f"图片文件不存在: {p}")
             im = Image.open(p, mode="r")
             im = ImageOps.exif_transpose(im)
+            if rotate_first_of_pairs and index % 2 == 0:
+                im = im.transpose(Image.ROTATE_180)
             images.append(im.convert("RGB"))
         buf = io.BytesIO()
         images[0].save(

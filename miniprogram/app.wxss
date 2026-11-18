@@ -1,9 +1,9 @@
-/* 全局样式 */
+/* 全局样式 · 卡通软萌风 */
 
 page {
-  background: #f5f6f8;
+  background: #f7f4ff;
   font-size: 28rpx;
-  color: #1f2329;
+  color: #4a3f5c;
   font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
 }
 
@@ -12,19 +12,31 @@ page {
   box-sizing: border-box;
 }
 
+/* ── 软萌小动画 ── */
+@keyframes floaty {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8rpx); }
+}
+
+@keyframes pop-in {
+  0% { transform: scale(0.92); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
 /* ── 卡片 ── */
 .card {
   background: #fff;
-  border-radius: 20rpx;
+  border-radius: 32rpx;
   padding: 28rpx;
   margin-bottom: 24rpx;
-  box-shadow: 0 2rpx 12rpx rgba(15, 23, 42, 0.05);
+  box-shadow: 0 8rpx 24rpx rgba(124, 107, 255, 0.08);
+  animation: pop-in 0.25s ease-out;
 }
 
 .card-title {
   font-size: 30rpx;
-  font-weight: 600;
-  color: #1f2329;
+  font-weight: 700;
+  color: #4a3f5c;
   margin-bottom: 20rpx;
   display: flex;
   align-items: center;
@@ -36,7 +48,7 @@ page {
   display: flex;
   align-items: center;
   min-height: 92rpx;
-  border-bottom: 1rpx solid #eef0f3;
+  border-bottom: 1rpx solid #f0ecff;
 }
 
 .field:last-child {
@@ -46,31 +58,31 @@ page {
 .field-label {
   width: 160rpx;
   flex-shrink: 0;
-  color: #646a73;
+  color: #7d6f99;
   font-size: 28rpx;
 }
 
 .field-value {
   flex: 1;
   font-size: 28rpx;
-  color: #1f2329;
+  color: #4a3f5c;
 }
 
 .field-input {
   flex: 1;
   font-size: 28rpx;
-  color: #1f2329;
+  color: #4a3f5c;
   height: 92rpx;
   line-height: 92rpx;
 }
 
 .field-placeholder {
-  color: #b0b6bf;
+  color: #c9bfe0;
 }
 
 .field-arrow::after {
   content: "›";
-  color: #c0c4cc;
+  color: #c9bfe0;
   font-size: 36rpx;
   margin-left: 8rpx;
 }
@@ -81,12 +93,12 @@ page {
   min-height: 240rpx;
   font-size: 28rpx;
   line-height: 1.7;
-  color: #1f2329;
+  color: #4a3f5c;
   padding: 12rpx 0;
   box-sizing: border-box;
 }
 
-/* ── 按钮 ── */
+/* ── 按钮（糖果胶囊） ── */
 /*
  * 微信原生 button 自带 line-height: 2.55、左右 padding 和 ::after 边框覆盖层。
  * 只靠「height = line-height」撑高度，中文在行盒里视觉上会偏下；
@@ -98,16 +110,17 @@ page {
   justify-content: center;
   box-sizing: border-box;
   height: 92rpx;
-  padding: 0;
+  padding: 0 32rpx;
   line-height: 1.2;
   margin: 0;
-  border-radius: 16rpx;
+  border-radius: 999rpx;
   font-size: 32rpx;
-  font-weight: 500;
+  font-weight: 600;
   text-align: center;
-  background: #2f6bff;
+  background: linear-gradient(135deg, #8e7cff, #6c8cff);
   color: #fff;
   border: none;
+  box-shadow: 0 8rpx 20rpx rgba(124, 107, 255, 0.30);
 }
 
 .btn::after {
@@ -115,20 +128,23 @@ page {
 }
 
 .btn[disabled] {
-  background: #c4cddb;
+  background: #cfc5e6;
   color: #fff;
+  box-shadow: none;
 }
 
 .btn-ghost {
   background: #fff;
-  color: #2f6bff;
-  border: 2rpx solid #2f6bff;
+  color: #7c6bff;
+  border: 2rpx solid #c9bfe0;
+  box-shadow: none;
 }
 
 .btn-plain {
   background: #fff;
-  color: #646a73;
-  border: 2rpx solid #e5e6eb;
+  color: #7d6f99;
+  border: 2rpx solid #e6dff2;
+  box-shadow: none;
 }
 
 .btn-bottom {
@@ -145,66 +161,68 @@ page {
   display: inline-block;
   font-size: 22rpx;
   line-height: 1;
-  padding: 10rpx 16rpx;
+  padding: 10rpx 18rpx;
   border-radius: 999rpx;
+  font-weight: 600;
 }
 
 .tag-draft {
-  background: #f2f4f7;
-  color: #646a73;
+  background: #f3effa;
+  color: #7d6f99;
 }
 
 .tag-pending {
-  background: #fff4e6;
-  color: #d97706;
+  background: #fff3d9;
+  color: #e0870f;
 }
 
 .tag-printing {
-  background: #e8f0ff;
-  color: #2f6bff;
+  background: #efeaff;
+  color: #7c6bff;
 }
 
 .tag-done {
-  background: #e7f7ee;
-  color: #12a150;
+  background: #e2f8ef;
+  color: #1fb384;
 }
 
 .tag-failed {
-  background: #fdecec;
-  color: #e5484d;
+  background: #ffe4ea;
+  color: #f2647c;
 }
 
 /* ── 空态 ── */
 .empty {
   text-align: center;
   padding: 120rpx 0;
-  color: #9aa0a8;
+  color: #a89bc4;
   font-size: 28rpx;
 }
 
 .empty-emoji {
-  font-size: 72rpx;
+  font-size: 88rpx;
   display: block;
   margin-bottom: 20rpx;
+  animation: floaty 2.6s ease-in-out infinite;
 }
 
 /* ── 提示条 ── */
 .hint {
-  background: #eef4ff;
-  color: #3559b8;
+  background: #efeaff;
+  color: #6a56c8;
   font-size: 24rpx;
   line-height: 1.6;
   padding: 20rpx 24rpx;
-  border-radius: 12rpx;
+  border-radius: 20rpx;
   margin-bottom: 24rpx;
 }
 
 .hint-warn {
-  background: #fff8e6;
+  background: #fff3d9;
   color: #96631a;
 }
 
 .muted {
-  color: #9aa0a8;
+  color: #a89bc4;
   font-size: 24rpx;
 }

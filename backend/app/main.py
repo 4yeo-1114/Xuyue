@@ -313,14 +313,9 @@ app.include_router(scan_billing.router, prefix="/api/v1")
 from app.routers import grading_quota
 app.include_router(grading_quota.router, prefix="/api/v1")
 
-# ── 账号总览（0924 需求三 · 平台管理员看全账号用量/花销/充值）──────────
+# ── 账号总览（0924 需求三 · 平台管理员看全账号用量/额度）──────────
 from app.routers import admin_accounts_overview
 app.include_router(admin_accounts_overview.router, prefix="/api/v1")
-
-# ── 口径 B 独立老师支付（余额/流水/用量只读投影；⛔ 与上面的 scan_billing 口径 A 物理分离，
-#    两套端点、两套数据源，见 docs/payment/payment-design.md §1.2 §7.3）────────────────
-from app.routers import payment
-app.include_router(payment.router, prefix="/api/v1")
 
 # ── 小程序打印队列（布置作业 → 生成作业纸 → 本机打印代理拉取打印）────────
 from app.routers import print_jobs

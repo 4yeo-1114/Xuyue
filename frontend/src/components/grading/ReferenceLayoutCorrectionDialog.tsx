@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Maximize2,
   Minus,
   MousePointer2,
@@ -59,6 +61,8 @@ type Props = {
   initialPageNo?: number;
   onOpenChange: (open: boolean) => void;
   onConfirm: (pages: ReferenceLayoutPage[]) => Promise<void> | void;
+  /** 11.11-11 每面切完单独保存：离开一页/关闭弹窗时把那一页静默落盘（其余页不动） */
+  onSavePage?: (page: ReferenceLayoutPage) => Promise<void> | void;
   onReprepare: () => Promise<void> | void;
   variant?: "reference" | "manual";
   scoringEnabled?: boolean;
@@ -120,6 +124,14 @@ function makeQuestionSelection(question: ReferenceLayoutQuestion): Selection {
     questionId: question.question_id,
     regionId: question.regions[0]?.region_id || "",
   };
+}
+
+// 多选集的成员键（11.10-1）：同一题的不同区域/作答区是不同成员，删题时按 questionId 去重
+function selectionKey(target: Selection): string {
+  if (!target) return "";
+  return target.kind === "question"
+    ? `q:${target.questionId}:${target.regionId}`
+    : `a:${target.questionId}:${target.slotId}`;
 }
 
 function boxFromRegion(region: ReferenceLayoutRegion): Box {
@@ -227,6 +239,68 @@ function makeQuestion(displayNo: number, box: Box): ReferenceLayoutQuestion {
   };
 }
 
+// 11.11-1 手动排序后全局重编号：整卷（页号升序 × 页内数组序）连续 1..N，
+// 报告「第N题」跟老师的排法走；question_id 不变（后端按 q-{原号} 认领原题）。
+// 无 question_id 的旧数据先补铸号 q-{现号}——现号就是原号，铸完再换新号。
+function renumberAllQuestions(
+  pages: ReferenceLayoutPage[],
+): ReferenceLayoutPage[] {
+  const assigned = new Map<
+    number,
+    Array<{ displayNo: number; questionId: string }>
+  >();
+  let counter = 0;
+  [...pages]
+    .sort((a, b) => (a.page_no ?? 0) - (b.page_no ?? 0))
+    .forEach((page) => {
+      assigned.set(
+        page.page_no,
+        page.questions.map((question) => {
+          counter += 1;
+          return {
+            displayNo: counter,
+            questionId: question.question_id || `q-${question.display_no}`,
+          };
+        }),
+      );
+    });
+  return pages.map((page) => ({
+    ...page,
+    questions: page.questions.map((question, index) => {
+      const next = assigned.get(page.page_no)?.[index];
+      if (!next) return question;
+      const displayNo = next.displayNo;
+      // 区域/作答区标签跟题号走：{题号}-{A..} / {题号}_{序}
+      const regions = question.regions.map((region, regionIndex) => ({
+        ...region,
+        label: `${displayNo}-${String.fromCharCode(65 + regionIndex)}`,
+        order: regionIndex + 1,
+      }));
+      const answerSlots = question.answer_slots.map((slot, slotIndex) => {
+        const label = `${displayNo}_${slotIndex + 1}`;
+        return {
+          ...slot,
+          order: slotIndex + 1,
+          label,
+          regions: slot.regions.map((region, regionIndex) => ({
+            ...region,
+            label:
+              regionIndex === 0 ? label : `${label}_${regionIndex + 1}`,
+            order: regionIndex + 1,
+          })),
+        };
+      });
+      return {
+        ...question,
+        question_id: next.questionId,
+        display_no: displayNo,
+        regions,
+        answer_slots: answerSlots,
+      };
+    }),
+  }));
+}
+
 export function ReferenceLayoutCorrectionDialog({
   open,
   pages,
@@ -235,6 +309,7 @@ export function ReferenceLayoutCorrectionDialog({
   initialPageNo,
   onOpenChange,
   onConfirm,
+  onSavePage,
   onReprepare,
   variant = "reference",
   scoringEnabled = false,
@@ -243,9 +318,11 @@ export function ReferenceLayoutCorrectionDialog({
   const [workingPages, setWorkingPages] = useState<ReferenceLayoutPage[]>([]);
   const [pageIndex, setPageIndex] = useState(0);
   const [selection, setSelection] = useState<Selection>(null);
-  const [answerTargetQuestionId, setAnswerTargetQuestionId] = useState<
-    string | null
-  >(null);
+  // 多选集（11.10-1）：Ctrl/⌘+点 加入/移出，Del/删除按钮一次性删掉整个集合
+  const [multiSelections, setMultiSelections] = useState<Selection[]>([]);
+  // 目标题目（11.10-3）：分题/作答区画给谁。持久保存——选中态变成槽/区域后不丢，
+  // 工具按钮和绘制目标都跟着它走，不用每框一次就回点「选择」重新选题
+  const [targetQuestionId, setTargetQuestionId] = useState<string | null>(null);
   const [editMode, setEditMode] = useState<EditMode>("select");
   const [zoom, setZoom] = useState(1);
   const [fitScale, setFitScale] = useState(1);
@@ -264,19 +341,78 @@ export function ReferenceLayoutCorrectionDialog({
     workingPagesRef.current = workingPages;
   }, [workingPages]);
 
+  // 11.11-11 每面切完单独保存：保存串行队列 + 每页「已保存基线」（当前内容≠基线=有未保存修改）
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const baselineRef = useRef<Record<number, string>>({});
+  const [saveStatus, setSaveStatus] = useState<{
+    phase: "saving" | "saved" | "error";
+    pageNo: number;
+  } | null>(null);
+
   useEffect(() => {
     if (!open) return;
     setWorkingPages(clonePages(pages));
+    baselineRef.current = Object.fromEntries(
+      pages.map((item) => [item.page_no, JSON.stringify(item)]),
+    );
+    setSaveStatus(null);
     // 落点页：从识别列表点的那页的框进来的就停在那页，找不到退回第一页
     setPageIndex(Math.max(0, pages.findIndex((item) => item.page_no === initialPageNo)));
     setSelection(null);
-    setAnswerTargetQuestionId(null);
+    setMultiSelections([]);
+    setTargetQuestionId(null);
     setEditMode("select");
     setZoom(1);
     setHistory([]);
     setFuture([]);
     setQuestionScoreDrafts({});
   }, [open, pages, initialPageNo]);
+
+  const isPageDirty = useCallback((item: ReferenceLayoutPage) => {
+    return JSON.stringify(item) !== (baselineRef.current[item.page_no] ?? "");
+  }, []);
+
+  const enqueueSavePage = useCallback(
+    (item: ReferenceLayoutPage | undefined) => {
+      if (!onSavePage || !item || !isPageDirty(item)) return;
+      if (!(item.questions || []).length) return; // 空页不落盘（整卷确认也会拒）
+      const snapshot = clonePages([item])[0];
+      saveChainRef.current = saveChainRef.current.then(async () => {
+        setSaveStatus({ phase: "saving", pageNo: snapshot.page_no });
+        try {
+          await onSavePage(snapshot);
+          baselineRef.current[snapshot.page_no] = JSON.stringify(snapshot);
+          setSaveStatus({ phase: "saved", pageNo: snapshot.page_no });
+        } catch {
+          // 失败保留 dirty 状态；父级已 toast，老师可点「确认保存」整体重试
+          setSaveStatus({ phase: "error", pageNo: snapshot.page_no });
+        }
+      });
+    },
+    [isPageDirty, onSavePage],
+  );
+
+  // 关闭=把所有还没落盘的页补存一遍（X/取消/ESC 都走这里）
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (!next) {
+        for (const item of workingPagesRef.current) {
+          enqueueSavePage(item);
+        }
+      }
+      onOpenChange(next);
+    },
+    [enqueueSavePage, onOpenChange],
+  );
+
+  // 「已保存」提示 4 秒后自动收起，别一直挂在标题栏
+  useEffect(() => {
+    if (saveStatus?.phase !== "saved") return;
+    const timer = window.setTimeout(() => {
+      setSaveStatus((cur) => (cur?.phase === "saved" ? null : cur));
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [saveStatus]);
 
   const page = workingPages[pageIndex] ?? null;
   const imageWidth = page?.image_size?.[0] || 1;
@@ -338,6 +474,35 @@ export function ReferenceLayoutCorrectionDialog({
     [commit, pageIndex],
   );
 
+  // 11.11-1 手动排序：上移/下移交换页内相邻题；每次排完整卷全局重编号，
+  // 题号=老师的排法（课堂讲评「第N题」跟它走），question_id 不动
+  const moveQuestion = useCallback(
+    (questionIndex: number, delta: -1 | 1) => {
+      commit((current) =>
+        renumberAllQuestions(
+          current.map((page, index) => {
+            if (index !== pageIndex) return page;
+            const target = questionIndex + delta;
+            if (
+              questionIndex < 0 ||
+              target < 0 ||
+              target >= page.questions.length
+            ) {
+              return page;
+            }
+            const questions = [...page.questions];
+            [questions[questionIndex], questions[target]] = [
+              questions[target],
+              questions[questionIndex],
+            ];
+            return { ...page, questions };
+          }),
+        ),
+      );
+    },
+    [commit, pageIndex],
+  );
+
   const pointFromEvent = useCallback(
     (event: React.PointerEvent): Point => {
       const svg = stageRef.current;
@@ -369,11 +534,31 @@ export function ReferenceLayoutCorrectionDialog({
         questionId: question.question_id,
         regionId: regionId || question.regions[0]?.region_id || "",
       });
-      if (editMode === "answer") {
-        setAnswerTargetQuestionId(question.question_id);
+      setMultiSelections([]);
+      setTargetQuestionId(question.question_id);
+    },
+    [],
+  );
+
+  // Ctrl/⌘+点 加入/移出多选集（11.10-1）；普通点走单选路径
+  const toggleMulti = useCallback(
+    (target: Selection) => {
+      if (!target) return;
+      const key = selectionKey(target);
+      const exists = multiSelections.some((item) => selectionKey(item) === key);
+      setMultiSelections((prev) =>
+        exists
+          ? prev.filter((item) => selectionKey(item) !== key)
+          : [...prev, target],
+      );
+      if (exists) {
+        if (selection && selectionKey(selection) === key) setSelection(null);
+      } else {
+        setSelection(target);
+        setTargetQuestionId(target.questionId);
       }
     },
-    [editMode],
+    [multiSelections, selection],
   );
 
   const startDrag = useCallback(
@@ -381,7 +566,14 @@ export function ReferenceLayoutCorrectionDialog({
       if (!target || !page) return;
       event.preventDefault();
       event.stopPropagation();
+      // Ctrl/⌘+点=多选切换（11.10-1），不进入拖拽
+      if (event.ctrlKey || event.metaKey) {
+        toggleMulti(target);
+        return;
+      }
       setSelection(target);
+      setMultiSelections([]);
+      setTargetQuestionId(target.questionId);
       const point = pointFromEvent(event);
       let original: Box | undefined;
       const question = findQuestion(target.questionId);
@@ -407,7 +599,7 @@ export function ReferenceLayoutCorrectionDialog({
         dragRef.current = { mode, target, start: point, original };
       }
     },
-    [findQuestion, page, pointFromEvent, workingPages],
+    [findQuestion, page, pointFromEvent, toggleMulti, workingPages],
   );
 
   const updateTargetBox = useCallback(
@@ -499,17 +691,25 @@ export function ReferenceLayoutCorrectionDialog({
     (
       event: React.PointerEvent,
       drawKind: DrawKind,
-      targetQuestionId: string | null = null,
+      forQuestionId: string | null = null,
     ) => {
       if (!page || editMode === "select") return;
       const point = pointFromEvent(event);
       let target: Selection = null;
       if (drawKind !== "root-question") {
-        if (!targetQuestionId) return;
-        const targetQuestion = findQuestion(targetQuestionId);
+        if (!forQuestionId) return;
+        const targetQuestion = findQuestion(forQuestionId);
         if (!targetQuestion) return;
         const bounds = questionBounds(targetQuestion);
-        if (!bounds || !pointInBox(point, bounds)) return;
+        // 11.10-3：作答区仍须落在题目范围内（防画飞）；分题新框放宽——
+        // 题目框在分题模式下改成可拖动微调后，重叠拆分的起笔常落在已有题框上，
+        // 而目标题目本来就明确，起笔不必卡在范围内
+        if (
+          drawKind === "answer" &&
+          (!bounds || !pointInBox(point, bounds))
+        ) {
+          return;
+        }
         target = makeQuestionSelection(targetQuestion);
       }
       event.preventDefault();
@@ -560,9 +760,14 @@ export function ReferenceLayoutCorrectionDialog({
         return;
       }
       if (drag.drawKind === "root-question") {
+        // 11.11-1：新题号取整卷最大号+1（按页取会和别的页撞号）
         const displayNo =
-          Math.max(0, ...page.questions.map((item) => item.display_no || 0)) +
-          1;
+          Math.max(
+            0,
+            ...workingPagesRef.current.flatMap((item) =>
+              item.questions.map((question) => question.display_no || 0),
+            ),
+          ) + 1;
         const question = makeQuestion(displayNo, box);
         commit((current) =>
           current.map((item, index) =>
@@ -572,6 +777,8 @@ export function ReferenceLayoutCorrectionDialog({
           ),
         );
         setSelection(makeQuestionSelection(question));
+        setMultiSelections([]);
+        setTargetQuestionId(question.question_id);
       } else if (drag.drawKind === "question") {
         const question =
           drag.target?.kind === "question"
@@ -588,6 +795,8 @@ export function ReferenceLayoutCorrectionDialog({
           questionId: question.question_id,
           regionId: region.region_id || "",
         });
+        setMultiSelections([]);
+        setTargetQuestionId(question.question_id);
       } else {
         const question =
           drag.target?.kind === "question"
@@ -606,7 +815,8 @@ export function ReferenceLayoutCorrectionDialog({
           questionId: question.question_id,
           slotId: slot.slot_id || "",
         });
-        setAnswerTargetQuestionId(question.question_id);
+        setMultiSelections([]);
+        setTargetQuestionId(question.question_id);
       }
       setEditMode(drag.drawKind === "root-question" ? "select" : drag.drawKind);
     };
@@ -645,62 +855,125 @@ export function ReferenceLayoutCorrectionDialog({
     setFuture((items) => items.slice(1));
   };
 
-  const selectedQuestion = useMemo(
-    () =>
-      selection?.kind === "question"
-        ? findQuestion(selection.questionId)
-        : null,
-    [findQuestion, selection],
-  );
+  // 目标题目（11.10-3）：画完一个作答区/题框后选中态变成槽/区域也算数，
+  // 工具按钮与绘制目标跟着持久目标走——不再画一次就灰掉、逼着回点「选择」
+  const selectedQuestion = useMemo(() => {
+    const id =
+      targetQuestionId ??
+      (selection?.kind === "question" ? selection.questionId : null);
+    return id ? findQuestion(id) : null;
+  }, [findQuestion, selection, targetQuestionId]);
   const activeQuestionId = selection?.questionId ?? null;
   const drawQuestionId =
-    editMode === "question"
+    editMode === "question" || editMode === "answer"
       ? (selectedQuestion?.question_id ?? null)
-      : editMode === "answer"
-        ? answerTargetQuestionId
-        : null;
+      : null;
+  const multiKeySet = useMemo(
+    () =>
+      new Set(
+        multiSelections.filter(Boolean).map((item) => selectionKey(item)),
+      ),
+    [multiSelections],
+  );
+  // 高亮判定（11.10-1）：单选或在多选集里都算选中
+  const multiHas = (target: Selection) =>
+    Boolean(target) && multiKeySet.has(selectionKey(target));
 
   const removeSelected = () => {
-    if (!selection || !page) return;
-    if (selection.kind === "question") {
-      // Keep at least one question in the page; accidental deletion should
-      // never create a layout that the backend cannot grade.
-      if (page.questions.length <= 1) return;
-      commit((current) =>
-        current.map((item, index) =>
-          index === pageIndex
-            ? {
-                ...item,
-                questions: item.questions.filter(
-                  (question) => question.question_id !== selection.questionId,
-                ),
-              }
-            : item,
-        ),
-      );
-      if (answerTargetQuestionId === selection.questionId) {
-        setAnswerTargetQuestionId(null);
-      }
-      setSelection(null);
-      setEditMode("select");
-    } else {
-      const question = findQuestion(selection.questionId);
-      updateQuestion(selection.questionId, (currentQuestion) =>
-        renumberAnswerSlots({
-          ...currentQuestion,
-          answer_slots: currentQuestion.answer_slots.filter(
-            (slot) => slot.slot_id !== selection.slotId,
-          ),
-        }),
-      );
-      if (question) {
-        setSelection(makeQuestionSelection(question));
-        setAnswerTargetQuestionId(question.question_id);
+    if (!page) return;
+    // 多选集优先（11.10-1）：一次删掉整个集合；没多选就删当前单选
+    const targets: Selection[] = multiSelections.length
+      ? multiSelections
+      : selection
+        ? [selection]
+        : [];
+    if (!targets.length) return;
+    const questionIds = new Set<string>();
+    const slotIdsByQuestion = new Map<string, Set<string>>();
+    for (const target of targets) {
+      if (!target) continue;
+      if (target.kind === "question") {
+        questionIds.add(target.questionId);
       } else {
-        setSelection(null);
+        const slots =
+          slotIdsByQuestion.get(target.questionId) ?? new Set<string>();
+        slots.add(target.slotId);
+        slotIdsByQuestion.set(target.questionId, slots);
       }
     }
+    // Keep at least one question in the page; accidental deletion should
+    // never create a layout that the backend cannot grade.
+    if (
+      page.questions.length &&
+      page.questions.every((question) => questionIds.has(question.question_id))
+    ) {
+      questionIds.delete(page.questions[0].question_id);
+    }
+    if (!questionIds.size && !slotIdsByQuestion.size) return;
+    // 整批一个撤销步（11.10-1）：题框+作答区删除合成一次 commit
+    commit((current) =>
+      current.map((item, index) => {
+        if (index !== pageIndex) return item;
+        return {
+          ...item,
+          questions: item.questions
+            .filter((question) => !questionIds.has(question.question_id))
+            .map((question) => {
+              const slots = slotIdsByQuestion.get(question.question_id);
+              if (!slots || !slots.size) return question;
+              return renumberAnswerSlots({
+                ...question,
+                answer_slots: question.answer_slots.filter(
+                  (slot) => !slots.has(slot.slot_id),
+                ),
+              });
+            }),
+        };
+      }),
+    );
+    if (targetQuestionId && questionIds.has(targetQuestionId)) {
+      setTargetQuestionId(null);
+    }
+    if (questionIds.size) {
+      setEditMode("select");
+    }
+    // 单删作答区沿用旧行为：落回所属题目；多选/删题一律清空
+    const only = targets.length === 1 ? targets[0] : null;
+    const parentQuestion =
+      only?.kind === "answer" && !questionIds.has(only.questionId)
+        ? findQuestion(only.questionId)
+        : null;
+    if (parentQuestion) {
+      setSelection(makeQuestionSelection(parentQuestion));
+      setMultiSelections([]);
+      setTargetQuestionId(parentQuestion.question_id);
+    } else {
+      setSelection(null);
+      setMultiSelections([]);
+    }
   };
+
+  // Del/Backspace 删除快捷键（11.10-1）：输入框/IME 打字时不劫持按键
+  const removeSelectedRef = useRef(removeSelected);
+  useEffect(() => {
+    removeSelectedRef.current = removeSelected;
+  });
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      if (event.isComposing) return;
+      const el = event.target as HTMLElement | null;
+      const tag = (el?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || el?.isContentEditable) {
+        return;
+      }
+      event.preventDefault();
+      removeSelectedRef.current();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open]);
 
   const setSlotMaxScore = (
     questionId: string,
@@ -780,7 +1053,7 @@ export function ReferenceLayoutCorrectionDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="left-1/2 top-1/2 flex h-[96vh] w-[98vw] max-w-[1800px] -translate-x-1/2 -translate-y-1/2 flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="shrink-0 border-b bg-slate-950 px-6 py-4 text-left text-white">
           <DialogTitle className="flex items-center gap-2 text-lg text-white">
@@ -788,6 +1061,24 @@ export function ReferenceLayoutCorrectionDialog({
             {variant === "manual"
               ? t("grading.manualLayout.title")
               : t("grading.layout.title")}
+            {/* 11.11-11 顶部保存状态提示：每面切完自动落盘，让老师一眼看到存没存 */}
+            {saveStatus && (
+              <span
+                className={cn(
+                  "ml-3 text-sm font-normal",
+                  saveStatus.phase === "saving" && "text-teal-300",
+                  saveStatus.phase === "saved" && "text-emerald-300",
+                  saveStatus.phase === "error" && "text-red-300",
+                )}
+              >
+                {saveStatus.phase === "saving" &&
+                  t("grading.layout.savingPage", { page: saveStatus.pageNo })}
+                {saveStatus.phase === "saved" &&
+                  t("grading.layout.savedPage", { page: saveStatus.pageNo })}
+                {saveStatus.phase === "error" &&
+                  t("grading.layout.saveFailedPage", { page: saveStatus.pageNo })}
+              </span>
+            )}
           </DialogTitle>
           <DialogDescription className="sr-only">
             {variant === "manual"
@@ -813,46 +1104,86 @@ export function ReferenceLayoutCorrectionDialog({
                     key={item.page_no}
                     size="sm"
                     variant={index === pageIndex ? "default" : "outline"}
+                    title={isPageDirty(item) ? t("grading.layout.unsavedDot", { page: item.page_no }) : undefined}
                     onClick={() => {
+                      // 11.11-11 每面切完单独保存：离开这页前先把改动静默落盘
+                      enqueueSavePage(workingPagesRef.current[pageIndex]);
                       setPageIndex(index);
                       setSelection(null);
-                      setAnswerTargetQuestionId(null);
+                      setMultiSelections([]);
+                      setTargetQuestionId(null);
                       setEditMode("select");
                     }}
                   >
                     P{item.page_no}
+                    {isPageDirty(item) && (
+                      <span
+                        aria-hidden
+                        className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400"
+                      />
+                    )}
                   </Button>
                 ))}
               </div>
             </div>
             <ScrollArea className="min-h-0 flex-1 px-3 py-3">
               <div className="space-y-2">
-                {page?.questions.map((question) => (
+                {page?.questions.map((question, questionIndex) => (
                   <div
                     key={question.question_id}
                     className="rounded-lg border border-slate-200 bg-slate-50 p-2"
                   >
-                    <button
-                      type="button"
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm font-semibold",
-                        activeQuestionId === question.question_id
-                          ? "bg-teal-100 text-teal-900"
-                          : "hover:bg-slate-100",
-                      )}
-                      onClick={() => selectQuestion(question)}
-                    >
-                      <span className="flex h-6 w-6 items-center justify-center rounded bg-blue-600 text-xs font-bold text-white">
-                        {question.display_no}
-                      </span>
-                      <span className="truncate">
-                        {t("grading.layout.question")}
-                      </span>
-                      <span className="ml-auto text-xs text-slate-500">
-                        {question.regions.length} +{" "}
-                        {question.answer_slots.length}
-                      </span>
-                    </button>
+                    <div className="flex w-full items-center gap-1">
+                      <button
+                        type="button"
+                        className={cn(
+                          "flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-left text-sm font-semibold",
+                          activeQuestionId === question.question_id ||
+                            multiHas(makeQuestionSelection(question))
+                            ? "bg-teal-100 text-teal-900"
+                            : "hover:bg-slate-100",
+                        )}
+                        onClick={(event) => {
+                          // 左侧功能栏多选删除（11.10-1）：Ctrl/⌘+点 加入/移出多选集
+                          if (event.ctrlKey || event.metaKey) {
+                            toggleMulti(makeQuestionSelection(question));
+                            return;
+                          }
+                          selectQuestion(question);
+                        }}
+                      >
+                        <span className="flex h-6 w-6 items-center justify-center rounded bg-blue-600 text-xs font-bold text-white">
+                          {question.display_no}
+                        </span>
+                        <span className="truncate">
+                          {t("grading.layout.question")}
+                        </span>
+                        <span className="ml-auto text-xs text-slate-500">
+                          {question.regions.length} +{" "}
+                          {question.answer_slots.length}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-slate-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                        disabled={questionIndex === 0}
+                        title={t("grading.layout.moveUp")}
+                        onClick={() => moveQuestion(questionIndex, -1)}
+                      >
+                        <ChevronUp className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-slate-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                        disabled={
+                          !page || questionIndex >= page.questions.length - 1
+                        }
+                        title={t("grading.layout.moveDown")}
+                        onClick={() => moveQuestion(questionIndex, 1)}
+                      >
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                     {scoringEnabled && (
                       <div className="mt-2 flex items-center gap-2 border-t border-slate-200 pt-2">
                         <Input
@@ -894,14 +1225,28 @@ export function ReferenceLayoutCorrectionDialog({
                           key={region.region_id}
                           className={cn(
                             "block w-full rounded px-2 py-1 text-left text-xs",
-                            selection?.kind === "question" &&
-                              selection.regionId === region.region_id
+                            (selection?.kind === "question" &&
+                              selection.regionId === region.region_id) ||
+                              multiHas({
+                                kind: "question",
+                                questionId: question.question_id,
+                                regionId: region.region_id || "",
+                              })
                               ? "bg-blue-100 font-semibold text-blue-800"
                               : "text-slate-600 hover:bg-slate-100",
                           )}
-                          onClick={() =>
-                            selectQuestion(question, region.region_id)
-                          }
+                          onClick={(event) => {
+                            // 左侧功能栏多选删除（11.10-1）：Ctrl/⌘+点 加入/移出多选集
+                            if (event.ctrlKey || event.metaKey) {
+                              toggleMulti({
+                                kind: "question",
+                                questionId: question.question_id,
+                                regionId: region.region_id || "",
+                              });
+                              return;
+                            }
+                            selectQuestion(question, region.region_id);
+                          }}
                         >
                           {region.label || `${question.display_no}-A`} ·{" "}
                           {t("grading.layout.contentRegion")}
@@ -916,18 +1261,33 @@ export function ReferenceLayoutCorrectionDialog({
                             type="button"
                             className={cn(
                               "block min-w-0 flex-1 rounded px-2 py-1 text-left text-xs",
-                              selection?.kind === "answer" &&
-                                selection.slotId === slot.slot_id
+                              (selection?.kind === "answer" &&
+                                selection.slotId === slot.slot_id) ||
+                                multiHas({
+                                  kind: "answer",
+                                  questionId: question.question_id,
+                                  slotId: slot.slot_id || "",
+                                })
                                 ? "bg-amber-100 font-semibold text-amber-800"
                                 : "text-slate-600 hover:bg-slate-100",
                             )}
-                            onClick={() => {
+                            onClick={(event) => {
+                              // 左侧功能栏多选删除（11.10-1）：Ctrl/⌘+点 加入/移出多选集
+                              if (event.ctrlKey || event.metaKey) {
+                                toggleMulti({
+                                  kind: "answer",
+                                  questionId: question.question_id,
+                                  slotId: slot.slot_id || "",
+                                });
+                                return;
+                              }
                               setSelection({
                                 kind: "answer",
                                 questionId: question.question_id,
                                 slotId: slot.slot_id || "",
                               });
-                              setAnswerTargetQuestionId(question.question_id);
+                              setMultiSelections([]);
+                              setTargetQuestionId(question.question_id);
                             }}
                           >
                             {slot.label || `${question.display_no}_1`} ·{" "}
@@ -941,7 +1301,8 @@ export function ReferenceLayoutCorrectionDialog({
                                 min="0.01"
                                 step="0.5"
                                 className="h-7 w-16 px-1 text-center text-xs"
-                                value={slot.max_score ?? 1}
+                                placeholder="1"
+                                value={slot.max_score ?? ""}
                                 onChange={(event) =>
                                   setSlotMaxScore(
                                     question.question_id,
@@ -1000,7 +1361,7 @@ export function ReferenceLayoutCorrectionDialog({
                 disabled={!selectedQuestion}
                 onClick={() => {
                   if (!selectedQuestion) return;
-                  setAnswerTargetQuestionId(selectedQuestion.question_id);
+                  setTargetQuestionId(selectedQuestion.question_id);
                   setEditMode("answer");
                 }}
                 className="gap-1.5"
@@ -1011,12 +1372,16 @@ export function ReferenceLayoutCorrectionDialog({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={!selection}
+                disabled={!selection && !multiSelections.length}
                 onClick={removeSelected}
+                title={`${t("grading.layout.deleteSelected")} (Del / Backspace)`}
                 className="gap-1.5"
               >
                 <X className="h-4 w-4" />
                 {t("grading.layout.deleteSelected")}
+                {multiSelections.length > 1
+                  ? ` (${multiSelections.length})`
+                  : ""}
               </Button>
               <div className="ml-auto flex items-center gap-1">
                 <Button
@@ -1108,6 +1473,12 @@ export function ReferenceLayoutCorrectionDialog({
                         editMode !== "select" && "cursor-crosshair",
                       )}
                       onPointerDown={(event) => {
+                        if (editMode === "select") {
+                          // 空白处点一下清选择（11.10-1）：多选从零开始
+                          setSelection(null);
+                          setMultiSelections([]);
+                          return;
+                        }
                         if (editMode === "root-question") {
                           startDraw(event, "root-question");
                           return;
@@ -1125,9 +1496,10 @@ export function ReferenceLayoutCorrectionDialog({
                             questionId: question.question_id,
                             regionId: region.region_id || "",
                           };
-                          const active =
+                          const focused =
                             selection?.kind === "question" &&
                             selection.regionId === region.region_id;
+                          const active = focused || multiHas(target);
                           return (
                             <g key={region.region_id}>
                               <rect
@@ -1140,17 +1512,23 @@ export function ReferenceLayoutCorrectionDialog({
                                 stroke="#2563eb"
                                 strokeWidth={active ? 4 / scale : 2.5 / scale}
                                 onPointerDown={(event) => {
-                                  if (editMode === "select") {
+                                  // Ctrl/⌘+点=多选切换（11.10-1）
+                                  if (event.ctrlKey || event.metaKey) {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    toggleMulti(target);
+                                    return;
+                                  }
+                                  if (
+                                    editMode === "select" ||
+                                    editMode === "question"
+                                  ) {
+                                    // 11.10-3：题框在分题模式下也能拖动/微调，不用回点「选择」
                                     startDrag(event, target, "move");
                                     return;
                                   }
-                                  if (drawQuestionId === question.question_id) {
-                                    startDraw(
-                                      event,
-                                      editMode,
-                                      question.question_id,
-                                    );
-                                  }
+                                  // 作答区模式：起笔落在题区内=框选作答区
+                                  //（不拦截，冒泡到 svg 起画），保持原行为
                                 }}
                               />
                               {renderLabel(
@@ -1159,8 +1537,7 @@ export function ReferenceLayoutCorrectionDialog({
                                 box[1],
                                 "#2563eb",
                               )}
-                              {active &&
-                                editMode === "select" &&
+                              {focused &&
                                 renderHandle(box[2], box[3], target)}
                             </g>
                           );
@@ -1175,9 +1552,10 @@ export function ReferenceLayoutCorrectionDialog({
                             questionId: question.question_id,
                             slotId: slot.slot_id || "",
                           };
-                          const active =
+                          const focused =
                             selection?.kind === "answer" &&
                             selection.slotId === slot.slot_id;
+                          const active = focused || multiHas(target);
                           return (
                             <g key={slot.slot_id}>
                               <rect
@@ -1191,12 +1569,15 @@ export function ReferenceLayoutCorrectionDialog({
                                 strokeWidth={active ? 4 / scale : 2.5 / scale}
                                 strokeDasharray={`${8 / scale} ${5 / scale}`}
                                 onPointerDown={(event) => {
-                                  if (
-                                    editMode === "select" ||
-                                    editMode === "answer"
-                                  ) {
-                                    startDrag(event, target, "move");
+                                  // Ctrl/⌘+点=多选切换（11.10-1）
+                                  if (event.ctrlKey || event.metaKey) {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    toggleMulti(target);
+                                    return;
                                   }
+                                  // 11.10-3：作答区任意模式下都能拖动/微调，不用回点「选择」
+                                  startDrag(event, target, "move");
                                 }}
                               />
                               {renderLabel(
@@ -1205,9 +1586,7 @@ export function ReferenceLayoutCorrectionDialog({
                                 box[1],
                                 "#b45309",
                               )}
-                              {active &&
-                                (editMode === "select" ||
-                                  editMode === "answer") &&
+                              {focused &&
                                 renderHandle(box[2], box[3], target)}
                             </g>
                           );
@@ -1261,7 +1640,7 @@ export function ReferenceLayoutCorrectionDialog({
           </Button>
           <Button
             variant="outline"
-            onClick={() => onOpenChange(false)}
+            onClick={() => handleOpenChange(false)}
             disabled={loading || preparing}
           >
             {t("common.cancel")}

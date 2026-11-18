@@ -34,9 +34,6 @@ import {
 import {
   Users,
   MousePointerClick,
-  FileCheck2,
-  Coins,
-  Wallet,
   HardDrive,
   Search,
   RefreshCw,
@@ -49,7 +46,6 @@ import {
 } from "lucide-react";
 
 const NUM = (n: number) => n.toLocaleString("zh-CN");
-const MONEY = (n: number) => `¥${n.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}`;
 
 const WINDOW_OPTIONS = [
   { value: "7", label: "近 7 天" },
@@ -61,11 +57,6 @@ const WINDOW_OPTIONS = [
 type SortKey =
   | "operations"
   | "quotaUsed"
-  | "cost"
-  | "rechargeYuan"
-  | "rechargePages"
-  | "walletBalance"
-  | "walletRecharged"
   | "storage";
 
 function valueOf(row: AccountOverviewRow, key: SortKey): number {
@@ -74,16 +65,6 @@ function valueOf(row: AccountOverviewRow, key: SortKey): number {
       return row.usage.total_lifetime;
     case "quotaUsed":
       return row.quota.used_pages;
-    case "cost":
-      return row.cost.grading_cost_yuan;
-    case "rechargeYuan":
-      return row.recharge.amount_yuan_total;
-    case "rechargePages":
-      return row.recharge.pages_total;
-    case "walletBalance":
-      return row.wallet.balance_yuan;
-    case "walletRecharged":
-      return row.wallet.total_recharged_yuan;
     case "storage":
       return row.usage.storage_mb;
   }
@@ -231,7 +212,7 @@ export function AdminAccountsOverviewPage() {
         <div>
           <h2 className="text-xl font-semibold">账号总览</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            操作用量 / 面数额度 / 花销 / 充值 / 钱包 / 支付一览 · {data.scope_note}
+            操作用量 / 面数额度 / 存储一览 · {data.scope_note}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -258,7 +239,7 @@ export function AdminAccountsOverviewPage() {
       </div>
 
       {/* 汇总卡片 */}
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <StatCard icon={Users} label="账号总数" value={NUM(data.total_accounts)} unit="个" accent />
         <StatCard
           icon={MousePointerClick}
@@ -266,24 +247,6 @@ export function AdminAccountsOverviewPage() {
           value={NUM(s.total_operations_lifetime)}
           unit="次"
           sub={`上传 ${NUM(s.total_upload_lifetime)} / 批改 ${NUM(s.total_grade_lifetime)}`}
-        />
-        <StatCard
-          icon={FileCheck2}
-          label="9月起批改花销(口径A)"
-          value={MONEY(s.grading_cost_yuan_total)}
-          sub={`批改 ${NUM(s.total_grade_lifetime)} 面 × ¥${data.grading_price_per_face}`}
-        />
-        <StatCard
-          icon={Coins}
-          label="充值(面数口径)"
-          value={MONEY(s.recharge_yuan_total)}
-          unit={`共 ${NUM(s.recharge_pages_total)} 面`}
-        />
-        <StatCard
-          icon={Wallet}
-          label="钱包余额(口径B)"
-          value={MONEY(s.wallet_balance_yuan_total)}
-          sub={`充值 ${MONEY(s.wallet_recharged_yuan_total)} / 消费 ${MONEY(s.wallet_consumed_yuan_total)}`}
         />
       </div>
 
@@ -395,27 +358,6 @@ export function AdminAccountsOverviewPage() {
                   onClick={() => toggleSort("quotaUsed")}
                 />
                 <SortableHead
-                  label="花销(口径A)"
-                  sub="¥"
-                  active={sortKey === "cost"}
-                  dir={sortDir}
-                  onClick={() => toggleSort("cost")}
-                />
-                <SortableHead
-                  label="充值"
-                  sub="¥ / 面"
-                  active={sortKey === "rechargeYuan"}
-                  dir={sortDir}
-                  onClick={() => toggleSort("rechargeYuan")}
-                />
-                <SortableHead
-                  label="钱包(口径B)"
-                  sub="余额/充值/消费"
-                  active={sortKey === "walletBalance"}
-                  dir={sortDir}
-                  onClick={() => toggleSort("walletBalance")}
-                />
-                <SortableHead
                   label="存储"
                   sub="MB"
                   active={sortKey === "storage"}
@@ -427,7 +369,7 @@ export function AdminAccountsOverviewPage() {
             <TableBody>
               {rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center text-muted-foreground py-10">
+                  <TableCell colSpan={5} className="text-center text-muted-foreground py-10">
                     暂无账号
                   </TableCell>
                 </TableRow>
@@ -472,21 +414,6 @@ export function AdminAccountsOverviewPage() {
                         />
                         <div className="text-xs text-muted-foreground mt-1">
                           {NUM(r.quota.used_pages)} / {NUM(r.quota.total_pages)}（{pct}%）
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums font-medium">
-                        {MONEY(r.cost.grading_cost_yuan)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        <div>{MONEY(r.recharge.amount_yuan_total)}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {NUM(r.recharge.pages_total)} 面 · {r.recharge.count} 次
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums text-xs">
-                        <div>{MONEY(r.wallet.balance_yuan)}</div>
-                        <div className="text-muted-foreground">
-                          {MONEY(r.wallet.total_recharged_yuan)} / {MONEY(r.wallet.total_consumed_yuan)}
                         </div>
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-xs text-muted-foreground">
@@ -614,30 +541,10 @@ function AccountDetailCard({ row, windowDays }: { row: AccountOverviewRow; windo
         </div>
 
         <div>
-          <p className="text-xs font-medium text-muted-foreground mb-2">花销 / 充值 / 钱包</p>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-            <DetailItem
-              label="花销(口径A)"
-              value={MONEY(row.cost.grading_cost_yuan)}
-              sub={`批改 ${NUM(row.usage.grade_lifetime)} 面 × ¥${row.cost.grading_price_per_face}`}
-            />
-            <DetailItem
-              label="充值(面数)"
-              value={MONEY(row.recharge.amount_yuan_total)}
-              sub={`${NUM(row.recharge.pages_total)} 面 · ${row.recharge.count} 次`}
-            />
-            <DetailItem
-              label="钱包余额(口径B)"
-              value={MONEY(row.wallet.balance_yuan)}
-              sub={`充值 ${MONEY(row.wallet.total_recharged_yuan)} / 消费 ${MONEY(row.wallet.total_consumed_yuan)}`}
-            />
+          <p className="text-xs font-medium text-muted-foreground mb-2">存储</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <DetailItem label="存储占用" value={`${NUM(row.usage.storage_mb)} MB`} />
           </div>
-          <p className="text-[11px] text-muted-foreground mt-2">
-            存储占用 {NUM(row.usage.storage_mb)} MB
-            {row.recharge.last_at
-              ? ` · 最近充值 ${new Date(row.recharge.last_at).toLocaleString("zh-CN")}`
-              : ""}
-          </p>
         </div>
       </CardContent>
     </Card>

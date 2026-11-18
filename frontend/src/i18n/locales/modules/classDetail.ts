@@ -1668,7 +1668,7 @@ export const classDetailZh: TranslationDict = {
   "classReview.wrongSheet.downloadPdf": "下载 PDF",
   "classReview.wrongSheet.print": "打印",
   "classReview.wrongSheet.oneClick": "一体机文印",
-  "classReview.wrongSheet.oneClickHint": "一体机文印待机型/协议确定后对接，当前请先下载或浏览器打印。",
+  "classReview.wrongSheet.oneClickHint": "一体机文印待机型/协议确定后对接，当前请先下载或云端打印。",
   "classReview.wrongSheet.oneClickNotConfigured": "一体机对接未配置",
   "classReview.wrongSheet.emptySelection": "请先勾选至少一道错题",
   "classReview.wrongSheet.exportSuccess": "错题巩固卷已下载",

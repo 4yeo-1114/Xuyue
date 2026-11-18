@@ -35,4 +35,6 @@
   </button>
 
   <view class="login-tip">用与网页版相同的账号登录</view>
+
+  <view class="register-link" bindtap="onGoRegister">还没有账号？<text class="link">立即注册</text></view>
 </view>

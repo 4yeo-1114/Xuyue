@@ -1,0 +1,97 @@
+<view class="page">
+
+  <!-- 年级 / 班级选择 -->
+  <picker mode="selector" range="{{gradeLabels}}" value="{{gradeIndex}}" bindchange="onGradeChange">
+    <view class="card field">
+      <text class="field-label">年级</text>
+      <view class="field-value field-arrow">{{gradeLabels[gradeIndex] || '请选择年级'}}</view>
+    </view>
+  </picker>
+
+  <picker mode="selector" range="{{classLabels}}" value="{{classIndex}}" bindchange="onClassChange">
+    <view class="card field">
+      <text class="field-label">班级</text>
+      <view class="field-value field-arrow">{{classLabels[classIndex] || '请选择班级'}}</view>
+    </view>
+  </picker>
+
+  <!-- 成绩单 / 能力雷达 切换 -->
+  <view class="seg">
+    <view class="seg-item {{tab === 'scores' ? 'seg-on' : ''}}" data-tab="scores" bindtap="onTab">成绩单</view>
+    <view class="seg-item {{tab === 'radar' ? 'seg-on' : ''}}" data-tab="radar" bindtap="onTab">能力雷达</view>
+  </view>
+
+  <!-- ── 成绩单 ── -->
+  <block wx:if="{{tab === 'scores'}}">
+    <view wx:if="{{scoresLoading}}" class="empty">正在加载…</view>
+    <view wx:elif="{{folderItems.length === 0}}" class="empty">
+      <text class="empty-emoji">📊</text>
+      该班级还没有考试成绩
+    </view>
+    <block wx:else>
+      <view class="hint">点一场考试，展开每生得分</view>
+      <view class="card exam-item" wx:for="{{folderItems}}" wx:key="name">
+        <view class="exam-head" data-folder="{{item.name}}" bindtap="onToggleFolder">
+          <view class="exam-name">{{item.display}}</view>
+          <view class="exam-meta">{{item.subject}} {{item.grade}}</view>
+          <view class="exam-arrow">{{openFolder === item.name ? '⌃' : '⌄'}}</view>
+        </view>
+
+        <view wx:if="{{openFolder === item.name}}" class="exam-body">
+          <view wx:if="{{rowsLoading}}" class="muted">正在加载成绩…</view>
+          <view wx:elif="{{scoreRows.length === 0}}" class="muted">本场还没有统分成绩</view>
+          <block wx:else>
+            <view class="score-row" wx:for="{{scoreRows}}" wx:for-item="row" wx:key="student_name">
+              <view class="score-name">{{row.student_name}}</view>
+              <view class="score-meter-wrap">
+                <view class="score-meter">
+                  <view class="score-meter-fill" style="width: {{row.pct}}%"></view>
+                </view>
+              </view>
+              <view class="score-val">{{row.score_total}}<text class="score-max">/{{row.max_score}}</text></view>
+            </view>
+          </block>
+        </view>
+      </view>
+    </block>
+  </block>
+
+  <!-- ── 能力雷达 ── -->
+  <block wx:else>
+    <picker mode="selector" range="{{subjectLabels}}" value="{{subjectIndex}}" bindchange="onSubjectChange">
+      <view class="card field">
+        <text class="field-label">学科</text>
+        <view class="field-value field-arrow">{{subjectLabels[subjectIndex]}}</view>
+      </view>
+    </picker>
+
+    <view wx:if="{{radarLoading}}" class="empty">正在加载…</view>
+    <view wx:elif="{{dims.length === 0}}" class="empty">
+      <text class="empty-emoji">🧭</text>
+      暂无六维能力数据
+    </view>
+    <block wx:else>
+      <view class="card">
+        <view class="card-title">六维能力 · {{subjectLabels[subjectIndex]}}</view>
+        <view class="legend">
+          <view class="legend-item"><view class="legend-dot legend-dot-self"></view>本班</view>
+          <view class="legend-item"><view class="legend-dot legend-dot-avg"></view>班级均分</view>
+        </view>
+        <view class="dim" wx:for="{{dims}}" wx:key="name">
+          <view class="dim-name">{{item.name}}</view>
+          <view class="dim-bars">
+            <view class="dim-line">
+              <view class="dim-track"><view class="dim-fill dim-fill-self" style="width: {{item.scorePct}}%"></view></view>
+              <text class="dim-val">{{item.score}}</text>
+            </view>
+            <view class="dim-line">
+              <view class="dim-track"><view class="dim-fill dim-fill-avg" style="width: {{item.avgPct}}%"></view></view>
+              <text class="dim-val">{{item.classAvg}}</text>
+            </view>
+          </view>
+        </view>
+      </view>
+    </block>
+  </block>
+
+</view>

@@ -79,7 +79,60 @@
           <view class="zoom-btn" bindtap="onZoomReset">复位</view>
         </view>
 
-        <view wx:if="{{result}}" class="result-text">
+        <!-- 批改明细：一题一卡，点开看答案与解析 -->
+        <view wx:if="{{questions.length}}" class="result-text">
+          <view class="result-text-title">批改明细</view>
+          <view class="q-summary">
+            <view class="q-chip">共{{questions.length}}题</view>
+            <view class="q-chip q-chip-ok" wx:if="{{summary.ok}}">对 {{summary.ok}}</view>
+            <view class="q-chip q-chip-bad" wx:if="{{summary.bad}}">错 {{summary.bad}}</view>
+            <view class="q-chip q-chip-half" wx:if="{{summary.half}}">半对 {{summary.half}}</view>
+            <view class="q-chip q-chip-blank" wx:if="{{summary.blank}}">未作答 {{summary.blank}}</view>
+            <view class="q-chip q-chip-muted" wx:if="{{summary.other}}">其他 {{summary.other}}</view>
+          </view>
+
+          <view class="q-card {{item.expanded ? 'q-card-open' : ''}}" wx:for="{{questions}}" wx:key="key"
+            data-index="{{index}}" bindtap="onToggleQuestion">
+            <view class="q-head">
+              <view class="q-title">{{item.title}}</view>
+              <view class="q-right">
+                <text class="q-score" wx:if="{{item.scoreText}}">{{item.scoreText}}</text>
+                <text class="q-badge q-badge-{{item.badge}}">{{item.result}}</text>
+              </view>
+            </view>
+            <view class="q-preview" wx:if="{{!item.expanded && item.preview}}">{{item.preview}}</view>
+            <view class="q-body" wx:if="{{item.expanded}}">
+              <view class="q-row">
+                <text class="q-label">你的作答</text>
+                <text class="q-value">{{item.answerText || '（未识别到作答）'}}</text>
+              </view>
+              <view class="q-row" wx:if="{{item.correctText}}">
+                <text class="q-label">参考答案</text>
+                <text class="q-value q-correct">{{item.correctText}}</text>
+              </view>
+              <view class="q-row" wx:if="{{item.commentText}}">
+                <text class="q-label">判定评语</text>
+                <text class="q-value">{{item.commentText}}</text>
+              </view>
+              <view class="q-row" wx:if="{{item.annotation}}">
+                <text class="q-label">错因解析</text>
+                <text class="q-value q-anno">{{item.annotation}}</text>
+              </view>
+              <view class="q-subs" wx:if="{{item.subs.length > 1}}">
+                <view class="q-sub-row" wx:for="{{item.subs}}" wx:for-item="sub" wx:key="sub_index">
+                  <text class="q-sub-title">作答区{{sub.sub_index}}</text>
+                  <text class="q-badge q-badge-{{sub.badge}}">{{sub.result}}</text>
+                </view>
+              </view>
+            </view>
+            <view class="q-arrow">{{item.expanded ? '▲ 收起' : '▼ 点开看答案与解析'}}</view>
+          </view>
+
+          <button wx:if="{{wrongCount > 0}}" class="btn btn-ghost variant-btn" bindtap="onGoVariants">
+            ✨ 错题举一反三（AI 出同类题）
+          </button>
+        </view>
+        <view wx:elif="{{result}}" class="result-text">
           <view class="result-text-title">批改明细</view>
           <text class="result-text-body">{{result}}</text>
         </view>

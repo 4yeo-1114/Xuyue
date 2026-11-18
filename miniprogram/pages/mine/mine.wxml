@@ -1,0 +1,59 @@
+<view class="page mine-page">
+
+  <!-- 个人信息 -->
+  <view class="profile-card">
+    <view class="profile-avatar">{{mine.avatar}}</view>
+    <view class="profile-name">{{mine.name}}</view>
+    <view class="profile-email" wx:if="{{mine.email}}">{{mine.email}}</view>
+    <view class="profile-chips">
+      <text class="profile-chip" wx:if="{{mine.subject}}">📚 {{mine.subject}}</text>
+      <text class="profile-chip" wx:if="{{mine.role}}">✨ {{mine.role}}</text>
+      <text class="profile-chip" wx:if="{{mine.jobTitle}}">💼 {{mine.jobTitle}}</text>
+    </view>
+  </view>
+
+  <!-- 我的数据 -->
+  <view class="menu-title">🍬 我的数据</view>
+  <view class="mine-stats">
+    <view class="mine-stat" bindtap="onGoClasses">
+      <view class="mine-num mine-num-purple">{{mine.classCount}}</view>
+      <view class="mine-label">我的班级</view>
+    </view>
+    <view class="mine-stat" bindtap="onGoStudents">
+      <view class="mine-num mine-num-mint">{{mine.studentCount}}</view>
+      <view class="mine-label">我的学生</view>
+    </view>
+    <view class="mine-stat" bindtap="onGoGradeHistory">
+      <view class="mine-num mine-num-pink">{{mine.weekGrades}}</view>
+      <view class="mine-label">本周批改</view>
+    </view>
+  </view>
+
+  <!-- 常用功能 -->
+  <view class="menu-title">🌈 常用功能</view>
+  <view class="menu-grid">
+    <view class="menu-tile" bindtap="onGoQuota">
+      <text class="menu-emoji bg-mint">💰</text>
+      <text class="menu-label">我的额度</text>
+    </view>
+    <view class="menu-tile" bindtap="onGoPrintHistory">
+      <text class="menu-emoji bg-purple">🖨️</text>
+      <text class="menu-label">打印记录</text>
+    </view>
+    <view class="menu-tile" bindtap="onGoClasses">
+      <text class="menu-emoji bg-yellow">🏫</text>
+      <text class="menu-label">班级管理</text>
+    </view>
+    <view class="menu-tile" bindtap="onGoDashboard">
+      <text class="menu-emoji bg-blue">📈</text>
+      <text class="menu-label">数据看板</text>
+    </view>
+    <view class="menu-tile" bindtap="onGoAdminOverview">
+      <text class="menu-emoji bg-purple">👥</text>
+      <text class="menu-label">账号总览</text>
+    </view>
+  </view>
+
+  <view class="mine-logout" bindtap="onLogout">退出登录</view>
+
+</view>

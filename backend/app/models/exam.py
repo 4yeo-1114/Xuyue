@@ -27,5 +27,7 @@ class SmartExamPaper(Base):
     title = Column(String(256), nullable=False)
     subject = Column(String(64), nullable=False)
     questions = Column(JSON, nullable=False, default=list)
+    # 卷头可编辑字段（11.9-2）：{class,name,number,totalScore} 缺省键=用默认文案
+    header_fields = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

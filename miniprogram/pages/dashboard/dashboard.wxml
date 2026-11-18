@@ -1,0 +1,78 @@
+<view class="page dash-page">
+
+  <!-- 顶部横幅 -->
+  <view class="dash-hero">
+    <view class="dash-hero-title">📈 数据看板</view>
+    <view class="dash-hero-sub">班级 · 学生 · 批改 · 额度，一页看全</view>
+  </view>
+
+  <!-- 四宫格统计 -->
+  <view class="dash-stats">
+    <view class="dash-stat" bindtap="onGoClasses">
+      <view class="dash-stat-num num-purple">{{stats.classCount}}</view>
+      <view class="dash-stat-label">我的班级</view>
+    </view>
+    <view class="dash-stat" bindtap="onGoStudents">
+      <view class="dash-stat-num num-mint">{{stats.studentCount}}</view>
+      <view class="dash-stat-label">我的学生</view>
+    </view>
+    <view class="dash-stat" bindtap="onGoGradeHistory">
+      <view class="dash-stat-num num-pink">{{stats.weekGrades}}</view>
+      <view class="dash-stat-label">本周批改</view>
+    </view>
+    <view class="dash-stat" bindtap="onGoQuota">
+      <view class="dash-stat-num num-blue">{{stats.quotaLeft}}</view>
+      <view class="dash-stat-label">剩余额度</view>
+    </view>
+  </view>
+
+  <!-- 额度使用 -->
+  <view class="dash-card" bindtap="onGoQuota">
+    <view class="dash-card-head">
+      <view class="dash-card-title">💰 额度使用</view>
+      <view class="dash-card-more">查额度 ›</view>
+    </view>
+    <view class="dash-meter-bg">
+      <view class="dash-meter-fill" style="width: {{stats.quotaUsedPct}}%"></view>
+    </view>
+    <view class="dash-meter-meta">
+      <text>已用 {{stats.quotaUsed}} / {{stats.quotaTotal}} 面</text>
+      <text wx:if="{{stats.todayPages}}">今日 +{{stats.todayPages}} 面</text>
+    </view>
+  </view>
+
+  <!-- 我的班级 -->
+  <view class="dash-card">
+    <view class="dash-card-head">
+      <view class="dash-card-title">🏫 我的班级</view>
+      <view class="dash-card-more" catchtap="onGoClasses">全部 ›</view>
+    </view>
+    <view wx:if="{{classes.length === 0}}" class="dash-empty">还没有班级，去「班级管理」新建</view>
+    <view class="dash-class-list" wx:else>
+      <view class="dash-class" wx:for="{{classes}}" wx:key="id" catchtap="onGoClasses">
+        <view class="dash-class-badge">{{item.name}}</view>
+        <view class="dash-class-meta">{{item.grade || '未填年级'}} · {{item.student_count || 0}} 人</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 最近批改 -->
+  <view class="dash-card">
+    <view class="dash-card-head">
+      <view class="dash-card-title">🍬 最近批改</view>
+      <view class="dash-card-more" catchtap="onGoGradeHistory">全部 ›</view>
+    </view>
+    <view wx:if="{{recent.length === 0}}" class="dash-empty">还没有批改记录</view>
+    <view wx:else>
+      <view class="dash-recent" wx:for="{{recent}}" wx:key="id" catchtap="onGoGradeHistory">
+        <view class="dash-recent-dot {{item.status === 'done' ? 'dot-done' : (item.status === 'failed' ? 'dot-failed' : 'dot-pending')}}"></view>
+        <view class="dash-recent-main">
+          <view class="dash-recent-name">{{item.name}}</view>
+          <view class="dash-recent-time">{{item.timeText}}</view>
+        </view>
+        <view class="dash-tag {{item.status === 'done' ? 'tag-done' : (item.status === 'failed' ? 'tag-failed' : 'tag-pending')}}">{{item.statusText}}</view>
+      </view>
+    </view>
+  </view>
+
+</view>

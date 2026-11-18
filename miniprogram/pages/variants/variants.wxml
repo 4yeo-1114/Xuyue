@@ -1,0 +1,69 @@
+<view class="page">
+
+  <view class="card">
+    <view class="card-title">错题举一反三</view>
+    <view class="hint">根据本次批改的错题，AI 生成同类变式题（含答案与解析）。看完可以一键出成试卷，存进试卷库直接布置。</view>
+
+    <picker mode="selector" range="{{subjectLabels}}" value="{{subjectIndex}}" bindchange="onSubjectChange">
+      <view class="field">
+        <text class="field-label">学科</text>
+        <view class="field-value field-arrow">{{subjectLabels[subjectIndex]}}</view>
+      </view>
+    </picker>
+
+    <button wx:if="{{!items.length}}" class="btn" loading="{{generating}}" disabled="{{generating}}" bindtap="onRegenerate">
+      AI 生成变式题
+    </button>
+    <view wx:else class="v-actions">
+      <button class="btn" loading="{{saving}}" disabled="{{saving}}" bindtap="onSavePaper">
+        {{saved ? '已存入试卷库 ✓' : '出成试卷'}}
+      </button>
+      <button class="btn btn-ghost" disabled="{{generating}}" bindtap="onRegenerate">重新生成</button>
+      <button wx:if="{{saved}}" class="btn btn-plain" bindtap="onGoPapers">去试卷库布置</button>
+    </view>
+  </view>
+
+  <view wx:if="{{generating}}" class="empty">
+    <text class="empty-emoji">✨</text>
+    AI 正在读题并出变式题，约需 1 分钟…
+  </view>
+
+  <view wx:elif="{{error}}" class="empty">
+    <text class="empty-emoji">😕</text>
+    {{error}}
+  </view>
+
+  <block wx:elif="{{items.length}}">
+    <view class="v-meta muted">
+      共 {{items.length}} 道变式题<text wx:if="{{generatedAt}}"> · 生成于 {{generatedAt}}</text>
+    </view>
+
+    <view class="card v-card {{item.expanded ? 'v-card-open' : ''}}" wx:for="{{items}}" wx:key="idx"
+      data-index="{{index}}" bindtap="onToggle">
+      <view class="v-head">
+        <view class="v-title">变式题 {{item.no}}</view>
+        <view class="v-from" wx:if="{{item.from_title}}">针对{{item.from_title}} · {{item.orig_result}}</view>
+      </view>
+      <text class="v-question">{{item.question}}</text>
+      <view class="v-body" wx:if="{{item.expanded}}">
+        <view class="v-row">
+          <text class="v-label">答案</text>
+          <text class="v-value v-answer">{{item.answer || '—'}}</text>
+        </view>
+        <view class="v-row" wx:if="{{item.analysis}}">
+          <text class="v-label">解析</text>
+          <text class="v-value">{{item.analysis}}</text>
+        </view>
+      </view>
+      <view class="v-arrow">{{item.expanded ? '▲ 收起' : '▼ 看答案与解析'}}</view>
+    </view>
+
+    <view wx:if="{{failedCount > 0}}" class="hint">有 {{failedCount}} 道错题暂未生成出变式题，可点「重新生成」再试。</view>
+  </block>
+
+  <view wx:elif="{{!generating && wrongCount === 0}}" class="empty">
+    <text class="empty-emoji">🎉</text>
+    这次批改没有错题，不需要举一反三
+  </view>
+
+</view>

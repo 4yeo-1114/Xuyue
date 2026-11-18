@@ -1,8 +1,9 @@
 import { request } from "./api";
 
 /* ══════════════════════════════════════════════
-   账号总览（0924 需求三 · 平台管理员看全账号用量/花销/充值）
+   账号总览（0924 需求三 · 平台管理员看全账号用量/额度/存储）
    GET /admin/accounts/overview
+   （充值/钱包/花销 20261111 随「余额/充值/支付整体移除」删掉）
    ══════════════════════════════════════════════ */
 
 export interface AccountUsageOverview {
@@ -27,25 +28,6 @@ export interface AccountQuotaOverview {
   locked: boolean;
 }
 
-export interface AccountRechargeOverview {
-  amount_yuan_total: number;
-  pages_total: number;
-  count: number;
-  last_at: string | null;
-}
-
-export interface AccountCostOverview {
-  grading_price_per_face: number;
-  grading_cost_yuan: number;
-  note: string;
-}
-
-export interface AccountWalletOverview {
-  balance_yuan: number;
-  total_recharged_yuan: number;
-  total_consumed_yuan: number;
-}
-
 export interface AccountOverviewRow {
   user_id: string;
   display_name: string | null;
@@ -59,28 +41,18 @@ export interface AccountOverviewRow {
   created_at: string | null;
   usage: AccountUsageOverview;
   quota: AccountQuotaOverview;
-  recharge: AccountRechargeOverview;
-  cost: AccountCostOverview;
-  wallet: AccountWalletOverview;
 }
 
 export interface AccountOverviewSummary {
   total_upload_lifetime: number;
   total_grade_lifetime: number;
   total_operations_lifetime: number;
-  recharge_yuan_total: number;
-  recharge_pages_total: number;
-  grading_cost_yuan_total: number;
-  wallet_balance_yuan_total: number;
-  wallet_recharged_yuan_total: number;
-  wallet_consumed_yuan_total: number;
 }
 
 export interface AccountOverviewData {
   window_days: number;
   stat_start: string;
   scope_note: string;
-  grading_price_per_face: number;
   total_accounts: number;
   summary: AccountOverviewSummary;
   items: AccountOverviewRow[];

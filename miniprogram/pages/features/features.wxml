@@ -1,0 +1,88 @@
+<view class="page features-page">
+
+  <view class="feat-hero">
+    <view class="feat-hero-title">🧩 全部功能</view>
+    <view class="feat-hero-sub">批改 · 学情 · 班级 · 账户，分类直达</view>
+  </view>
+
+  <!-- 批改 -->
+  <view class="menu-group">
+    <view class="menu-title">🍬 批改</view>
+    <view class="menu-grid">
+      <view class="menu-tile" bindtap="onGoGradeHistory">
+        <text class="menu-emoji bg-purple">📚</text>
+        <text class="menu-label">批改历史</text>
+      </view>
+      <view class="menu-tile" bindtap="onGoScores">
+        <text class="menu-emoji bg-mint">📊</text>
+        <text class="menu-label">成绩雷达</text>
+      </view>
+      <view class="menu-tile" bindtap="onGoErrors">
+        <text class="menu-emoji bg-pink">📕</text>
+        <text class="menu-label">错题本</text>
+      </view>
+      <view class="menu-tile" bindtap="onGoLedger">
+        <text class="menu-emoji bg-yellow">📒</text>
+        <text class="menu-label">改分台账</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 学情 -->
+  <view class="menu-group">
+    <view class="menu-title">🌈 学情</view>
+    <view class="menu-grid">
+      <view class="menu-tile" bindtap="onGoStudents">
+        <text class="menu-emoji bg-mint">👥</text>
+        <text class="menu-label">学生分析</text>
+      </view>
+      <view class="menu-tile" bindtap="onGoKnowledge">
+        <text class="menu-emoji bg-blue">🗺️</text>
+        <text class="menu-label">知识图谱</text>
+      </view>
+      <view class="menu-tile" bindtap="onGoTasks">
+        <text class="menu-emoji bg-pink">🎯</text>
+        <text class="menu-label">任务清单</text>
+      </view>
+      <view class="menu-tile" bindtap="onGoPapers">
+        <text class="menu-emoji bg-purple">📄</text>
+        <text class="menu-label">试卷库</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 班级与账户 -->
+  <view class="menu-group">
+    <view class="menu-title">🏠 班级与账户</view>
+    <view class="menu-grid">
+      <view class="menu-tile" bindtap="onGoClasses">
+        <text class="menu-emoji bg-yellow">🏫</text>
+        <text class="menu-label">班级管理</text>
+      </view>
+      <view class="menu-tile" bindtap="onGoPrintHistory">
+        <text class="menu-emoji bg-purple">🖨️</text>
+        <text class="menu-label">打印记录</text>
+      </view>
+      <view class="menu-tile" bindtap="onGoQuota">
+        <text class="menu-emoji bg-mint">💰</text>
+        <text class="menu-label">我的额度</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 数据与管理 -->
+  <view class="menu-group">
+    <view class="menu-title">📈 数据与管理</view>
+    <view class="menu-grid">
+      <view class="menu-tile" bindtap="onGoDashboard">
+        <text class="menu-emoji bg-blue">📈</text>
+        <text class="menu-label">数据看板</text>
+      </view>
+      <view class="menu-tile" bindtap="onGoAdminOverview">
+        <text class="menu-emoji bg-purple">👥</text>
+        <text class="menu-label">账号总览</text>
+      </view>
+    </view>
+  </view>
+
+</view>

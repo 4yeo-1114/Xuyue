@@ -41,6 +41,7 @@ import { ResourceUploadDialog } from "@/components/resource-lib/ResourceUploadDi
 import { GradingHistoryPage } from "@/components/grading/GradingHistoryPage";
 import { ErrorBookPage } from "@/components/grading/ErrorBookPage";
 import { CorrectionLedgerPage } from "@/components/grading/CorrectionLedgerPage";
+import PrintJobsPage from "@/components/grading/PrintJobsPage";
 import { FlowTeacherTasksPage } from "@/components/grading/flow/FlowTeacherTasksPage";
 import { WuyuProfilePage } from "@/components/wuyu-profile/WuyuProfilePage";
 import { AssessmentPage } from "@/components/assessment/AssessmentPage";
@@ -152,18 +153,6 @@ const UsageSummaryPage = lazy(() =>
     default: m.UsageSummaryPage,
   })),
 );
-/* 独立老师个人账本（口径 B，与 scan-billing 口径 A 物理分离、并列不合并） */
-const PaymentWalletPage = lazy(() =>
-  import("@/components/payment/PaymentWalletPage").then((m) => ({
-    default: m.PaymentWalletPage,
-  })),
-);
-const PaymentLedgerPage = lazy(() =>
-  import("@/components/payment/PaymentLedgerPage").then((m) => ({
-    default: m.PaymentLedgerPage,
-  })),
-);
-
 /* ── Placeholder component for future pages ── */
 function PlaceholderPage({
   icon: Icon,
@@ -710,6 +699,8 @@ export default function Index() {
         return <ErrorBookPage selectedClass={selectedClass || ""} />;
       case "grading-ledger":
         return <CorrectionLedgerPage />;
+      case "print-jobs":
+        return <PrintJobsPage />;
       case "flow-tasks":
         return <FlowTeacherTasksPage />;
 
@@ -781,12 +772,6 @@ export default function Index() {
         return <ScanConsumptionPage />;
       case "usage-summary":
         return <UsageSummaryPage />;
-
-      /* ── 我的账户（口径 B · 个人账本） ── */
-      case "payment-wallet":
-        return <PaymentWalletPage />;
-      case "payment-ledger":
-        return <PaymentLedgerPage />;
 
       default:
         return (

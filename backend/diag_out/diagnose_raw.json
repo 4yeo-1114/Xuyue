@@ -1,0 +1,2800 @@
+[
+  {
+    "exam": "初一26班英语",
+    "subject": "英语",
+    "paper_id": "s01_0001_0002",
+    "pages": 2,
+    "rows": [
+      {
+        "page": 1,
+        "slot_id": "p1-q1-s1",
+        "label": "1_1",
+        "index": 1,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "D",
+        "student_answer": "A",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡",
+          "百度OCR"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 6.02,
+            "ok": true
+          },
+          {
+            "tag": "百度OCR",
+            "secs": 13.07,
+            "ok": false
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "A",
+        "gt_result": "wrong",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "wrong",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q2-s1",
+        "label": "2_1",
+        "index": 2,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "A",
+        "student_answer": "A",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 7.6,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "A",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q3-s1",
+        "label": "3_1",
+        "index": 3,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "B",
+        "student_answer": "AB",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.08,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 6.1,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "B",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": false,
+        "ai_status": "wrong",
+        "verdict": "mismatch",
+        "cause": "千问VL读卡 读错（读到 'AB'，老师读 'B'）"
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q4-s1",
+        "label": "4_1",
+        "index": 4,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "A",
+        "student_answer": "C",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.08,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.87,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "C",
+        "gt_result": "wrong",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "wrong",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q5-s1",
+        "label": "5_1",
+        "index": 5,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "B",
+        "student_answer": "C",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.63,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "B",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": false,
+        "ai_status": "wrong",
+        "verdict": "mismatch",
+        "cause": "千问VL读卡 读错（读到 'C'，老师读 'B'）"
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q6-s1",
+        "label": "6_1",
+        "index": 6,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "B",
+        "student_answer": "A",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 9.3,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "A",
+        "gt_result": "wrong",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "wrong",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q7-s1",
+        "label": "7_1",
+        "index": 7,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "A",
+        "student_answer": "B",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.77,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "A",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": false,
+        "ai_status": "wrong",
+        "verdict": "mismatch",
+        "cause": "千问VL读卡 读错（读到 'B'，老师读 'A'）"
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q8-s1",
+        "label": "8_1",
+        "index": 8,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "C",
+        "student_answer": "B",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 6.5,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "B",
+        "gt_result": "wrong",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "wrong",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q9-s1",
+        "label": "9_1",
+        "index": 9,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "C",
+        "student_answer": "C",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 6.15,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "C",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q10-s1",
+        "label": "10_1",
+        "index": 10,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "B",
+        "student_answer": "B",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 9.82,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "B",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q11-s1",
+        "label": "11_1",
+        "index": 11,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "B",
+        "student_answer": "A",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 12.45,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "A",
+        "gt_result": "wrong",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "wrong",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q12-s1",
+        "label": "12_1",
+        "index": 12,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "C",
+        "student_answer": "C",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 6.22,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "C",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q13-s1",
+        "label": "13_1",
+        "index": 13,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "A",
+        "student_answer": "C",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.82,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "C",
+        "gt_result": "wrong",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "wrong",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q14-s1",
+        "label": "14_1",
+        "index": 14,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "D",
+        "student_answer": "B",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 7.98,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "D",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": false,
+        "ai_status": "wrong",
+        "verdict": "mismatch",
+        "cause": "千问VL读卡 读错（读到 'B'，老师读 'D'）"
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q15-s1",
+        "label": "15_1",
+        "index": 15,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "B",
+        "student_answer": "B",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 8.65,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 123.98,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.27,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "correct",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q16-s1",
+        "label": "16_1",
+        "index": 16,
+        "kind": "",
+        "question_type": "0",
+        "expected": "E",
+        "student_answer": "(E)",
+        "decision": {
+          "status": "correct",
+          "score": null
+        },
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 12.71,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "学生作答区清晰写出“(E)”，与标准答案第1空要求的“E”完全一致；无其他小问需判，仅此一空即为全部作答内容，核心结论正确。",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "correct",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q16-s2",
+        "label": "16_2",
+        "index": 16,
+        "kind": "",
+        "question_type": "0",
+        "expected": "E",
+        "student_answer": "( C )",
+        "decision": null,
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 12.51,
+            "ok": true
+          }
+        ],
+        "read_uncertain": true,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "学生作答区仅有一个手写符号‘( C )’，其中字母‘C’疑似为‘E’的误写或笔误（如连笔导致横杠缺失），但无法明确辨识；标准答案要求第1空为‘E’，而当前图像中该字符存在歧义：可能是C，也可能是E（尤其在草书/连笔下E常被写成类似C加一短横",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "ungraded",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q16-s3",
+        "label": "16_3",
+        "index": 16,
+        "kind": "",
+        "question_type": "0",
+        "expected": "E",
+        "student_answer": "(A)",
+        "decision": null,
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 12.98,
+            "ok": true
+          }
+        ],
+        "read_uncertain": true,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "学生作答仅可见一个手写符号‘(A)’，但标准答案要求第1空为‘E’；该符号无法确认是字母A还是其他形近字符（如α、Δ等），且无上下文表明其对应题干哪一空。根据规则6：看不清的单字用[?]占位，此处‘A’疑似可辨但存在歧义风险（如笔误、草书变",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "ungraded",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q17-s1",
+        "label": "17_1",
+        "index": 17,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "C",
+        "student_answer": "B",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.08,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 6.16,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q17-s2",
+        "label": "17_2",
+        "index": 17,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "C",
+        "student_answer": "C",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.93,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "correct",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q18-s1",
+        "label": "18_1",
+        "index": 18,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "A",
+        "student_answer": "B",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 7.23,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q18-s2",
+        "label": "18_2",
+        "index": 18,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "A",
+        "student_answer": "B",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 8.56,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q19-s1",
+        "label": "19_1",
+        "index": 19,
+        "kind": "choice",
+        "question_type": "2",
+        "expected": "F",
+        "student_answer": "B",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡",
+          "百度OCR"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.08,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 7.63,
+            "ok": true
+          },
+          {
+            "tag": "百度OCR",
+            "secs": 7.7,
+            "ok": false
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q20-s1",
+        "label": "20_1",
+        "index": 20,
+        "kind": "choice",
+        "question_type": "2",
+        "expected": "B",
+        "student_answer": "B",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.68,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "correct",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q20-s2",
+        "label": "20_2",
+        "index": 20,
+        "kind": "choice",
+        "question_type": "2",
+        "expected": "B",
+        "student_answer": "C",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 7.26,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q20-s3",
+        "label": "20_3",
+        "index": 20,
+        "kind": "choice",
+        "question_type": "2",
+        "expected": "B",
+        "student_answer": "C",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 7.2,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q20-s4",
+        "label": "20_4",
+        "index": 20,
+        "kind": "choice",
+        "question_type": "2",
+        "expected": "B",
+        "student_answer": "B",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.08,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 7.19,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "correct",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q21-s1",
+        "label": "21_1",
+        "index": 21,
+        "kind": "",
+        "question_type": "2",
+        "expected": "live",
+        "student_answer": "she he",
+        "decision": null,
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 13.71,
+            "ok": true
+          }
+        ],
+        "read_uncertain": true,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "学生作答中‘she’可辨，但后续字母模糊，疑似‘he’或‘her’等；关键部分无法确认是否为‘live’。因[?]影响核心答案判定，按规则6应判待确认。",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "ungraded",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q21-s2",
+        "label": "21_2",
+        "index": 21,
+        "kind": "",
+        "question_type": "2",
+        "expected": "live",
+        "student_answer": "xSzhq",
+        "decision": null,
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 10.97,
+            "ok": true
+          }
+        ],
+        "read_uncertain": true,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "学生作答为手写‘xSzhq’，无法辨识具体字符；其中‘x’‘S’‘z’‘h’‘q’均为英文字母，但标准答案要求第1空为‘live’，当前作答既非‘live’，也无法确认是否为笔误或速记（如‘live’误写为‘xSzhq’无合理对应关系）。因",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "ungraded",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q22-s1",
+        "label": "22_1",
+        "index": 22,
+        "kind": "",
+        "question_type": "2",
+        "expected": "near",
+        "student_answer": "between",
+        "decision": {
+          "status": "wrong",
+          "score": null
+        },
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 8.79,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "学生作答为 'between'，而标准答案要求第1空填 'near'；'between' 与 'near' 语义不等价（between 表示在两者之间，near 表示靠近），属于明显错误。",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q22-s2",
+        "label": "22_2",
+        "index": 22,
+        "kind": "",
+        "question_type": "2",
+        "expected": "near",
+        "student_answer": "minute",
+        "decision": {
+          "status": "wrong",
+          "score": null
+        },
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 12.0,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "学生作答为'minute'，与标准答案'near'语义完全无关；'minute'是时间单位（分钟），而题目要求填写的是表示位置关系的副词'近'（near）；属于明显答非所问，且无任何可等价解释的空间。",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q45-s1",
+        "label": "45_1",
+        "index": 45,
+        "kind": "",
+        "question_type": "2",
+        "expected": null,
+        "student_answer": null,
+        "decision": null,
+        "readers": [],
+        "reader_ev": [],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 154.89,
+        "page_slot_count": 17,
+        "page_avg_secs": 9.11,
+        "source": "",
+        "source_label": "无（未读取/沿用空）",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "ungraded",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      }
+    ]
+  },
+  {
+    "exam": "初一26班英语",
+    "subject": "英语",
+    "paper_id": "s02_0003_0004",
+    "pages": 2,
+    "rows": [
+      {
+        "page": 1,
+        "slot_id": "p1-q1-s1",
+        "label": "1_1",
+        "index": 1,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "D",
+        "student_answer": "AD",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡",
+          "百度OCR"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.85,
+            "ok": true
+          },
+          {
+            "tag": "百度OCR",
+            "secs": 7.52,
+            "ok": false
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "D",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": false,
+        "ai_status": "wrong",
+        "verdict": "mismatch",
+        "cause": "千问VL读卡 读错（读到 'AD'，老师读 'D'）"
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q2-s1",
+        "label": "2_1",
+        "index": 2,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "A",
+        "student_answer": "A",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 7.72,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "A",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q3-s1",
+        "label": "3_1",
+        "index": 3,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "B",
+        "student_answer": "B",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.08,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 6.59,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "B",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q4-s1",
+        "label": "4_1",
+        "index": 4,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "A",
+        "student_answer": "A",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.74,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "A",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q5-s1",
+        "label": "5_1",
+        "index": 5,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "B",
+        "student_answer": "B",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.66,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "B",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q6-s1",
+        "label": "6_1",
+        "index": 6,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "B",
+        "student_answer": null,
+        "decision": null,
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 8.52,
+            "ok": false
+          }
+        ],
+        "read_uncertain": true,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "选择题作答识别失败（OMR/OCR/VL 均未读出），请人工确认",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "B",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": false,
+        "ai_status": "ungraded",
+        "verdict": "missed",
+        "cause": "读不准（VL 自报不确定）→ 主动弃判"
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q7-s1",
+        "label": "7_1",
+        "index": 7,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "A",
+        "student_answer": "C",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 13.58,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "A",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": false,
+        "ai_status": "wrong",
+        "verdict": "mismatch",
+        "cause": "千问VL读卡 读错（读到 'C'，老师读 'A'）"
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q8-s1",
+        "label": "8_1",
+        "index": 8,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "C",
+        "student_answer": "C",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 12.8,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "C",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q9-s1",
+        "label": "9_1",
+        "index": 9,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "C",
+        "student_answer": "C",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 6.1,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "C",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q10-s1",
+        "label": "10_1",
+        "index": 10,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "B",
+        "student_answer": "B",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 8.35,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "B",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q11-s1",
+        "label": "11_1",
+        "index": 11,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "B",
+        "student_answer": "B",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 6.46,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "B",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q12-s1",
+        "label": "12_1",
+        "index": 12,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "C",
+        "student_answer": "C",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.09,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 8.49,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "C",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q13-s1",
+        "label": "13_1",
+        "index": 13,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "A",
+        "student_answer": "A",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.81,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "A",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q14-s1",
+        "label": "14_1",
+        "index": 14,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "D",
+        "student_answer": "D",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.9,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "D",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 1,
+        "slot_id": "p1-q15-s1",
+        "label": "15_1",
+        "index": 15,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "B",
+        "student_answer": "B",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 10.31,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 126.4,
+        "page_slot_count": 15,
+        "page_avg_secs": 8.43,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": "B",
+        "gt_result": "correct",
+        "gt_inferred": true,
+        "read_ok": true,
+        "ai_status": "correct",
+        "verdict": "agree",
+        "cause": ""
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q16-s1",
+        "label": "16_1",
+        "index": 16,
+        "kind": "",
+        "question_type": "0",
+        "expected": "E",
+        "student_answer": "(E)1",
+        "decision": {
+          "status": "correct",
+          "score": null
+        },
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 9.67,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "学生作答为“(E)1”，其中明确写出“E”，与标准答案第1空要求的“E”一致；括号与数字“1”属于格式或序号标注，不影响核心结论判断。按‘宁对勿错、能对不半’原则，只要关键字符E清晰存在即视为正确。",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "correct",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q16-s2",
+        "label": "16_2",
+        "index": 16,
+        "kind": "",
+        "question_type": "0",
+        "expected": "E",
+        "student_answer": "( C )",
+        "decision": null,
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 9.98,
+            "ok": true
+          }
+        ],
+        "read_uncertain": true,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "学生作答区仅可见手写字符‘( C )’，其中‘C’为手写体，但题干要求第1空答案为‘E’；由于图像分辨率低、点阵背景干扰，无法100%排除该字符实为‘E’的可能（如连笔导致横杠缺失或误判），亦不能确证是‘C’。根据规则6，存在[?]级不确定",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "ungraded",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q16-s3",
+        "label": "16_3",
+        "index": 16,
+        "kind": "",
+        "question_type": "0",
+        "expected": "E",
+        "student_answer": "（A）",
+        "decision": {
+          "status": "wrong",
+          "score": null
+        },
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 8.47,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "学生作答为‘（A）’，而标准答案要求第1空填‘E’；A与E明显不等价，属结论错误。",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q17-s1",
+        "label": "17_1",
+        "index": 17,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "C",
+        "student_answer": "B",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 8.21,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q17-s2",
+        "label": "17_2",
+        "index": 17,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "C",
+        "student_answer": "C",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.81,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "correct",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q18-s1",
+        "label": "18_1",
+        "index": 18,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "A",
+        "student_answer": "B",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.08,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.65,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q18-s2",
+        "label": "18_2",
+        "index": 18,
+        "kind": "choice",
+        "question_type": "0",
+        "expected": "A",
+        "student_answer": "B",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 6.56,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q19-s1",
+        "label": "19_1",
+        "index": 19,
+        "kind": "choice",
+        "question_type": "2",
+        "expected": "F",
+        "student_answer": "B",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡",
+          "百度OCR"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 6.41,
+            "ok": true
+          },
+          {
+            "tag": "百度OCR",
+            "secs": 7.51,
+            "ok": false
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q20-s1",
+        "label": "20_1",
+        "index": 20,
+        "kind": "choice",
+        "question_type": "2",
+        "expected": "B",
+        "student_answer": "B",
+        "decision": {
+          "status": "correct"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.07,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 7.06,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "correct",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q20-s2",
+        "label": "20_2",
+        "index": 20,
+        "kind": "choice",
+        "question_type": "2",
+        "expected": "B",
+        "student_answer": "C",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.67,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q20-s3",
+        "label": "20_3",
+        "index": 20,
+        "kind": "choice",
+        "question_type": "2",
+        "expected": "B",
+        "student_answer": "A",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 8.83,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q20-s4",
+        "label": "20_4",
+        "index": 20,
+        "kind": "choice",
+        "question_type": "2",
+        "expected": "B",
+        "student_answer": "C",
+        "decision": {
+          "status": "wrong"
+        },
+        "readers": [
+          "OMR",
+          "千问VL读卡"
+        ],
+        "reader_ev": [
+          {
+            "tag": "OMR",
+            "secs": 0.06,
+            "ok": false
+          },
+          {
+            "tag": "千问VL读卡",
+            "secs": 5.69,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL读卡",
+        "source_label": "千问VL读卡",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q21-s1",
+        "label": "21_1",
+        "index": 21,
+        "kind": "",
+        "question_type": "2",
+        "expected": "live",
+        "student_answer": "She",
+        "decision": {
+          "status": "wrong",
+          "score": null
+        },
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 9.89,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "标准答案要求第1空填 'live'，学生作答为 'She'，语义完全不符；'She' 是人称代词，与动词原形 'live' 无等价关系，不属于措辞不同但语义等价的情况，属于明显错误。",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q21-s2",
+        "label": "21_2",
+        "index": 21,
+        "kind": "",
+        "question_type": "2",
+        "expected": "live",
+        "student_answer": "Sing",
+        "decision": {
+          "status": "wrong",
+          "score": null
+        },
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 12.21,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "标准答案要求第1空填‘live’，学生作答为‘Sing’，语义完全不同，且无任何等价关系；‘Sing’与‘live’在英语中词义、词性、语境均不兼容，属于明显错误。",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q22-s1",
+        "label": "22_1",
+        "index": 22,
+        "kind": "",
+        "question_type": "2",
+        "expected": "near",
+        "student_answer": "[?]e[?][?]",
+        "decision": null,
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 12.54,
+            "ok": true
+          }
+        ],
+        "read_uncertain": true,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "学生作答为潦草手写，疑似‘near’但字形严重扭曲，无法明确辨识是否为‘near’；可能存在‘n’‘e’‘a’‘r’的连笔，但中间部分像‘e’与‘a’粘连成类似‘ea’或‘æ’结构，亦有似‘he’‘ne’等误读可能。因标准答案唯一且关键，该",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "ungraded",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q22-s2",
+        "label": "22_2",
+        "index": 22,
+        "kind": "",
+        "question_type": "2",
+        "expected": "near",
+        "student_answer": "minute",
+        "decision": {
+          "status": "wrong",
+          "score": null
+        },
+        "readers": [
+          "千问VL判分"
+        ],
+        "reader_ev": [
+          {
+            "tag": "千问VL判分",
+            "secs": 9.13,
+            "ok": true
+          }
+        ],
+        "read_uncertain": false,
+        "ai_grade": true,
+        "max_score": 1.0,
+        "reason": "标准答案要求第1空填‘near’，而学生作答为‘minute’，语义完全不符，属于明显错误。",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "千问VL判分",
+        "source_label": "千问VL判分",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "wrong",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      },
+      {
+        "page": 2,
+        "slot_id": "p2-q45-s1",
+        "label": "45_1",
+        "index": 45,
+        "kind": "",
+        "question_type": "2",
+        "expected": null,
+        "student_answer": null,
+        "decision": null,
+        "readers": [],
+        "reader_ev": [],
+        "read_uncertain": false,
+        "ai_grade": false,
+        "max_score": 1.0,
+        "reason": "",
+        "page_secs_total": 139.9,
+        "page_slot_count": 17,
+        "page_avg_secs": 8.23,
+        "source": "",
+        "source_label": "无（未读取/沿用空）",
+        "gt_student": null,
+        "gt_result": "ungraded",
+        "gt_inferred": true,
+        "read_ok": null,
+        "ai_status": "ungraded",
+        "verdict": "no_gt",
+        "cause": "ground truth 未标注该槽"
+      }
+    ]
+  }
+]

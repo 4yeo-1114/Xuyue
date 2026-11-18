@@ -310,10 +310,10 @@ export function HardwareConfigPage() {
       const outputMode = printerOutputMode(printPrefs.selectedPrinter);
       if (outputMode === "pdf" || outputMode === "browser") {
         if (outputMode === "pdf") {
-          await exportMarksPdf(filenames);
+          await exportMarksPdf(filenames, printPrefs.printMode);
           toast.success(t("grading.toast.pdfDownloaded"));
         } else {
-          await browserPrintMarksPdf(filenames);
+          await browserPrintMarksPdf(filenames, printPrefs.printMode);
           toast.success(t("grading.selfPrint.done"));
         }
         setStepStates({ scan: "done", grade: "done", print: "done" });

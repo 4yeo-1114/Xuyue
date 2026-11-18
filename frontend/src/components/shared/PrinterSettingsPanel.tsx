@@ -82,6 +82,11 @@ export function PrinterSettingsPanel({
     const p = readGlobalPrintPrefs();
     return p.printWrongNotes ?? true;
   });
+  // 11.13 台账 #2 翻页方式（双面时生效）：long=长边（像书本）/ short=短边（像台历）
+  const [duplexBinding, setDuplexBinding] = useState<"long" | "short">(() => {
+    const p = readGlobalPrintPrefs();
+    return p.duplex_binding === "short" ? "short" : "long";
+  });
 
   const persistPrefs = (patch: Partial<GlobalPrintPrefs>) => {
     const merged: GlobalPrintPrefs = {
@@ -95,6 +100,11 @@ export function PrinterSettingsPanel({
   const handleCompatModeChange = (value: "standard" | "compat") => {
     setCompatMode(value);
     persistPrefs({ printMode: value });
+  };
+
+  const handleDuplexBindingChange = (value: "long" | "short") => {
+    setDuplexBinding(value);
+    persistPrefs({ duplex_binding: value });
   };
 
   const handleMarginChange = (e: ChangeEvent<HTMLInputElement>) => {
@@ -268,6 +278,29 @@ export function PrinterSettingsPanel({
             <SelectItem value="double">{t("printer.modeDouble")}</SelectItem>
           </SelectContent>
         </Select>
+      </div>
+
+      {/* 11.13 台账 #2：双面打印的翻页方式（单面时禁用） */}
+      <div className="space-y-2">
+        <Label className="text-sm">{t("printer.duplexBinding")}</Label>
+        <Select
+          value={duplexBinding}
+          onValueChange={(v) => handleDuplexBindingChange(v as "long" | "short")}
+          disabled={printMode !== "double"}
+        >
+          <SelectTrigger
+            className={cn("w-full h-9 text-sm", selectTriggerClassName)}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="long">{t("printer.bindingLong")}</SelectItem>
+            <SelectItem value="short">{t("printer.bindingShort")}</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          {t("printer.duplexBindingHint")}
+        </p>
       </div>
 
       <div className="space-y-2">

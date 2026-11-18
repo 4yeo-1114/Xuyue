@@ -86,16 +86,7 @@ from app.models.flow_grading import (
     FlowArbitration,
 )
 
-# ── 口径 B 独立老师支付系统（payment_accounts / usage_events / ledger_entries /
-#    payment_plans / subscriptions / payment_orders / payment_invoices），
-#    见 docs/payment/payment-design.md §3.2 §5.1 §9-Phase3（P3-1）──
-from app.models.payment_account import PaymentAccount
-from app.models.usage_event import UsageEvent
-from app.models.ledger_entry import LedgerEntry
-from app.models.payment_plan import PaymentPlan
-from app.models.subscription import Subscription
-from app.models.payment_order import PaymentOrder
-from app.models.payment_invoice import PaymentInvoice
+# （钱包/充值/支付系统 20261111 整体移除，见 D:\叙阅\deleted_balance_20261111）
 
 # B 项修正/复核记账（correction_ledger：ai-correct / form_guard / vl_ink 的 was→new 台账）
 from app.models.correction_ledger import CorrectionLedger
@@ -187,14 +178,6 @@ __all__ = [
     "FlowAssignment",
     "FlowReview",
     "FlowArbitration",
-    # 口径 B 独立老师支付系统
-    "PaymentAccount",
-    "UsageEvent",
-    "LedgerEntry",
-    "PaymentPlan",
-    "Subscription",
-    "PaymentOrder",
-    "PaymentInvoice",
     # B 项修正/复核记账
     "CorrectionLedger",
     # C 项判分缓存

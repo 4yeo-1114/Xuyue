@@ -201,12 +201,28 @@ def test_gate_single_flight_concurrent_start(clean_ref_jobs):
 
 # ---------------------------------------------------------------- 并发默认值
 
-def test_baidu_vlm_workers_default_is_4():
-    """默认并发 8→4（可用环境变量覆盖）。"""
+def test_baidu_vlm_workers_default_is_adaptive():
+    """默认并发按内存自适应：<15G 保守 4（1015 内存防线保留），>=15G 提到 8；
+    环境变量覆盖一切。"""
     import os
     import inspect
+    from app.services import perf_tuning
     src = inspect.getsource(reference_vlm_grading.recognize_reference_vlm_batch)
-    assert 'REFERENCE_VLM_BAIDU_WORKERS", "4"' in src or \
-           "REFERENCE_VLM_BAIDU_WORKERS', '4'" in src or \
-           'REFERENCE_VLM_BAIDU_WORKERS", "4"' in src
-    assert os.environ.get("REFERENCE_VLM_BAIDU_WORKERS", "4") in ("4",)
+    assert 'env_workers("REFERENCE_VLM_BAIDU_WORKERS", 4, 8)' in src
+    old = perf_tuning._ram_gb_cache
+    try:
+        perf_tuning._ram_gb_cache = 8.0
+        assert perf_tuning.env_workers("REFERENCE_VLM_BAIDU_WORKERS", 4, 8) == 4
+        perf_tuning._ram_gb_cache = 15.7
+        assert perf_tuning.env_workers("REFERENCE_VLM_BAIDU_WORKERS", 4, 8) == 8
+    finally:
+        perf_tuning._ram_gb_cache = old
+    saved = os.environ.get("REFERENCE_VLM_BAIDU_WORKERS")
+    try:
+        os.environ["REFERENCE_VLM_BAIDU_WORKERS"] = "5"
+        assert perf_tuning.env_workers("REFERENCE_VLM_BAIDU_WORKERS", 4, 8) == 5
+    finally:
+        if saved is None:
+            os.environ.pop("REFERENCE_VLM_BAIDU_WORKERS", None)
+        else:
+            os.environ["REFERENCE_VLM_BAIDU_WORKERS"] = saved

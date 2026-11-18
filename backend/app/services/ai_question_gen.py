@@ -23,6 +23,7 @@ from app.utils.exam_math_format import (
     is_math_related_subject,
     normalize_questions_math_notation,
 )
+from app.utils.figure_render import FIGURE_POLICY_PROMPT, process_question_figures
 from app.utils.qwen_settings import get_llm_config, get_llm_thinking_extra
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,7 @@ def _build_prompt(
 【题目要求】：
 {req_str}
 {math_format_block}
+{FIGURE_POLICY_PROMPT}
 
 请务必直接输出一个标准的 JSON 数组，包含所有生成的题目（不要输出 markdown 的 ```json 块，也不要输出任何前缀或后缀说明，只输出纯 JSON 数组）。
 每个题目对象的字段必须包含：
@@ -146,6 +148,7 @@ def _build_prompt(
 - answer: 参考答案（客观题给选项内容或字母，主观题给标准答案要点）
 - analysis: 简要解析（一两句话说清考点与解题关键）
 - knowledge_point: 本题对应的考点名称
+- figure: 可选。本题需要配图时给作图规格对象（见【配图出题】），不需要配图的题不要带此字段
 
 示例格式：
 [
@@ -170,6 +173,17 @@ def _build_prompt(
     "answer": "第一段主要写……；作者表达了……之情。",
     "analysis": "抓住关键句概括段意，再结合描写手法体会情感。",
     "knowledge_point": "现代文阅读"
+  }},
+  {{
+    "id": "q_abc3",
+    "type": "short_answer",
+    "stem": "",
+    "content": "如图所示，抛物线 y=x²-4x+3 与 x 轴交于 A、B 两点（点 A 在点 B 左侧），求 A、B 两点的坐标及顶点坐标。",
+    "score": 8,
+    "figure": {{"kind": "function", "exprs": ["x^2-4*x+3"], "x_min": -1, "x_max": 5, "y_min": -2, "y_max": 10}},
+    "answer": "令 y=0 得 x=1 或 3，A(1,0)、B(3,0)；顶点 (2,-1)。",
+    "analysis": "因式分解求零点，配方法求顶点。",
+    "knowledge_point": "二次函数图象与性质"
   }}
 ]
 请确保生成的题目符合指定的知识点和难度，并且数量与要求完全一致。所有文字必须是学生可直接阅读的普通中文试卷用语，不要出现 LaTeX 或 Markdown 标记。
@@ -224,6 +238,9 @@ def _normalize_question(q: dict, index: int) -> dict:
         "knowledge_point": str(q.get("knowledge_point") or "").strip(),
         "is_ai": True,
     }
+    fig = q.get("figure")
+    if isinstance(fig, dict) and fig:
+        out["figure"] = fig
     return out
 
 
@@ -269,7 +286,8 @@ def llm_generate_questions(
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7,
-        "max_tokens": 4096,
+        # figure 规格把 JSON 撑大，4096 会截断成解析失败（1026 配图出题）
+        "max_tokens": 6144,
     }
     payload.update(get_llm_thinking_extra(base_url))
 
@@ -308,4 +326,6 @@ def llm_generate_questions(
         except Exception:
             pass  # best-effort：过滤器异常不阻断出题主流程
         out.append(_normalize_question(q, i))
-    return out
+    # 配图收尾（1026「如图所示」没图）：要图的题画真图挂 figure_img；
+    # 画不出/引用图没图的整题丢弃（要么带图，要么出没有图的题）
+    return process_question_figures(out)

@@ -1,0 +1,28 @@
+<view class="page papers-page">
+  <view class="papers-head">
+    <view class="papers-title">试卷库</view>
+    <view class="papers-sub">网页版「智能组卷」保存的试卷，选一份直接布置</view>
+  </view>
+
+  <view wx:if="{{error}}" class="papers-error">{{error}}</view>
+
+  <view wx:if="{{loading && !papers.length}}" class="papers-empty">加载中…</view>
+  <view wx:elif="{{!papers.length}}" class="papers-empty">
+    暂无试卷。去网页版「智能组卷」保存一份，这里就能看到。
+  </view>
+
+  <view class="papers-list">
+    <view class="papers-card" wx:for="{{papers}}" wx:key="id">
+      <view class="papers-card-main">
+        <view class="papers-card-title">{{item.title}}</view>
+        <view class="papers-card-meta">
+          {{item.subject}} · {{item.count}} 题
+          <text wx:if="{{item.updatedAt}}"> · {{item.updatedAt}}</text>
+        </view>
+      </view>
+      <view class="papers-card-actions">
+        <button class="papers-btn" size="mini" data-id="{{item.id}}" bindtap="onUse">一键布置</button>
+      </view>
+    </view>
+  </view>
+</view>

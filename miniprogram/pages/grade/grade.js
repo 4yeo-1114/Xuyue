@@ -10,6 +10,95 @@ const STATUS_TEXT = {
   cancelled: '已取消',
 }
 
+// 判定徽章样式与同题多作答区的「最差判定」优先级
+const BADGE_CLASS = {
+  '对': 'ok',
+  '错': 'bad',
+  '半对': 'half',
+  '未作答': 'blank',
+  '未批': 'muted',
+  '待确认': 'warn',
+}
+const RESULT_RANK = { '错': 5, '半对': 4, '待确认': 3, '未作答': 2, '未批': 1, '对': 0, '': 0 }
+
+// 题号 key：与后端 question_key_of 一致（index → label 数字前缀 → slot_id）
+function questionKeyOf(blk) {
+  const idx = blk.index
+  if (idx !== undefined && idx !== null && String(idx).trim() && String(idx).trim() !== 'None') {
+    return String(idx).trim()
+  }
+  const label = String(blk.label || '').trim()
+  if (label) {
+    const m = label.match(/^(\d+)/)
+    return m ? m[1] : label
+  }
+  return String(blk.slot_id || '').trim()
+}
+
+// blocks + 判错批注 → 一题一张卡（同题多作答区合并，取最差判定）
+function buildQuestionCards(blocks, wrongs) {
+  const byKey = {}
+  const order = []
+  ;(blocks || []).forEach(function (b) {
+    if (!b || typeof b !== 'object') return
+    const key = questionKeyOf(b)
+    if (!key) return
+    if (!byKey[key]) {
+      byKey[key] = { key: key, subs: [], result: '', badge: '', score: 0, hasScore: false, comments: [], answers: [], corrects: [] }
+      order.push(key)
+    }
+    const card = byKey[key]
+    const res = String(b.result || '').trim()
+    card.subs.push({ sub_index: b.sub_index || 1, result: res, badge: BADGE_CLASS[res] || 'muted' })
+    // 首个判定直接落位（「对」rank=0 盖不过初始空串，不能只比大小）
+    if (res && (card.result === '' || (RESULT_RANK[res] || 0) > (RESULT_RANK[card.result] || 0))) card.result = res
+    if (typeof b.score === 'number' && isFinite(b.score)) {
+      card.score += b.score
+      card.hasScore = true
+    }
+    const c = String(b.comment || '').trim()
+    if (c && card.comments.indexOf(c) < 0) card.comments.push(c)
+    const a = String(b.transcription || b.answer_text || '').trim()
+    if (a && card.answers.indexOf(a) < 0) card.answers.push(a)
+    // 参考答案：答案卷/标准答案路径才带（correct_answer / interpretation_text）
+    const ca = String(b.correct_answer || b.interpretation_text || '').trim()
+    if (ca && card.corrects.indexOf(ca) < 0) card.corrects.push(ca)
+  })
+
+  return order.map(function (key) {
+    const card = byKey[key]
+    const anno = wrongs && wrongs[key] ? String((wrongs[key] || {}).text || '').trim() : ''
+    const commentText = card.comments.join('；')
+    const answerText = card.answers.join('\n')
+    return {
+      key: key,
+      title: '第' + key + '题' + (card.subs.length > 1 ? ' · ' + card.subs.length + ' 个作答区' : ''),
+      result: card.result || '—',
+      badge: BADGE_CLASS[card.result] || 'muted',
+      scoreText: card.hasScore ? '得 ' + (Math.round(card.score * 10) / 10) + ' 分' : '',
+      preview: anno || commentText || answerText,
+      answerText: answerText,
+      correctText: card.corrects.join('\n'),
+      commentText: commentText,
+      annotation: anno,
+      subs: card.subs,
+      expanded: false,
+    }
+  })
+}
+
+function summarizeQuestions(questions) {
+  const s = { ok: 0, bad: 0, half: 0, blank: 0, other: 0 }
+  ;(questions || []).forEach(function (q) {
+    if (q.result === '对') s.ok++
+    else if (q.result === '错') s.bad++
+    else if (q.result === '半对') s.half++
+    else if (q.result === '未作答') s.blank++
+    else s.other++
+  })
+  return s
+}
+
 Page({
   data: {
     mode: 'upload',   // upload = 新批改；detail = 历史回看
@@ -23,6 +112,9 @@ Page({
     progress: 0,
     message: '',
     result: '',
+    questions: [],
+    summary: { ok: 0, bad: 0, half: 0, blank: 0, other: 0 },
+    wrongCount: 0,
     imageAnnotated: '',
     imageOriginal: '',
     imageMarksOnly: '',
@@ -44,6 +136,10 @@ Page({
 
   onUnload: function () {
     this.stopPolling()
+    if (this._annoTimer) {
+      clearTimeout(this._annoTimer)
+      this._annoTimer = null
+    }
   },
 
   // ─── 上传模式 ───
@@ -128,11 +224,24 @@ Page({
   // ─── 详情回看 ───
   loadDetail: function () {
     const that = this
+    this._annoRefreshed = false
     this.refresh().then(function (status) {
       that.setData({ loading: false })
       const ended = status === 'done' || status === 'failed' || status === 'cancelled' || status === 'error'
       if (!ended) that.startPolling()
+      else if (status === 'done') that.scheduleAnnotationRefresh()
     })
+  },
+
+  // 判错批注是批完后异步生成的：完成后延时补拉一次，让「错因解析」不缺席
+  scheduleAnnotationRefresh: function () {
+    const that = this
+    if (this._annoRefreshed || this._annoTimer) return
+    this._annoTimer = setTimeout(function () {
+      that._annoTimer = null
+      that._annoRefreshed = true
+      that.refresh()
+    }, 10000)
   },
 
   // ─── 拉取 / 轮询 ───
@@ -143,12 +252,26 @@ Page({
       .then(function (res) {
         const item = res.item || {}
         const status = item.status || ''
+        // 逐题卡片：blocks 分组 + 判错批注当解析；保留已展开的题免得刷新收起
+        const prevExpanded = {}
+        ;(that.data.questions || []).forEach(function (q) {
+          if (q.expanded) prevExpanded[q.key] = true
+        })
+        const questions = buildQuestionCards(item.blocks, item.wrong_annotations || {})
+        questions.forEach(function (q) {
+          if (prevExpanded[q.key]) q.expanded = true
+        })
         that.setData({
           status: status,
           statusText: STATUS_TEXT[status] || status,
           progress: item.progress || 0,
           message: item.message || '',
           result: item.result || '',
+          questions: questions,
+          summary: summarizeQuestions(questions),
+          wrongCount: questions.filter(function (q) {
+            return q.result === '错' || q.result === '半对'
+          }).length,
           imageAnnotated: api.resolveFileUrl(item.image_annotated),
           imageOriginal: api.resolveFileUrl(item.image_original),
           imageMarksOnly: api.resolveFileUrl(item.image_marks_only),
@@ -177,6 +300,7 @@ Page({
         that.refresh().then(function (status) {
           if (status === 'done' || status === 'failed' || status === 'cancelled' || status === 'error') {
             that.setData({ grading: false })
+            if (status === 'done') that.scheduleAnnotationRefresh()
             return
           }
           if (Date.now() - startedAt > config.pollTimeout) {
@@ -232,12 +356,29 @@ Page({
     }
   },
 
+  // ─── 批改明细卡片 ───
+  onToggleQuestion: function (e) {
+    const index = Number(e.currentTarget.dataset.index)
+    const key = 'questions[' + index + '].expanded'
+    const q = this.data.questions[index]
+    if (!q) return
+    this.setData({ [key]: !q.expanded })
+  },
+
+  // 错题举一反三 → 变式题页（拆页放，别堆在结果页）
+  onGoVariants: function () {
+    wx.navigateTo({
+      url: '/pages/variants/variants?jobId=' + encodeURIComponent(this.data.jobId),
+    })
+  },
+
   // ─── 其他 ───
   onReset: function () {
     this.stopPolling()
     this.setData({
       mode: 'upload', jobId: '', name: '', imagePath: '', standardPath: '',
       status: '', statusText: '', progress: 0, message: '', result: '',
+      questions: [], summary: { ok: 0, bad: 0, half: 0, blank: 0, other: 0 }, wrongCount: 0,
       imageAnnotated: '', imageOriginal: '', imageMarksOnly: '', viewing: 'annotated',
       zoom: 1, zoomText: '100%',
       grading: false, loading: false, error: '',

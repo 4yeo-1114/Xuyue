@@ -1447,6 +1447,22 @@ export function ClassReviewPage({
                     const qKey = q.question_key || `${title}-${idx}`;
                     const students = questionStudents[q.question_key];
                     const isExpanded = expandedAccuracyKeys.has(qKey);
+                    // 展开卡里的错题图：按「第N题」把错题裁图（标题 第N题-区M / 第N题-作答区M）挂回本题。
+                    // 原题文字缺失（未配统分/链路不产文字）时，错题图就是「看到错题」的兜底。
+                    const wrongImgNum =
+                      /第(\d+)题/.exec(
+                        String(q.display_title || q.question_key || ""),
+                      )?.[1] ||
+                      /(?:^|[_-])q(\d+)(?:[_-]|$)/.exec(
+                        String(q.question_key || ""),
+                      )?.[1];
+                    const wrongImgs = wrongImgNum
+                      ? allWrongImages.filter((im: any) =>
+                          new RegExp(`^第${wrongImgNum}题`).test(
+                            String(im.title || ""),
+                          ),
+                        )
+                      : [];
                     return (
                       <div
                         key={qKey}
@@ -1554,6 +1570,52 @@ export function ClassReviewPage({
                                 </p>
                               </div>
                             ) : null}
+                            {wrongImgs.length > 0 && (
+                              <div className="rounded-md border border-border/50 bg-muted/30 p-2">
+                                <div className="mb-1 flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                                  <BookOpen className="h-3.5 w-3.5" />
+                                  错题图（{wrongImgs.length}）
+                                </div>
+                                <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
+                                  {wrongImgs.map((im: any, wi: number) => (
+                                    <div
+                                      key={wi}
+                                      className="flex items-start gap-2 rounded border border-border/40 bg-white/70 p-1.5"
+                                    >
+                                      <span className="w-14 shrink-0 truncate text-[11px] text-muted-foreground">
+                                        {im.student_name}
+                                      </span>
+                                      <div className="flex min-w-0 flex-1 gap-1.5">
+                                        {im.image_url ? (
+                                          <img
+                                            src={gradingImageUrl(im.image_url)}
+                                            alt={im.title}
+                                            className="max-h-24 min-w-0 flex-1 object-contain mix-blend-multiply"
+                                            onError={(e) => {
+                                              (
+                                                e.target as HTMLImageElement
+                                              ).style.display = "none";
+                                            }}
+                                          />
+                                        ) : null}
+                                        {im.answer_url ? (
+                                          <img
+                                            src={gradingImageUrl(im.answer_url)}
+                                            alt={im.title}
+                                            className="max-h-24 min-w-0 flex-1 object-contain mix-blend-multiply"
+                                            onError={(e) => {
+                                              (
+                                                e.target as HTMLImageElement
+                                              ).style.display = "none";
+                                            }}
+                                          />
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                             {students &&
                             (students.correct_students?.length ||
                               students.wrong_students?.length ||

@@ -1,0 +1,17 @@
+<view class="page">
+
+  <!-- ── 用量卡片 ── -->
+  <view class="card quota-card">
+    <view class="quota-title">剩余额度（面）</view>
+    <view class="quota-big">{{usage.available}}</view>
+    <view class="quota-meter">
+      <view class="quota-meter-fill" style="width: {{usage.used_pct}}%"></view>
+    </view>
+    <view class="quota-sub">
+      已用 {{usage.used_pages}} / 总 {{usage.total_pages}} 面
+      <text wx:if="{{usage.today_pages}}"> · 今日 {{usage.today_pages}} 面</text>
+    </view>
+    <view wx:if="{{usage.locked}}" class="hint hint-warn">额度已用尽（105% 停批闸），请联系管理员加额</view>
+  </view>
+
+</view>

@@ -160,48 +160,23 @@ def _thin_font_file_candidates() -> list:
 
 
 def _load_note_font(size: int):
-    """批注/旁批字体：优先 Light 细体（笔画细），无细体时回退常规并配收细渲染。
+    """批注/旁批字体（2026-10-26「跟√×一样的规格」）：常规字模+描边实心直出。
 
-    返回 ``(font, thin_face)``；``thin_face=True`` 表示字模本身已细、直接画即可。
+    ⛔ 不再用 Light 细体/腐蚀收细——用户反馈「好浅」，浓度要跟 √× 勾叉一致。
+    返回 ``(font, thin_face)``；``thin_face=True`` 表示直接画（不走收细渲染）。
     """
     if ImageFont is None:
         return None, False
-    for path in _thin_font_file_candidates():
-        try:
-            return ImageFont.truetype(path, size), True
-        except Exception:
-            continue
-    return _load_cjk_font(size), False
-
+    return _load_cjk_font(size), True
 
 def _draw_note_line(draw, x: int, y_base: int, text: str, font, fill: str, *, thin_face: bool) -> None:
-    """批注一行（基线对齐 anchor=\"ls\"）。非细体字模用 3x 超采样+腐蚀收细笔画。"""
+    """批注一行（基线对齐）。常规实心笔画（2026-10-26 三调：细一点=去描边）。"""
     if not text or font is None:
         return
-    if thin_face or not getattr(font, "path", None):
-        draw.text((x, y_base), text, fill=fill, font=font, anchor="ls")
-        return
     try:
-        from PIL import ImageFilter
-
-        ascent, descent = font.getmetrics()
-        pad = 4
-        ss = 3
-        tw = int(draw.textlength(text, font=font)) + pad * 2
-        th = ascent + descent + pad * 2
-        if tw <= pad * 2 or th <= pad * 2:
-            draw.text((x, y_base), text, fill=fill, font=font, anchor="ls")
-            return
-        big_font = ImageFont.truetype(font.path, font.size * ss)
-        mask = Image.new("L", (tw * ss, th * ss), 0)
-        md = ImageDraw.Draw(mask)
-        md.text((pad * ss, pad * ss), text, fill=255, font=big_font)
-        mask = mask.filter(ImageFilter.MinFilter(3))  # 高清下收细一圈笔画
-        mask = mask.resize((tw, th), Image.LANCZOS)
-        draw.bitmap((x - pad, y_base - ascent - pad), mask, fill=fill)
+        draw.text((x, y_base), text, fill=fill, font=font, anchor="ls")
     except Exception:
         draw.text((x, y_base), text, fill=fill, font=font, anchor="ls")
-
 
 def _draw_vector_check(draw, cx: int, cy: int, size: int, color: str, width: int) -> None:
     """矢量勾号，不依赖字体（避免 Linux 无字体时 √ 变成红点）。"""
@@ -301,21 +276,50 @@ def _draw_result_mark(
     bbox: list | None = None,
     source_gray=None,
 ) -> None:
-    """在作答区旁绘制对错（√/×）；未作答画空心圆 ○；待确认不画任何标记。
+    """在作答区旁绘制对错（√/×）；未作答画空心圆 ○；待确认画红色「?」。
 
     2026-10-16 用户要求：学生没填答案必须有标注（画圈），不能什么都不标；
-    待确认是 AI 拿不准（交老师拍板），仍不画，免得被当成已判。
+    2026-11-17 用户反馈「不确定宁可不判，但必须留可见痕迹」：待确认此前不画任何
+    符号，老师在留痕图上看到的就是「这题没批」→ 改为画红色「?」，一眼可辨
+    「机器没判、需要人工确认」，与 √/×/○ 明确区分。
     2026-10-19：空心圆改画在 bbox 正中（答题区内）——沿用 √/× 的右缘落点
     会圈到题干上。bbox 缺失时退回原 check 落点。
     2026-10-22：传入 source_gray（原卷灰度）时圈落点先验墨，压字宁缺勿串。
     """
     result = str(item.get("result") or "")
-    if result == "待确认":
-        return
     glyph_size = max(36, int(font_size * max(0.75, min(1.0, check_cross_scale))))
     cx = check_x + int(glyph_size * 0.35)
     cy = check_y + int(glyph_size * 0.5)
     line_w = max(3, int(glyph_size * 0.09))
+
+    # 0) 待确认：画红色「?」留可见痕迹（不判对错，但绝不能什么都不画）
+    if result == "待确认":
+        if mark_font is not None:
+            try:
+                draw.text(
+                    (int(check_x), int(check_y + glyph_size * 0.82)),
+                    "?",
+                    fill=fill_color,
+                    font=mark_font,
+                    anchor="ls",
+                    stroke_width=max(1, line_w // 2),
+                    stroke_fill=outline_color,
+                )
+                return
+            except Exception:
+                pass
+        # 无字体时手绘问号：上半圆钩 + 竖线点
+        r = glyph_size * 0.22
+        draw.arc(
+            [cx - r, cy - r * 1.5, cx + r, cy + r * 0.5],
+            start=200, end=20, fill=fill_color, width=line_w,
+        )
+        draw.line([cx + r * 0.85, cy + r * 0.2, cx, cy + r * 0.75], fill=fill_color, width=line_w)
+        draw.ellipse(
+            [cx - line_w, cy + r * 1.05, cx + line_w, cy + r * 1.05 + line_w * 2],
+            fill=fill_color,
+        )
+        return
 
     # 0) 未作答：空心圆 ○ 画在作答区正中（答题区内，别圈到题干）
     if result == "未作答":
@@ -824,7 +828,8 @@ def _draw_manual_result_mark(draw, image_width: int, image_height: int, item: di
     stroke_width = max(4, int(round(size * 0.08)))
     color = "#FF0000"
     result = str(item.get("result") or "")
-    # 未作答画空心圆（2026-10-16：没填答案不能什么都不标）；待确认仍不画（交老师拍板）
+    # 未作答画空心圆（2026-10-16：没填答案不能什么都不标）
+    # 2026-11-17：待确认画红色「?」——不能让老师在留痕图上看到「这题没批」
     # 2026-10-19：圈画在答题区正中——右缘落点会圈到题干上
     if result == "未作答":
         if source_gray is not None:
@@ -843,7 +848,23 @@ def _draw_manual_result_mark(draw, image_width: int, image_height: int, item: di
             stroke_width,
         )
         return
-    if result == "待确认":
+    question_font = _mark_font(max(1, int(round(size))))
+    if result == "待确认" or result == "":
+        # 没判定（待确认/未批）也必须有可见痕迹：画「?」，与 √/×/○ 一眼可分
+        if question_font is not None:
+            try:
+                draw.text(
+                    (int(round(x)), int(round(y + size * 0.82))),
+                    "?",
+                    fill=color,
+                    font=question_font,
+                    anchor="ls",
+                    stroke_width=max(1, stroke_width // 2),
+                    stroke_fill="#CC0000",
+                )
+                return
+            except Exception:
+                pass
         return
 
     def point(px: float, py: float) -> tuple[int, int]:
@@ -1099,7 +1120,12 @@ def draw_marks_only_and_save(
 
 
 def draw_manual_annotations(draw, img_w: int, img_h: int, blocks: list, question_notes, paper_note) -> None:
-    """在卷面留痕图上绘制老师手动批注：每道题一句（画在该题结尾下方）+ 整卷总评（画卷面底部）。
+    """在卷面留痕图上绘制老师手动批注：每道题一句 + 整卷总评（画卷面底部）。
+
+    落点（2026-10-26 用户要求「批注放相关题目旁边的空白处」）：① 首选本题旁的
+    空白通道（右优先、左次之，题顶对齐起排，不压内容/√×留痕/已画批注）；
+    ② 通道放不下就缩字挤进本题题框右下角（`_draw_corner_tiny`）。
+    ⛔ 2026-10-26 硬规则「不能放在下面」：绝不画到题目下方/画布底。
 
     - blocks：批改结果 blocks，按 ``index`` 聚合，取每道题最靠下的作答区 bbox 作为「题结尾」。
     - question_notes：``{ "<题号>": "批注文字" }``，每道题一个。
@@ -1111,7 +1137,7 @@ def draw_manual_annotations(draw, img_w: int, img_h: int, blocks: list, question
     if not question_notes and not paper_note:
         return
 
-    note_font, note_thin = _load_note_font(max(28, int(min(img_w, img_h) * 0.016)))
+    note_font, note_thin = _load_note_font(max(12, int(min(img_w, img_h) * 0.0125)))  # 2026-10-26 四调：按图等比（高分辨率卷不再显小）
     if note_font is None:
         return
 
@@ -1123,26 +1149,33 @@ def draw_manual_annotations(draw, img_w: int, img_h: int, blocks: list, question
     max_chars = max(6, int((img_w - margin * 2) / char_w))
     line_h = int(note_font.size * 1.4)
 
-    def _draw_lines(text: str, x: int, y: int) -> int:
-        """把 text 从 (x, y) 向下逐行绘制（自动换行，超出图片底边则截断），返回下一行起始 y。"""
+    def _split_lines(text: str, wrap_chars: int) -> list:
         lines: list = []
         for seg in str(text or "").split("\n"):
             seg = seg.rstrip()
-            while len(seg) > max_chars:
-                lines.append(seg[:max_chars])
-                seg = seg[max_chars:]
+            while len(seg) > wrap_chars:
+                lines.append(seg[:wrap_chars])
+                seg = seg[wrap_chars:]
             if seg:
                 lines.append(seg)
+        return lines
+
+    def _draw_lines(text: str, x: int, y: int) -> int:
+        """把 text 从 (x, y) 向下逐行绘制（自动换行，超出图片底边则截断），返回下一行起始 y。"""
         ty = y
-        for ln in lines:
+        for ln in _split_lines(text, max_chars):
             if ty + line_h > img_h:
                 break
-            _draw_note_line(draw, x, ty, ln, note_font, "#d62727", thin_face=note_thin)
+            _draw_note_line(draw, x, ty, ln, note_font, "#FF0000", thin_face=note_thin)
             ty += line_h
         return ty
 
-    # 1) 按题号聚合每道题的「结尾」：取该题所有有效作答区里 y_max 最大的那个 bbox
+    # 1) 按题号聚合每道题的「结尾」：取该题所有有效作答区里 y_max 最大的那个 bbox；
+    #    同时收集本题外框与全页内容框，供「题旁空白通道」落点用
     anchors: dict[str, tuple[int, int]] = {}
+    own_boxes: dict[str, list[tuple[int, int, int, int]]] = {}
+    own_labels: dict[str, str] = {}
+    content_rects: list[tuple[int, int, int, int]] = []
     for blk in blocks:
         if not isinstance(blk, dict):
             continue
@@ -1150,6 +1183,9 @@ def draw_manual_annotations(draw, img_w: int, img_h: int, blocks: list, question
         key = str(idx) if idx is not None else ""
         if not key or key == "None":
             continue
+        rn = blk.get("baidu_real_name")
+        if isinstance(rn, str) and rn.strip().isdigit():
+            own_labels.setdefault(key, rn.strip())
         bbox = blk.get("bbox")
         if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
             continue
@@ -1159,13 +1195,163 @@ def draw_manual_annotations(draw, img_w: int, img_h: int, blocks: list, question
             continue
         if x_max <= x_min or y_max <= y_min:
             continue
+        content_rects.append((x_min, y_min, x_max, y_max))
+        own_boxes.setdefault(key, []).append((x_min, y_min, x_max, y_max))
+        qb = blk.get("baidu_question_bbox")
+        if isinstance(qb, (list, tuple)) and len(qb) == 4:
+            try:
+                qx1, qy1, qx2, qy2 = (int(float(v)) for v in qb[:4])
+                if qx2 > qx1 and qy2 > qy1:
+                    content_rects.append((qx1, qy1, qx2, qy2))
+                    own_boxes[key].append((qx1, qy1, qx2, qy2))
+            except (TypeError, ValueError):
+                pass
         cur = anchors.get(key)
         if cur is None or y_max > cur[1]:
             anchors[key] = (max(margin, min(x_min, img_w - margin)), y_max)
 
     global_bottom = max((a[1] for a in anchors.values()), default=0)
 
-    # 2) 逐题批注（按卷面从上到下顺序）
+    # 2) 逐题批注（按卷面从上到下顺序）：优先题旁空白通道，放不下缩字进题框右下角（绝不放下面）
+    mark_rects = _mark_keepout_rects(blocks, img_w, img_h)
+    placed_notes: list[tuple[int, int, int, int]] = []
+
+    def _draw_beside(text: str, key: str) -> int | None:
+        """① 本题旁空白通道（右优先、左次之，题顶对齐）；返回末行下方 y，放不下返回 None。
+
+        贴页缘的白条通道允许向下流淌找空档（密排卷「题目旁边」就是页边白带）；
+        被挤离本题行的加「第N题」前缀；放不下按 1.0→0.45 渐缩字阶再试（没空白就缩字放旁边）。
+        """
+        rects = own_boxes.get(key) or []
+        if not rects:
+            return None
+        own_extent = (
+            min(r[0] for r in rects),
+            min(r[1] for r in rects),
+            max(r[2] for r in rects),
+            max(r[3] for r in rects),
+        )
+        ox1, oy1, ox2, oy2 = own_extent
+        gap = max(10, int(char_w * 0.8))
+        bounds = _page_side_bounds(content_rects, (ox1 + ox2) // 2, img_w)
+        obstacles = content_rects + mark_rects + placed_notes
+        num_lbl = next(
+            (v for v in (own_labels.get(key), key) if str(v).isdigit()), None
+        )
+        ladder = ((1.0, 5), (0.85, 5), (0.7, 4), (0.55, 3), (0.45, 2))
+        for scale, min_wrap in ladder:
+            f_size = max(12, int(note_font.size * scale))
+            if scale == 1.0:
+                s_font, s_thin = note_font, note_thin
+            else:
+                s_font, s_thin = _load_note_font(f_size)
+            if s_font is None:
+                continue
+            try:
+                s_char_w = max(10, draw.textlength("中", font=s_font))
+            except Exception:
+                s_char_w = max(10, int(getattr(s_font, "size", f_size)))
+            s_size = int(getattr(s_font, "size", f_size))
+            s_line_h = int(s_size * 1.4)
+            pad = max(6, int(s_char_w * 0.5))
+            for side, sx1, sx2 in _side_channels(own_extent, bounds, content_rects, gap):
+                wrap_chars = int((sx2 - sx1 - pad * 2) / s_char_w)
+                if wrap_chars < min_wrap:
+                    continue  # 这个字号下每行字太少就再缩字
+                y_lo = max(0, oy1)
+                y_hi = img_h - int(s_line_h * 0.3)
+
+                def _fit(body: str):
+                    lines = _split_lines(body, wrap_chars)
+                    if not lines:
+                        return None
+                    text_h = len(lines) * s_line_h + int(s_line_h * 0.3)
+                    text_w = min(
+                        max((len(ln) for ln in lines), default=4) * s_char_w,
+                        max(1, sx2 - sx1 - pad * 2),
+                    )
+                    tx1 = sx1 if side == "right" else sx2 - text_w
+                    y = _free_y_for_text(tx1, tx1 + text_w, y_lo, y_hi, text_h, obstacles, pad)
+                    if y is None:
+                        return None
+                    return y, tx1, text_w, text_h, lines
+
+                got = _fit(text)
+                if got and got[0] > oy2 + int(s_line_h * 0.6) and num_lbl is not None:
+                    got2 = _fit(f"第{num_lbl}题 {text}")
+                    if got2:
+                        got = got2
+                if not got:
+                    continue
+                y, tx1, text_w, text_h, lines = got
+                ty = y + s_size
+                for ln in lines:
+                    _draw_note_line(draw, tx1, ty, ln, s_font, "#FF0000", thin_face=s_thin)
+                    ty += s_line_h
+                placed_notes.append((tx1, y, tx1 + text_w, y + text_h))
+                return y + text_h
+        return None
+
+    def _draw_corner_tiny(text: str, key: str) -> int | None:
+        """兜底（2026-10-26「不能放在下面」）：缩字挤进本题框右下角，绝不画题下。
+
+        只用「本题最下缘→题框底」的空带；框不够高就直接压本题框内右下（红笔旁批，
+        老师批注压自己题框可接受），不压作答区/√×留痕/别题框。
+        """
+        rects = own_boxes.get(key) or []
+        if not rects:
+            return None
+        own = (
+            min(r[0] for r in rects), min(r[1] for r in rects),
+            max(r[2] for r in rects), max(r[3] for r in rects),
+        )
+        qx1, qy1, qx2, qy2 = own
+        obstacles = content_rects + mark_rects + placed_notes
+        num_lbl = next((v for v in (own_labels.get(key), key) if str(v).isdigit()), None)
+        for scale in (0.7, 0.55, 0.45):
+            f_size = max(12, int(note_font.size * scale))
+            s_font, s_thin = _load_note_font(f_size)
+            if s_font is None:
+                continue
+            try:
+                s_char_w = max(10, draw.textlength("中", font=s_font))
+            except Exception:
+                s_char_w = max(10, int(getattr(s_font, "size", f_size)))
+            s_size = int(getattr(s_font, "size", f_size))
+            s_line_h = int(s_size * 1.4)
+            pad = max(6, int(s_char_w * 0.5))
+            wrap_chars = max(2, int((qx2 - qx1 - pad * 2) / s_char_w))
+            body = f"第{num_lbl}题 {text}" if num_lbl is not None else text
+            lines = _split_lines(body, wrap_chars)
+            if not lines:
+                continue
+            text_h = len(lines) * s_line_h + int(s_line_h * 0.3)
+            text_w = min(
+                max((len(ln) for ln in lines), default=4) * s_char_w,
+                max(1, qx2 - qx1 - pad * 2),
+            )
+            top = qy2 - pad - text_h
+            guard = 0
+            while guard < 30:
+                rect = (qx2 - pad - text_w, top, qx2 - pad, top + text_h)
+                hit = False
+                for bx1, by1, bx2, by2 in obstacles:
+                    if (bx1, by1, bx2, by2) in set(map(tuple, rects)):
+                        continue  # 自己题框可压
+                    if rect[0] < bx2 and rect[2] > bx1 and rect[1] < by2 and rect[3] > by1:
+                        hit = True
+                        break
+                if not hit and rect[1] >= qy1 - int(s_line_h * 0.5):
+                    ty = top + s_size
+                    for ln in lines:
+                        _draw_note_line(draw, rect[0], ty, ln, s_font, "#FF0000", thin_face=s_thin)
+                        ty += s_line_h
+                    placed_notes.append(rect)
+                    return rect[3]
+                top -= int(s_line_h * 0.9)
+                guard += 1
+        return None
+
     notes_bottom = 0
     if question_notes:
         for key, (x, y_max) in sorted(anchors.items(), key=lambda kv: kv[1][1]):
@@ -1178,8 +1364,14 @@ def draw_manual_annotations(draw, img_w: int, img_h: int, blocks: list, question
             text = str(text or "").strip()
             if not text:
                 continue
-            ty = _draw_lines(text, x, y_max + int(line_h * 0.4))
-            notes_bottom = max(notes_bottom, ty)
+            beside_bottom = _draw_beside(text, key)
+            if beside_bottom is not None:
+                notes_bottom = max(notes_bottom, beside_bottom)
+                continue
+            # 2026-10-26 硬规则「不能放在下面」：通道放不下→缩字挤本题框右下角
+            ty = _draw_corner_tiny(text, key)
+            if ty is not None:
+                notes_bottom = max(notes_bottom, ty)
 
     # 3) 整卷总评（全卷最后一道题下方；空间不足则贴着图片底部向上排）
     if paper_note:
@@ -1188,6 +1380,75 @@ def draw_manual_annotations(draw, img_w: int, img_h: int, blocks: list, question
             est_lines = max(1, math.ceil(len(paper_note) / max_chars))
             y_start = max(margin, img_h - est_lines * line_h - int(line_h * 0.4))
         _draw_lines(paper_note, margin, y_start)
+
+
+# ── 题旁空白通道落点（2026-10-26 用户要求：「批注放相关题目旁边的空白处」） ──
+# 之前错因/批注只有「题框右下角→作答区下方→沉画布底」三级，题排得密时全部沉底。
+# 新增第一落点：本题旁的左右空白通道（右优先、装订线不跨页），题顶对齐起排。
+
+def _rects_overlap(a, b) -> bool:
+    return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+
+
+def _page_side_bounds(rects: list, own_cx: int, img_w: int) -> tuple[int, int]:
+    """题旁通道的横向页界：双页拼版不许跨过装订线到另一页，单页用整幅。
+
+    页外缘用小贴边（edge）而不是排版 margin：密排卷（题排满页宽、行间零缝）里
+    唯一的「题目旁边的空白处」就是页边白条（常 100~160px），按 margin 缩一圈后
+    通道只剩几十像素、每行放不下 5 个字就被整条丢掉，批注全部沉底（李雪梅_1 实卷）。
+    """
+    edge = max(4, int(img_w * 0.004))
+    mid = img_w // 2
+    g = max(8, int(img_w * 0.015))
+    spans_mid = any(r[0] < mid - g and r[2] > mid + g for r in rects)
+    has_left = any((r[0] + r[2]) / 2 < mid for r in rects)
+    has_right = any((r[0] + r[2]) / 2 > mid for r in rects)
+    if spans_mid or not (has_left and has_right):
+        return edge, img_w - edge
+    if own_cx >= mid:
+        return mid + g, img_w - edge
+    return edge, mid - g
+
+
+def _side_channels(
+    own_extent: tuple[int, int, int, int],
+    bounds: tuple[int, int],
+    content_rects: list,
+    gap: int,
+) -> list:
+    """本题旁的空白通道（右优先）：题缘到页界/同层右邻左缘的横向空档。"""
+    ox1, oy1, ox2, oy2 = own_extent
+    lo, hi = bounds
+    right_lim, left_lim = hi, lo
+    for r in content_rects:
+        if r[3] <= oy1 or r[1] >= oy2:
+            continue  # 纵向不与本题相交的不缩本题通道
+        if r[0] >= ox2:
+            right_lim = min(right_lim, r[0] - gap)
+        elif r[2] <= ox1:
+            left_lim = max(left_lim, r[2] + gap)
+    out = []
+    if right_lim - (ox2 + gap) >= 40:
+        out.append(("right", ox2 + gap, right_lim))
+    if (ox1 - gap) - left_lim >= 40:
+        out.append(("left", left_lim, ox1 - gap))
+    return out
+
+
+def _free_y_for_text(
+    sx1: int, sx2: int, y_lo: int, y_hi: int, needed_h: int, obstacles: list, pad: int
+) -> int | None:
+    """通道内在 [y_lo, y_hi] 里找一段放得下 needed_h 的空白纵档（跳过障碍）。"""
+    y = y_lo
+    guard = 0
+    while y + needed_h <= y_hi and guard < 60:
+        rect = (sx1, y, sx2, y + needed_h)
+        bottoms = [b[3] for b in obstacles if _rects_overlap(rect, b)]
+        if not bottoms:
+            return y
+        y = max(bottoms) + pad
+        guard += 1
+    return None
 
 
 def draw_wrong_annotations_variant(
@@ -1199,16 +1460,22 @@ def draw_wrong_annotations_variant(
     paper_note: str = "",
     *,
     paper_mode: bool = False,
+    hug_question: bool = False,
 ) -> bool:
-    """从留痕图生成「带错因批注」变体：错因（大红 #e60000）+同题老师批注（红 #d62727）。
+    """从留痕图生成「带错因批注」变体：错因/老师批注统一 √× 同规格（#FF0000 实心粗笔画）。
 
-    落点规则（2026-10-16 定，用户要求「批注在这道题目的右下角」）：
-    ① 首选**本题自己的题框右下角**——红笔旁批风格，右齐题框右缘、贴题框底，
-    只用「本题作答区底沿以下」的框内空带；可压本题印刷内容（不加白底），
-    但不得压任何作答区/√×留痕/别题框。放不下按 1.0/0.85/0.7 缩字。
-    ② 次选作答区正下方（字顶过块底与题框底，2026-10-12「不得压印刷题干」）；
+    落点规则（2026-10-26 用户要求「放相关题目旁边的空白处」+硬规则「不能放在下面」）：
+    ① 首选**本题旁的空白通道**——右优先、左次之，题顶对齐起排；
+    ⛔ 双页拼版不许跨装订线到另一页；通道内不压任何内容/√×留痕/别题批注。
+    密排卷（题排满页宽）的页边白条就是「旁边的空白处」：贴页缘的通道允许
+    向下流淌找空档；被挤离本题行的加「第N题」前缀对号；缩字 1.0→0.45 渐缩（每阶配最少每行字数）。
+    1 次选**本题自己的题框右下角**（2026-10-16 规则）——红笔旁批风格，右齐题框
+    右缘、贴题框底，只用「本题作答区底沿以下」的框内空带；可压本题印刷内容
+    （不加白底），但不得压任何作答区/√×留痕/别题框。放不下按 1.0/0.85/0.7 缩字。
+    ②（终兜底）题旁/题框都塞不下 → 页外加宽白条侧栏仍放本题行旁（左/右按本题
+    半页选边，缩字 0.7/0.55/0.45），画布按需向左/右加宽；挤离本题行加「第N题」前缀。
+    ⛔ 2026-10-26 硬规则「不能放在下面」：作答区下方/沉画布底两级已删，绝不放题目下面。
     ⛔ 不许「锚太靠右就飞整页左边距」——双页拼版会把右半页批注压到左半页题干标题上。
-    ③ 都落不下沉到画布底白带，加「第N题」前缀；画布不够高向下加高白边。
 
     paper_mode=True（卷面底图，屏幕预览用）：白块会盖掉学生字迹，因此只在该题
     已烧进老师批注时才盖字重排；老师批注原位不动就不重画；整卷总评位置没变就不动。
@@ -1227,7 +1494,7 @@ def draw_wrong_annotations_variant(
     img_w, img_h = img.size
     orig_h = img_h
 
-    note_font, note_thin = _load_note_font(max(28, int(min(img_w, img_h) * 0.016)))
+    note_font, note_thin = _load_note_font(max(12, int(min(img_w, img_h) * 0.0125)))  # 2026-10-26 四调：按图等比（高分辨率卷不再显小）
     if note_font is None:
         return False
     try:
@@ -1266,7 +1533,9 @@ def draw_wrong_annotations_variant(
 
     anchors: dict[str, tuple[int, int, int]] = {}  # key -> (x_min, y_max, 题框底)
     own_qboxes: dict[str, set[tuple[int, int, int, int]]] = {}
+    own_ans_boxes: dict[str, list[tuple[int, int, int, int]]] = {}
     own_ans_bottom: dict[str, int] = {}
+    own_labels: dict[str, str] = {}  # key -> 印刷题号（baidu_real_name，位移批注的「第N题」用）
     blocked: list[tuple[int, int, int, int]] = []
     for blk in blocks or []:
         if not isinstance(blk, dict):
@@ -1274,6 +1543,9 @@ def draw_wrong_annotations_variant(
         key = question_key_of(blk)
         if not key or key == "None":
             continue
+        rn = blk.get("baidu_real_name")
+        if isinstance(rn, str) and rn.strip().isdigit():
+            own_labels.setdefault(key, rn.strip())
         bbox = blk.get("bbox")
         if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
             continue
@@ -1284,6 +1556,7 @@ def draw_wrong_annotations_variant(
         if x_max <= x_min or y_max <= y_min:
             continue
         blocked.append((x_min, y_min, x_max, y_max))
+        own_ans_boxes.setdefault(key, []).append((x_min, y_min, x_max, y_max))
         if y_max > own_ans_bottom.get(key, 0):
             own_ans_bottom[key] = y_max
         q_bottom = y_max
@@ -1301,6 +1574,8 @@ def draw_wrong_annotations_variant(
         if cur is None or y_max > cur[1]:
             anchors[key] = (max(margin, min(x_min, img_w - margin)), y_max, q_bottom)
 
+    # 通道宽度收窄只看内容框（作答区+题框）；√/× 留痕只进碰撞不缩通道
+    content_rects = list(blocked)
     # √/× 墨迹在作答区右缘外侧（bbox 不含），并入禁区：批注不压留痕符号
     blocked.extend(_mark_keepout_rects(blocks, img_w, orig_h))
 
@@ -1314,7 +1589,6 @@ def draw_wrong_annotations_variant(
         return val
 
     global_bottom = max((a[1] for a in anchors.values()), default=0)
-    excl_bottom = max((b[3] for b in blocked), default=0)
     font_size = int(note_font.size)
 
     # ---- 排版：批注在本列换行；落点不得压任何块/题框，落不下就沉到画布底白带 ----
@@ -1341,8 +1615,19 @@ def draw_wrong_annotations_variant(
                 max(b[2] for b in qbox_set),
                 max(b[3] for b in qbox_set),
             )
+        # 本题整体外框（题框+作答区并集）：题旁通道的起点
+        extent_rects = list(qbox_set) + list(own_ans_boxes.get(key) or [])
+        own_extent = None
+        if extent_rects:
+            own_extent = (
+                min(b[0] for b in extent_rects),
+                min(b[1] for b in extent_rects),
+                max(b[2] for b in extent_rects),
+                max(b[3] for b in extent_rects),
+            )
         entries.append({
             "key": key,
+            "label": own_labels.get(key),
             "x": x,
             "cover_x": cover_x,
             "old_y": y_max + int(line_h * 0.4),
@@ -1352,6 +1637,7 @@ def draw_wrong_annotations_variant(
             "note_raw": note_text,
             "own_qbox": own_box,
             "own_rects": qbox_set,
+            "own_extent": own_extent,
             "own_ans_bottom": own_ans_bottom.get(key, 0),
             "max_chars_x": max_chars_x,
             "wrong": _wrap(wrong_text, max_chars_x) if wrong_text else [],
@@ -1359,7 +1645,6 @@ def draw_wrong_annotations_variant(
             "old_note": _wrap(note_text, full_chars) if note_text else [],
         })
 
-    placed: list[tuple[int, int, int, int]] = []
     in_place: list[tuple[int, int, int, int]] = []
 
     def _hits(rect: tuple[int, int, int, int], extra: list | None = None) -> bool:
@@ -1368,14 +1653,6 @@ def draw_wrong_annotations_variant(
             if rx1 < bx2 and rx2 > bx1 and ry1 < by2 and ry2 > by1:
                 return True
         return False
-
-    def _measure(e: dict) -> tuple[int, int]:
-        n_lines = len(e["wrong"]) + len(e["note"])
-        text_h = max(1, n_lines) * line_h + int(line_h * 0.3)
-        text_w = max((len(ln) for ln in (e["wrong"] + e["note"])), default=6) * char_w
-        return text_h, text_w
-
-    sink: list = []
 
     def _hits_corner(rect: tuple[int, int, int, int], own_rects: set) -> bool:
         """候选A 遮挡检查：本题自己的题框可压（红笔旁批），其余禁区照旧。"""
@@ -1395,16 +1672,21 @@ def draw_wrong_annotations_variant(
 
         只用「本题作答区底沿 → 题框底」的框内底带，右齐题框右缘、贴框底起排；
         压到作答区/留痕/别题框就贴带上移，放不下按 1.0/0.85/0.7 缩字再试。
+        hug_question（20261109 ⑦ 参照批改）：整个本题题框都是红笔旁批落点
+        （可压本题印刷内容，作答区/留痕/别题框仍不压），缩字阶加深到 0.45。
         成功改写 e 的行集/字体/落点，失败原样返回 False 交下级联。
         """
         own = e.get("own_qbox")
         if not own:
             return False
         qx1, qy1, qx2, qy2 = own
-        band_floor = max(qy1, int(e.get("own_ans_bottom") or 0))
+        if hug_question:
+            band_floor = qy1
+        else:
+            band_floor = max(qy1, int(e.get("own_ans_bottom") or 0))
         if qy2 - band_floor < 16:
             return False
-        for scale in (1.0, 0.85, 0.7):
+        for scale in ((1.0, 0.85, 0.7, 0.55, 0.45) if hug_question else (1.0, 0.85, 0.7)):
             f_size = max(12, int(font_size * scale))
             if scale == 1.0:
                 s_font, s_thin = note_font, note_thin
@@ -1426,7 +1708,7 @@ def draw_wrong_annotations_variant(
             if not n_lines:
                 return False
             text_h = n_lines * s_line_h + int(s_line_h * 0.3)
-            text_w = max((len(ln) for ln in (wrong_lines + note_lines)), default=4) * s_char_w
+            text_w = int(max((len(ln) for ln in (wrong_lines + note_lines)), default=4) * s_char_w)
             text_w = min(text_w, max(1, qx2 - qx1 - pad * 2))
             top = qy2 - pad - text_h
             guard = 0
@@ -1450,37 +1732,205 @@ def draw_wrong_annotations_variant(
                 guard += 1
         return False
 
-    # 阶段0：题框右下角（用户要求「批注在这道题目的右下角」）
-    # 阶段1：能原位就原位——作答区正下方（字顶过块底与题框底），不压内容、不压已就位批注
+    def _place_beside(e: dict) -> bool:
+        """候选⓪（2026-10-26 用户要求「放相关题目旁边的空白处」）：写进本题旁的空白通道。
+
+        右优先、左次之，题顶对齐起排；双页拼版不跨装订线；
+        通道不压任何内容/√×留痕/别题批注。贴页缘的白条通道（密排卷唯一的空白）
+        允许向下流淌找空档；内侧通道最远只到本题底+一点。被挤离本题行的加
+        「第N题」前缀对号。放不下按 1.0→0.45 渐缩字阶再试（每阶配最少每行字数），失败交下级联。
+        """
+        own_extent = e.get("own_extent")
+        if not own_extent:
+            return False
+        ox1, oy1, ox2, oy2 = own_extent
+        own_cx = (ox1 + ox2) // 2
+        gap = max(10, int(char_w * 0.8))
+        bounds = _page_side_bounds(content_rects, own_cx, img_w)
+        channels = _side_channels(own_extent, bounds, content_rects, gap)
+        if not channels:
+            return False
+        num_lbl = next((v for v in (e.get("label"), e["key"]) if str(v).isdigit()), None)
+        # 缩字阶配每行字数下限：没空白就缩字放旁边（2026-10-26「不能放在下面」）
+        ladder = ((1.0, 5), (0.85, 5), (0.7, 4), (0.55, 3), (0.45, 2))
+        for scale, min_wrap in ladder:
+            f_size = max(12, int(font_size * scale))
+            if scale == 1.0:
+                s_font, s_thin = note_font, note_thin
+            else:
+                s_font, s_thin = _load_note_font(f_size)
+            if s_font is None:
+                continue
+            try:
+                s_char_w = max(10, ImageDraw.Draw(img).textlength("中", font=s_font))
+            except Exception:
+                s_char_w = max(10, int(getattr(s_font, "size", f_size)))
+            s_size = int(getattr(s_font, "size", f_size))
+            s_line_h = int(s_size * 1.4)
+            pad = max(6, int(s_char_w * 0.5))
+            for side, sx1, sx2 in channels:
+                wrap_chars = int((sx2 - sx1 - pad * 2) / s_char_w)
+                if wrap_chars < min_wrap:
+                    continue  # 这个字号下每行字太少就再缩字；缩到底还不够才交下级联
+                # 所有通道都允许向下流淌找空档（挤离本题行的加「第N题」前缀）
+                y_lo = max(0, oy1)
+                y_hi = img_h - int(s_line_h * 0.3)
+
+                def _fit(wrong_lines: list, note_lines: list):
+                    n_lines = len(wrong_lines) + len(note_lines)
+                    if not n_lines:
+                        return None
+                    text_h = n_lines * s_line_h + int(s_line_h * 0.3)
+                    text_w = int(max((len(ln) for ln in (wrong_lines + note_lines)), default=3) * s_char_w)
+                    text_w = min(text_w, max(1, sx2 - sx1 - pad * 2))
+                    # 右通道贴本题左起排、左通道贴本题右起排
+                    tx1 = sx1 if side == "right" else sx2 - text_w
+                    y = _free_y_for_text(
+                        tx1, tx1 + text_w, y_lo, y_hi, text_h, blocked + in_place, pad
+                    )
+                    if y is None:
+                        return None
+                    return y, tx1, text_w, text_h, wrong_lines, note_lines
+
+                wrong_lines = _wrap(e["wrong_raw"], wrap_chars) if e["wrong_raw"] else []
+                note_lines = _wrap(e["note_raw"], wrap_chars) if e["note_raw"] else []
+                got = _fit(wrong_lines, note_lines)
+                # 顶被挤过题框底=离本题行远了，加「第N题」前缀，免得对不上号
+                if (
+                    got and got[0] > oy2 + int(s_line_h * 0.6)
+                    and e["wrong_raw"] and num_lbl is not None
+                ):
+                    got2 = _fit(_wrap(f"第{num_lbl}题 {e['wrong_raw']}", wrap_chars), note_lines)
+                    if got2:
+                        got = got2
+                if not got:
+                    continue
+                y, tx1, text_w, text_h, wrong_lines, note_lines = got
+                rect = (tx1, y, tx1 + text_w, y + text_h)
+                e["rect"] = rect
+                e["x"] = tx1
+                e["y"] = y + s_size  # 首行基线（anchor="ls"）
+                e["h"] = text_h
+                e["wrong"] = wrong_lines
+                e["note"] = note_lines
+                e["font"] = s_font
+                e["thin"] = s_thin
+                e["line_h"] = s_line_h
+                in_place.append(rect)
+                return True
+        return False
+
+    # 阶段⓪：题旁空白通道（2026-10-26「批注放相关题目旁边的空白处」）
+    # 阶段1：题框右下角（2026-10-16「批注在这道题目的右下角」）
+    # 阶段2（终兜底）：页面里实在没空白 → 页外加宽白条仍放本题行旁
+    #（2026-10-26 硬规则「不能放在下面」：宁可缩字/加宽画布，也不许沉底/题下）
+    overflow: list = []
     for e in entries:
-        if _place_in_question_corner(e):
+        if _place_beside(e) or _place_in_question_corner(e):
             continue
-        text_h, text_w = _measure(e)
-        top = max(e["block_y"], e["q_bottom"]) + int(font_size * 0.35)
-        rect = (e["x"], top, min(img_w - 2, e["x"] + text_w), top + text_h)
-        if _hits(rect):
-            sink.append(e)
-            continue
-        e["rect"] = rect
-        e["y"] = top + font_size  # 首行基线（anchor="ls"）
-        e["h"] = text_h
-        in_place.append(rect)
-    # 阶段2：挤不下的沉到画布底白带，加「第N题」前缀（离题远也能对上号），彼此错开
-    for e in sink:
-        if e["wrong_raw"] and str(e["key"]).isdigit():
-            e["wrong"] = _wrap(f"第{e['key']}题 {e['wrong_raw']}", e["max_chars_x"])
-        text_h, text_w = _measure(e)
-        top = excl_bottom + int(line_h * 0.3)
-        rect = (e["x"], top, min(img_w - 2, e["x"] + text_w), top + text_h)
-        guard = 0
-        while _hits(rect, placed) and guard < 40:
-            top += line_h
-            rect = (e["x"], top, min(img_w - 2, e["x"] + text_w), top + text_h)
-            guard += 1
-        e["rect"] = rect
-        e["y"] = top + font_size
-        e["h"] = text_h
-        placed.append(rect)
+        overflow.append(e)
+
+    x_shift = 0          # 画布左缘加宽量：原图内容整体右移量
+    cover_xr = img_w - margin  # 白覆盖右界（加宽后收在原图右缘内，不盖进白条）
+    dx_left = 0
+    if overflow:
+        plans = []
+        for e in overflow:
+            own = e.get("own_extent") or (e["x"], e["block_y"], e["x"] + 1, e["q_bottom"])
+            side = "left" if (own[0] + own[2]) // 2 < img_w // 2 else "right"
+            for scale in (0.7, 0.55, 0.45):
+                f_size = max(12, int(font_size * scale))
+                s_font, s_thin = _load_note_font(f_size)
+                if s_font is None:
+                    continue
+                try:
+                    s_char_w = max(10, ImageDraw.Draw(img).textlength("中", font=s_font))
+                except Exception:
+                    s_char_w = max(10, int(getattr(s_font, "size", f_size)))
+                s_size = int(getattr(s_font, "size", f_size))
+                s_line_h = int(s_size * 1.4)
+                plans.append({
+                    "e": e, "side": side, "own": own,
+                    "font": s_font, "thin": s_thin, "size": s_size, "line_h": s_line_h,
+                    "char_w": s_char_w, "pad": max(6, int(s_char_w * 0.5)),
+                })
+                break
+            else:
+                # 所有缩字阶都拿不到字体：用基础字号兜底，绝不丢批注
+                plans.append({
+                    "e": e, "side": side, "own": own,
+                    "font": note_font, "thin": note_thin, "size": font_size, "line_h": line_h,
+                    "char_w": char_w, "pad": max(6, int(char_w * 0.5)),
+                })
+        # 每侧白条宽度 = 该侧最宽文本 + 内边距；左条画布向左加宽、右条向右加宽
+        def _plan_lines(p: dict) -> tuple:
+            e = p["e"]
+            wrap = 8
+            wrong_lines = _wrap(e["wrong_raw"], wrap) if e["wrong_raw"] else []
+            note_lines = _wrap(e["note_raw"], wrap) if e["note_raw"] else []
+            n = len(wrong_lines) + len(note_lines)
+            text_h = max(1, n) * p["line_h"] + int(p["line_h"] * 0.3)
+            text_w = int(max((len(ln) for ln in (wrong_lines + note_lines)), default=4) * p["char_w"])
+            return wrong_lines, note_lines, text_w, text_h
+
+        for p in plans:
+            p["wrong"], p["note"], p["text_w"], p["text_h"] = _plan_lines(p)
+        need_l = int(max((p["text_w"] + p["pad"] * 2 for p in plans if p["side"] == "left"), default=0))
+        need_r = int(max((p["text_w"] + p["pad"] * 2 for p in plans if p["side"] == "right"), default=0))
+        dx_left, dx_right = need_l, need_r
+        # 先加宽画布再定位白条：原图与已就位批注统一右移 dx_left
+        if dx_left or dx_right:
+            grown_w = img_w + dx_left + dx_right
+            grown = Image.new("RGB", (grown_w, img_h), "#ffffff")
+            grown.paste(img, (dx_left, 0))
+            img = grown
+            img_w = grown_w
+            x_shift = dx_left
+            cover_xr = img_w - dx_right - margin  # 覆盖右界收在原图内，不盖白条
+            for e in entries:
+                e["x"] += dx_left
+                e["cover_x"] += dx_left
+                if "rect" in e:
+                    r = e["rect"]
+                    e["rect"] = (r[0] + dx_left, r[1], r[2] + dx_left, r[3])
+            for i, r in enumerate(in_place):
+                in_place[i] = (r[0] + dx_left, r[1], r[2] + dx_left, r[3])
+        strip_left: list = []
+        strip_right: list = []
+        for p in plans:
+            e = p["e"]
+            own = p["own"]
+            oy1, oy2 = own[1], own[3]
+            num_lbl = next((v for v in (e.get("label"), e["key"]) if str(v).isdigit()), None)
+            if p["side"] == "left":
+                x1 = dx_left - p["pad"] - p["text_w"]
+                stack = strip_left
+            else:
+                x1 = img_w - dx_right + p["pad"]
+                stack = strip_right
+            y = _free_y_for_text(x1, x1 + p["text_w"], max(0, oy1), 10 ** 6, p["text_h"], stack, p["pad"])
+            if y is None:
+                y = max(0, oy1)
+            # 被挤离本题行 → 加「第N题」前缀对号
+            if num_lbl is not None and y > oy2 + int(p["line_h"] * 0.6) and e["wrong_raw"]:
+                p["wrong"] = _wrap(f"第{num_lbl}题 {e['wrong_raw']}", 8)
+                n = len(p["wrong"]) + len(p["note"])
+                p["text_h"] = max(1, n) * p["line_h"] + int(p["line_h"] * 0.3)
+                y = _free_y_for_text(x1, x1 + p["text_w"], max(0, oy1), 10 ** 6, p["text_h"], stack, p["pad"])
+                if y is None:
+                    y = max(0, oy1)
+            rect = (x1, y, x1 + p["text_w"], y + p["text_h"])
+            stack.append(rect)
+            e["rect"] = rect
+            e["x"] = x1
+            e["y"] = y + p["size"]
+            e["h"] = p["text_h"]
+            e["wrong"] = p["wrong"]
+            e["note"] = p["note"]
+            e["font"] = p["font"]
+            e["thin"] = p["thin"]
+            e["line_h"] = p["line_h"]
+            e["cover_xr"] = cover_xr
 
     for e in entries:
         # 试卷底图上老师批注原位不动（同位重画=叠同样的字）
@@ -1524,7 +1974,7 @@ def draw_wrong_annotations_variant(
     # 先盖旧（全部盖完再画新字，防止后盖的白块削掉先画的批注尾巴）
     if move_paper:
         draw.rectangle(
-            [margin - 4, old_paper_y - int(line_h * 0.7), img_w - margin,
+            [margin - 4 + x_shift, old_paper_y - int(line_h * 0.7), cover_xr,
              min(orig_h, old_paper_y + len(paper_lines) * line_h + int(line_h * 0.3))],
             fill="#ffffff",
         )
@@ -1532,12 +1982,12 @@ def draw_wrong_annotations_variant(
         if not e["note"] or not e["draw"]:
             continue
         draw.rectangle(
-            [e["cover_x"] - 4, e["old_y"] - int(line_h * 0.7), img_w - margin,
+            [e["cover_x"] - 4, e["old_y"] - int(line_h * 0.7), e.get("cover_xr", cover_xr),
              min(orig_h, e["old_y"] + len(e["old_note"]) * line_h + int(line_h * 0.3))],
             fill="#ffffff",
         )
 
-    # 再画新：错因（大红 #e60000）→ 老师批注（红 #d62727）→ 整卷总评
+    # 再画新：错因 → 老师批注 → 整卷总评（统一 √× 规格 #FF0000）
     for e in entries:
         if not e["draw"]:
             continue
@@ -1546,15 +1996,15 @@ def draw_wrong_annotations_variant(
         e_lh = int(e.get("line_h") or line_h)
         ty = e["y"]
         for ln in e["wrong"]:
-            _draw_note_line(draw, e["x"], ty, ln, e_font, "#e60000", thin_face=e_thin)
+            _draw_note_line(draw, e["x"], ty, ln, e_font, "#FF0000", thin_face=e_thin)
             ty += e_lh
         for ln in e["note"]:
-            _draw_note_line(draw, e["x"], ty, ln, e_font, "#d62727", thin_face=e_thin)
+            _draw_note_line(draw, e["x"], ty, ln, e_font, "#FF0000", thin_face=e_thin)
             ty += e_lh
     if move_paper:
         ty = new_paper_y
         for ln in paper_lines:
-            _draw_note_line(draw, margin, ty, ln, note_font, "#d62727", thin_face=note_thin)
+            _draw_note_line(draw, margin + x_shift, ty, ln, note_font, "#FF0000", thin_face=note_thin)
             ty += line_h
 
     try:

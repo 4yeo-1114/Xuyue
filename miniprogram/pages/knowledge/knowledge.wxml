@@ -1,0 +1,98 @@
+<view class="page">
+
+  <picker mode="selector" range="{{subjectLabels}}" value="{{subjectIndex}}" bindchange="onSubjectChange">
+    <view class="card field">
+      <text class="field-label">学科</text>
+      <view class="field-value field-arrow">{{subjectLabels[subjectIndex]}}</view>
+    </view>
+  </picker>
+
+  <picker mode="selector" range="{{termLabels}}" value="{{termIndex}}" bindchange="onTermChange">
+    <view class="card field">
+      <text class="field-label">学期</text>
+      <view class="field-value field-arrow">{{termLabels[termIndex]}}</view>
+    </view>
+  </picker>
+
+  <view wx:if="{{loading}}" class="empty">正在加载…</view>
+  <view wx:elif="{{units.length === 0}}" class="empty">
+    <text class="empty-emoji">🗺️</text>
+    <view>该学科暂无知识图谱数据</view>
+    <button class="btn init-btn" bindtap="onInitData" loading="{{seeding}}" disabled="{{seeding}}">一键导入知识点</button>
+    <view class="hint">导入内置课程演示数据（与网页版「学科配置」初始化同源）</view>
+  </view>
+
+  <block wx:else>
+    <view class="hint">带「薄弱」标签的知识点要重点补 · 点知识点看详情</view>
+
+    <view class="card" wx:for="{{units}}" wx:for-item="unit" wx:for-index="uIdx" wx:key="id">
+      <view class="card-title">
+        <text>{{unit.name}}</text>
+        <text class="unit-sub">{{unit.subtitle}}</text>
+      </view>
+
+      <view class="kp-row" wx:for="{{unit.kps}}" wx:for-item="kp" wx:for-index="kIdx" wx:key="code"
+            bindtap="onKpTap" data-u="{{uIdx}}" data-k="{{kIdx}}">
+        <view class="kp-head">
+          <text class="kp-code">{{kp.code}}</text>
+          <text class="kp-name">{{kp.name}}</text>
+          <text class="kp-tag kp-tag-key" wx:if="{{kp.keyPoint}}">重点</text>
+          <text class="kp-tag kp-tag-weak" wx:if="{{kp.isWeak}}">薄弱</text>
+          <text class="kp-arrow">›</text>
+        </view>
+        <view class="kp-meter">
+          <view class="kp-meter-fill {{kp.isWeak ? 'kp-fill-weak' : ''}}" style="width: {{kp.masteryPct}}%"></view>
+        </view>
+        <view class="kp-meta">
+          <text>掌握度 {{kp.masteryPct}}%</text>
+          <text wx:if="{{kp.hours !== ''}}"> · {{kp.hours}} 课时</text>
+          <text wx:if="{{kp.level}}"> · {{kp.level}}</text>
+        </view>
+      </view>
+    </view>
+  </block>
+
+  <!-- 知识点详情 -->
+  <view wx:if="{{showDetail && detail}}" class="detail-mask" bindtap="onCloseDetail">
+    <view class="detail-box" catchtap="noop">
+      <view class="detail-title">{{detail.name}}</view>
+      <view class="detail-chips">
+        <text class="detail-chip">{{detail.code}}</text>
+        <text class="detail-chip" wx:if="{{detail.level}}">层级 {{detail.level}}</text>
+        <text class="detail-chip" wx:if="{{detail.difficulty}}">难度 {{detail.difficulty}}</text>
+        <text class="detail-chip" wx:if="{{detail.hours !== ''}}">{{detail.hours}} 课时</text>
+        <text class="detail-chip" wx:if="{{detail.keyPoint}}">★ {{detail.keyPoint}}</text>
+      </view>
+      <view class="detail-meter">
+        <view class="detail-meter-fill {{detail.isWeak ? 'kp-fill-weak' : ''}}" style="width: {{detail.masteryPct}}%"></view>
+      </view>
+      <view class="detail-meta">掌握度 {{detail.masteryPct}}%{{detail.isWeak ? ' · 薄弱' : ''}}{{detail.unitName ? ' · ' + detail.unitName : ''}}</view>
+
+      <view class="detail-sec" wx:if="{{detail.commonErrors}}">
+        <view class="detail-sec-title">⚠️ 常见错误</view>
+        <view class="detail-sec-body">{{detail.commonErrors}}</view>
+      </view>
+      <view class="detail-sec" wx:if="{{detail.prerequisite.length}}">
+        <view class="detail-sec-title">⬅️ 前置知识</view>
+        <view class="detail-sec-body">{{detail.prerequisite}}</view>
+      </view>
+      <view class="detail-sec" wx:if="{{detail.postrequisite.length}}">
+        <view class="detail-sec-title">➡️ 后续知识</view>
+        <view class="detail-sec-body">{{detail.postrequisite}}</view>
+      </view>
+      <view class="detail-sec" wx:if="{{detail.related.length}}">
+        <view class="detail-sec-title">🔗 相关知识点</view>
+        <view class="detail-sec-body">{{detail.related}}</view>
+      </view>
+      <view class="detail-sec" wx:if="{{detail.resources.length}}">
+        <view class="detail-sec-title">📚 推荐资料</view>
+        <view class="detail-sec-body">
+          <text wx:for="{{detail.resources}}" wx:key="name">{{item.name}}（{{item.type}}）{{index < detail.resources.length - 1 ? '\n' : ''}}</text>
+        </view>
+      </view>
+
+      <button class="btn btn-plain detail-close" bindtap="onCloseDetail">关闭</button>
+    </view>
+  </view>
+
+</view>

@@ -1,18 +1,44 @@
 {
   "pages": [
     "pages/home/home",
+    "pages/features/features",
+    "pages/mine/mine",
     "pages/login/login",
+    "pages/register/register",
     "pages/index/index",
+    "pages/papers/papers",
     "pages/grade/grade",
+    "pages/variants/variants",
     "pages/grade-history/grade-history",
     "pages/result/result",
-    "pages/history/history"
+    "pages/history/history",
+    "pages/scores/scores",
+    "pages/tasks/tasks",
+    "pages/ledger/ledger",
+    "pages/quota/quota",
+    "pages/errors/errors",
+    "pages/students/students",
+    "pages/classes/classes",
+    "pages/knowledge/knowledge",
+    "pages/dashboard/dashboard",
+    "pages/admin-overview/admin-overview"
   ],
+  "tabBar": {
+    "color": "#a89bc4",
+    "selectedColor": "#7c6bff",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      { "pagePath": "pages/home/home", "text": "首页" },
+      { "pagePath": "pages/features/features", "text": "功能" },
+      { "pagePath": "pages/mine/mine", "text": "我的" }
+    ]
+  },
   "window": {
-    "navigationBarBackgroundColor": "#2F6BFF",
+    "navigationBarBackgroundColor": "#7c6bff",
     "navigationBarTitleText": "叙阅",
     "navigationBarTextStyle": "white",
-    "backgroundColor": "#F5F6F8",
+    "backgroundColor": "#f7f4ff",
     "backgroundTextStyle": "light"
   },
   "style": "v2",

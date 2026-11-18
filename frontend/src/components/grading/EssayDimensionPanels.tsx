@@ -288,7 +288,6 @@ export function EssayDimensionScoreCard({
   dimensions,
   dimensionScores,
   totalScore,
-  essayGrade,
   filename,
   onSave,
   t,
@@ -296,7 +295,6 @@ export function EssayDimensionScoreCard({
   dimensions: EssayDimension[];
   dimensionScores?: Record<string, number> | null;
   totalScore?: number | null;
-  essayGrade?: string | null;
   filename: string;
   onSave: (payload: EssayScorePayload) => Promise<void> | void;
   t: TranslateFn;
@@ -334,7 +332,6 @@ export function EssayDimensionScoreCard({
           {totalScore != null && (
             <span className="rounded-md bg-primary/10 px-2 py-0.5 text-sm font-bold text-primary">
               {t("grading.dimension.totalScore")}: {Number(totalScore)}
-              {essayGrade ? ` · ${essayGrade}` : ""}
             </span>
           )}
         </div>

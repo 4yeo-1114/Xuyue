@@ -422,6 +422,26 @@ def void_folder_corrections(folder_safe: str) -> None:
         db.close()
 
 
+def void_paper_corrections(folder_safe: str, paper_name: str) -> None:
+    """局部重批（单张/勾选）：只作废该卷台账行，其余学生的台账保留。幂等。"""
+    safe = str(folder_safe or "").strip()
+    paper = str(paper_name or "").strip()
+    if not safe or not paper:
+        return
+    db = SessionLocal()
+    try:
+        db.query(CorrectionLedger).filter(
+            CorrectionLedger.folder_safe == safe,
+            CorrectionLedger.paper_name == paper,
+        ).update({CorrectionLedger.voided: True}, synchronize_session=False)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"修正记账作废失败: {safe}/{paper}: {e}")
+    finally:
+        db.close()
+
+
 # ── 只读统计 ────────────────────────────────────────────────────────────
 
 

@@ -1,0 +1,203 @@
+/* 学生分析 */
+
+.stu-head {
+  display: flex;
+  align-items: center;
+}
+
+.stu-name {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: #4a3f5c;
+}
+
+.stu-meta {
+  margin-left: 16rpx;
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  flex: 1;
+}
+
+.stu-no {
+  font-size: 22rpx;
+  color: #a89bc4;
+}
+
+.stu-arrow {
+  color: #c9bfe0;
+  font-size: 32rpx;
+}
+
+/* ── 预警 ── */
+.alert-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12rpx;
+  margin-top: 16rpx;
+  padding: 14rpx 16rpx;
+  background: #fff3d9;
+  border-radius: 22rpx;
+}
+
+.alert-tag {
+  flex-shrink: 0;
+  font-size: 20rpx;
+  padding: 2rpx 12rpx;
+  border-radius: 999rpx;
+  background: #e89b1c;
+  color: #fff;
+}
+
+.alert-tag.danger {
+  background: #f2647c;
+}
+
+.alert-tag.info {
+  background: #7c6bff;
+}
+
+.alert-text {
+  font-size: 24rpx;
+  color: #96631a;
+  line-height: 1.5;
+}
+
+/* ── 成绩走势 ── */
+.sec-title {
+  margin: 24rpx 0 12rpx;
+  font-size: 26rpx;
+  font-weight: 600;
+  color: #7d6f99;
+}
+
+.h-row {
+  display: flex;
+  align-items: center;
+  padding: 12rpx 0;
+  border-bottom: 1rpx solid #f3effa;
+}
+
+.h-row:last-child {
+  border-bottom: none;
+}
+
+.h-exam {
+  width: 150rpx;
+  flex-shrink: 0;
+  font-size: 24rpx;
+  color: #4a3f5c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.h-bars {
+  flex: 1;
+  padding: 0 12rpx;
+}
+
+.h-line {
+  display: flex;
+  align-items: center;
+  margin: 6rpx 0;
+}
+
+.h-track {
+  flex: 1;
+  height: 12rpx;
+  background: #f0ecff;
+  border-radius: 999rpx;
+  overflow: hidden;
+}
+
+.h-fill {
+  height: 100%;
+  border-radius: 999rpx;
+}
+
+.h-fill-self {
+  background: #7c6bff;
+}
+
+.h-fill-avg {
+  background: #e89b1c;
+}
+
+.h-val {
+  width: 64rpx;
+  text-align: right;
+  font-size: 20rpx;
+  color: #7d6f99;
+  margin-left: 8rpx;
+}
+
+.h-up {
+  width: 40rpx;
+  text-align: center;
+  font-size: 28rpx;
+  color: #1fb384;
+}
+
+.legend {
+  display: flex;
+  gap: 24rpx;
+  margin-top: 12rpx;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  font-size: 22rpx;
+  color: #7d6f99;
+}
+
+.legend-dot {
+  width: 16rpx;
+  height: 16rpx;
+  border-radius: 999rpx;
+  margin-right: 8rpx;
+}
+
+.legend-dot-self {
+  background: #7c6bff;
+}
+
+.legend-dot-avg {
+  background: #e89b1c;
+}
+
+/* ── 错题 ── */
+.wq-row {
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid #f3effa;
+}
+
+.wq-row:last-child {
+  border-bottom: none;
+}
+
+.wq-title {
+  font-size: 26rpx;
+  color: #4a3f5c;
+  line-height: 1.5;
+}
+
+.wq-kp {
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  color: #7c6bff;
+}
+
+.wq-imgs {
+  display: flex;
+  gap: 12rpx;
+  margin-top: 12rpx;
+}
+
+.wq-img {
+  width: 210rpx;
+  height: 150rpx;
+  border-radius: 22rpx;
+  background: #f3effa;
+}

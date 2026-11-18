@@ -66,12 +66,15 @@ class SaveExamPaperRequest(BaseModel):
     title: str
     subject: str
     questions: List[Dict[str, Any]]
+    # 卷头可编辑字段（11.9-2）：{class,name,number,totalScore}，缺省键=前端默认文案
+    header_fields: Optional[Dict[str, Any]] = None
 
 class ExamPaperResponse(BaseModel):
     id: str
     title: str
     subject: str
     questions: List[Dict[str, Any]]
+    header_fields: Optional[Dict[str, Any]] = None
     updatedAt: str
 
 @router.get("/papers", response_model=ApiResponse[List[ExamPaperResponse]])
@@ -87,6 +90,7 @@ def get_exam_papers(
             "title": p.title,
             "subject": p.subject,
             "questions": p.questions if isinstance(p.questions, list) else [],
+            "header_fields": p.header_fields if isinstance(p.header_fields, dict) else None,
             "updatedAt": p.updated_at.isoformat() if p.updated_at else ""
         })
     return ApiResponse(data=data)
@@ -103,6 +107,7 @@ def create_exam_paper(
         title=body.title,
         subject=body.subject,
         questions=questions,
+        header_fields=body.header_fields if isinstance(body.header_fields, dict) else None,
     )
     db.add(new_paper)
     db.commit()
@@ -112,6 +117,7 @@ def create_exam_paper(
         "title": new_paper.title,
         "subject": new_paper.subject,
         "questions": new_paper.questions if isinstance(new_paper.questions, list) else [],
+        "header_fields": new_paper.header_fields if isinstance(new_paper.header_fields, dict) else None,
         "updatedAt": new_paper.updated_at.isoformat() if new_paper.updated_at else ""
     })
 
@@ -130,6 +136,7 @@ def update_exam_paper(
     paper.title = body.title
     paper.subject = body.subject
     paper.questions = questions
+    paper.header_fields = body.header_fields if isinstance(body.header_fields, dict) else None
     db.commit()
     db.refresh(paper)
     return ApiResponse(data={
@@ -137,6 +144,7 @@ def update_exam_paper(
         "title": paper.title,
         "subject": paper.subject,
         "questions": paper.questions if isinstance(paper.questions, list) else [],
+        "header_fields": paper.header_fields if isinstance(paper.header_fields, dict) else None,
         "updatedAt": paper.updated_at.isoformat() if paper.updated_at else ""
     })
 
@@ -241,6 +249,7 @@ from app.utils.exam_math_format import (
     is_math_related_subject,
     normalize_questions_math_notation,
 )
+from app.utils.figure_render import FIGURE_POLICY_PROMPT, process_question_figures
 from app.utils.qwen_settings import get_llm_config, get_llm_thinking_extra
 
 def _filter_redline_exam_question(q: Dict[str, Any]) -> Dict[str, Any]:
@@ -319,6 +328,7 @@ def ai_generate_exam(
 【题目要求】：
 {req_str}
 {math_format_block}
+{FIGURE_POLICY_PROMPT}
 
 请务必直接输出一个标准的 JSON 数组，包含所有生成的题目（不要输出 markdown 的 ```json 块，也不要输出任何前缀或后缀说明，只输出纯 JSON 数组）。
 每个题目对象的字段必须包含：
@@ -329,6 +339,7 @@ def ai_generate_exam(
 - score: 数字（使用上方提供的分数）
 - options: 字符串数组（choice 提供4个选项；matching 提供左列4项；ordering 提供需按正确顺序排列的乱序项；cloze 可选提供候选词。注意：只输出内容本身，绝对不要在内容前面加上 "A."、"B."、"C."、"D." 这样的前缀！因为前端试卷上已经自带序号标签了）
 - subQuestions: 字符串数组（short_answer/reading 提供1到3个子问题；matching 提供右列与左列一一对应的4项；其余为空数组）
+- figure: 可选。本题需要配图时给作图规格对象（见【配图出题】），不需要配图的题不要带此字段
 
 示例格式：
 [
@@ -356,6 +367,14 @@ def ai_generate_exam(
     "score": 8,
     "options": ["画蛇添足", "亡羊补牢", "守株待兔", "掩耳盗铃"],
     "subQuestions": ["做了多余的事", "出了问题及时补救", "不劳而获", "自欺欺人"]
+  }},
+  {{
+    "id": "q_abc4",
+    "type": "short_answer",
+    "stem": "",
+    "content": "如图所示，抛物线 y=x²-4x+3 与 x 轴交于 A、B 两点（点 A 在点 B 左侧），求 A、B 两点的坐标及顶点坐标。",
+    "score": 8,
+    "figure": {{"kind": "function", "exprs": ["x^2-4*x+3"], "x_min": -1, "x_max": 5, "y_min": -2, "y_max": 10}}
   }}
 ]
 请确保生成的题目符合指定的知识点和难度，并且数量与要求完全一致。所有文字必须是学生可直接阅读的普通中文试卷用语，不要出现 LaTeX 或 Markdown 标记。
@@ -367,7 +386,8 @@ def ai_generate_exam(
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
-        "max_tokens": 4096,
+        # figure 规格把 JSON 撑大，4096 会截断成解析失败（1026 配图出题）
+        "max_tokens": 6144,
     }
 
     try:
@@ -417,6 +437,10 @@ def ai_generate_exam(
             questions = [_filter_redline_exam_question(q) if isinstance(q, dict) else q for q in questions]
         except Exception:  # noqa: BLE001 - best-effort，过滤器异常不阻断主流程
             pass
+
+        # 配图收尾（1026「如图所示」没图）：要图的题画真图挂 figure_img；
+        # 画不出/引用图没图的整题丢弃（要么带图，要么出没有图的题）
+        questions = process_question_figures(questions)
 
         # E05 · AI 内容统一标识（GB 45438 隐式标识）：AI 组卷响应每题外露 is_ai=true（前端消费零改动）
         for q in questions:

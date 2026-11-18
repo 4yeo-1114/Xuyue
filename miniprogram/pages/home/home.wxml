@@ -1,10 +1,61 @@
 <view class="page home-page">
 
   <view class="home-head">
-    <view class="home-brand">叙阅</view>
-    <view class="home-slogan">布置作业 · 自动批改</view>
+    <view class="home-head-row">
+      <view class="home-logo">📖</view>
+      <view class="home-head-text">
+        <view class="home-brand">叙阅</view>
+        <view class="home-slogan">布置作业 · 自动批改 · 学情分析</view>
+      </view>
+    </view>
   </view>
 
+  <!-- 我的名片（点名片进「我的」） -->
+  <view class="mine-card" bindtap="onGoMine">
+    <view class="mine-top">
+      <view class="mine-avatar">{{mine.avatar}}</view>
+      <view class="mine-info">
+        <view class="mine-name">{{mine.name}}</view>
+        <view class="mine-sub">
+          <text class="mine-chip" wx:if="{{mine.subject}}">📚 {{mine.subject}}</text>
+          <text class="mine-chip" wx:if="{{mine.role}}">✨ {{mine.role}}</text>
+        </view>
+      </view>
+      <view class="mine-arrow">›</view>
+    </view>
+    <view class="mine-stats">
+      <view class="mine-stat" catchtap="onGoClasses">
+        <view class="mine-num mine-num-purple">{{mine.classCount}}</view>
+        <view class="mine-label">我的班级</view>
+      </view>
+      <view class="mine-stat" catchtap="onGoStudents">
+        <view class="mine-num mine-num-mint">{{mine.studentCount}}</view>
+        <view class="mine-label">我的学生</view>
+      </view>
+      <view class="mine-stat" catchtap="onGoGradeHistory">
+        <view class="mine-num mine-num-pink">{{mine.weekGrades}}</view>
+        <view class="mine-label">本周批改</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 最近批改 -->
+  <view class="recent-card" wx:if="{{recent.length > 0}}">
+    <view class="recent-head">
+      <view class="recent-title">🍬 最近批改</view>
+      <view class="recent-more" catchtap="onGoGradeHistory">全部 ›</view>
+    </view>
+    <view class="recent-row" wx:for="{{recent}}" wx:key="id" catchtap="onGoGradeHistory">
+      <view class="recent-dot {{item.status === 'done' ? 'dot-done' : (item.status === 'failed' ? 'dot-failed' : 'dot-pending')}}"></view>
+      <view class="recent-main">
+        <view class="recent-name">{{item.name}}</view>
+        <view class="recent-time">{{item.timeText}}</view>
+      </view>
+      <view class="recent-tag {{item.status === 'done' ? 'tag-done' : (item.status === 'failed' ? 'tag-failed' : 'tag-pending')}}">{{item.statusText}}</view>
+    </view>
+  </view>
+
+  <!-- 主操作 -->
   <view class="home-grid">
     <view class="home-card home-card-primary" bindtap="onGoAssign">
       <text class="home-card-icon">📝</text>
@@ -19,17 +70,6 @@
     </view>
   </view>
 
-  <view class="card home-links">
-    <view class="home-link" bindtap="onGoGradeHistory">
-      <text class="home-link-label">📚 批改历史</text>
-      <text class="home-link-arrow">›</text>
-    </view>
-    <view class="home-link" bindtap="onGoPrintHistory">
-      <text class="home-link-label">🖨️ 打印记录</text>
-      <text class="home-link-arrow">›</text>
-    </view>
-  </view>
-
-  <view class="home-logout" bindtap="onLogout">退出登录</view>
+  <!-- 更多入口在底部「功能」页签 -->
 
 </view>

@@ -37,7 +37,9 @@ const quickActionDefs = [
   {
     icon: FileText,
     labelKey: "home.quickActions.grade",
-    navId: "__scroll_grading",
+    // 跳「开始批改」页（1026：原来 __scroll_grading 只在首页滚到拍照区，
+    // 看着像没反应；「去批改」就该进开始批改页）
+    navId: "grading-start",
   },
   {
     icon: BarChart3,

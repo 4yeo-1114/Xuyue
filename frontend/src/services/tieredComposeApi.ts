@@ -13,6 +13,8 @@ export interface TieredComposeQuestion {
   analysis?: string;
   knowledge_point?: string;
   difficulty?: number;
+  figure?: Record<string, unknown> | null; // AI 出题图形规格
+  figure_img?: string | null; // 配图 data URL（后端按 figure 规格画出）
 }
 
 export interface TieredDifficultySummary {

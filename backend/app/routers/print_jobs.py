@@ -2,15 +2,18 @@
 """打印任务队列：小程序布置作业 → 生成作业纸 → 本机打印代理拉取打印。
 
 设计要点：
-1. **纯内存队列，不落库、不留痕** —— 进程重启即清空，不产生任何历史记录。
+1. **落库留痕（2026-10-23 起）** —— 任务/上传材料存 print_jobs / print_uploads 表，
+   小程序与网页共享同一批作业记录（网页可看可改可删）。此前是纯内存队列，
+   进程重启即清空，网页端无法留痕。
 2. 采用「代理主动轮询」而非云端反向推送，所以本机（学校/办公室那台连着打印机的
    Windows 机器）**不需要公网 IP、不需要内网穿透**，只要能出站访问后端即可。
 3. 代理鉴权用独立的 agent token（`.env` 里的 `PRINT_AGENT_TOKEN`），不走用户 JWT，
    避免把用户账号密码放到常驻进程里。
-4. 老师侧的接口（创建/查询/预览）走正常用户 JWT。
+4. 老师侧的接口（创建/查询/预览/修改）走正常用户 JWT。
 """
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import threading
@@ -32,8 +35,11 @@ from fastapi import (
     UploadFile,
 )
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
+from app.database import get_db
 from app.dependencies import get_current_user_id
+from app.models.print_job import PrintJobRow, PrintUploadRow
 from app.utils.worksheet_pdf import (
     available_page_sizes,
     build_worksheet_pdf,
@@ -47,13 +53,11 @@ from app.utils.worksheet_pdf import (
 router = APIRouter(prefix="/print-jobs", tags=["print-jobs"])
 
 # ─── 配置 ────────────────────────────────────────────────────────────────
-# 任务在内存中保留的时长（秒）；超时后连同 PDF 一起丢弃，不残留。
-_JOB_TTL_SECONDS = 2 * 60 * 60
 # 代理领走任务后，超过这个时间没有回执，就判定为代理掉线，任务退回队列重试。
 _CLAIM_TIMEOUT_SECONDS = 5 * 60
 # 同一任务最多重试次数，超过标记失败。
 _MAX_ATTEMPTS = 3
-# 队列里最多堆积的任务数（防止内存被塞爆）。
+# 活跃任务（draft/pending/printing）最多堆积数（防止队列被塞爆）。
 _MAX_QUEUE_SIZE = 200
 # 单个任务 PDF 大小上限（字节）。
 _MAX_PDF_BYTES = 8 * 1024 * 1024
@@ -61,7 +65,7 @@ _MAX_PDF_BYTES = 8 * 1024 * 1024
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 # 一次布置作业最多带几份上传材料。
 _MAX_UPLOADS_PER_JOB = 20
-# 未使用的上传文件在内存里保留多久（秒）。
+# 未被任何作业引用的上传文件保留多久（秒）；被作业引用的随作业长期保留（改题重建 PDF 要用）。
 _UPLOAD_TTL_SECONDS = 1 * 60 * 60
 
 
@@ -101,6 +105,10 @@ class PrintJob:
     source: str = "text"
     # 纸张规格代码，见 worksheet_pdf._PAGE_SPECS
     page_size: str = "a4"
+    # 排版方式：auto / single / double
+    layout: str = "auto"
+    # 出卷全量参数（questions / question_items / note / answer_lines / upload_ids …）
+    payload: dict = field(default_factory=dict)
     updated_at: float = field(default_factory=time.time)
     attempts: int = 0
     claimed_at: Optional[float] = None
@@ -110,7 +118,7 @@ class PrintJob:
     error: Optional[str] = None
 
     def to_public(self) -> dict:
-        """给小程序看的任务快照（不含 PDF 字节）。"""
+        """给小程序看的任务快照（不含 PDF 字节与出卷参数）。"""
         return {
             "job_id": self.id,
             "status": self.status,
@@ -133,13 +141,27 @@ class PrintJob:
             "printed_at": _iso(self.printed_at),
         }
 
+    def to_full(self) -> dict:
+        """网页端编辑弹窗用：任务快照 + 出卷参数 + 上传材料清单（不含文件字节）。"""
+        data = self.to_public()
+        p = self.payload if isinstance(self.payload, dict) else {}
+        data.update(
+            {
+                "layout": self.layout,
+                "note": p.get("note") or "",
+                "answer_lines": p.get("answer_lines", 2),
+                "upload_answer_lines": p.get("upload_answer_lines", 0),
+                "answer_lines_override": p.get("answer_lines_override"),
+                "questions": p.get("questions") or [],
+                "question_items": p.get("question_items") or [],
+                "upload_ids": p.get("upload_ids") or [],
+                "uploads": p.get("uploads_meta") or [],
+            }
+        )
+        return data
 
-_JOBS: dict[str, PrintJob] = {}
+
 _LOCK = threading.Lock()
-
-# 老师上传的题目材料（图片 / PDF / Word），暂存在内存里，
-# 等创建打印任务时被引用一次，之后随任务一起过期清掉 —— 同样不落库、不留痕。
-_UPLOADS: dict[str, dict] = {}
 
 
 def _iso(ts: Optional[float]) -> Optional[str]:
@@ -150,32 +172,145 @@ def _iso(ts: Optional[float]) -> Optional[str]:
     )
 
 
-def _sweep() -> None:
-    """清理过期任务、回收掉线代理占用的任务。调用方需持有 _LOCK。"""
+# ─── 存取层（行 ↔ dataclass）─────────────────────────────────────────────
+def _row_to_job(row: PrintJobRow) -> PrintJob:
+    try:
+        p = json.loads(row.payload or "{}")
+        if not isinstance(p, dict):
+            p = {}
+    except Exception:
+        p = {}
+    return PrintJob(
+        id=row.id,
+        status=row.status or "draft",
+        title=row.title or "",
+        subject=row.subject or "",
+        grade=row.grade or "",
+        class_name=row.class_name or "",
+        teacher=row.teacher or "",
+        question_count=int(row.question_count or 0),
+        copies=int(row.copies or 1),
+        created_by=row.created_by or "",
+        created_at=float(row.created_at or 0),
+        pdf=bytes(row.pdf or b""),
+        source=row.source or "text",
+        page_size=row.page_size or "a4",
+        layout=row.layout or "auto",
+        payload=p,
+        updated_at=float(row.updated_at or 0),
+        attempts=int(row.attempts or 0),
+        claimed_at=row.claimed_at,
+        claimed_by=row.claimed_by,
+        printed_at=row.printed_at,
+        printer=row.printer,
+        error=row.error,
+    )
+
+
+def _apply_job_to_row(job: PrintJob, row: PrintJobRow) -> None:
+    row.created_by = job.created_by
+    row.status = job.status
+    row.title = job.title
+    row.subject = job.subject
+    row.grade = job.grade
+    row.class_name = job.class_name
+    row.teacher = job.teacher
+    row.question_count = job.question_count
+    row.copies = job.copies
+    row.source = job.source
+    row.page_size = job.page_size
+    row.layout = job.layout
+    row.payload = json.dumps(job.payload or {}, ensure_ascii=False)
+    row.pdf = job.pdf
+    row.created_at = job.created_at
+    row.updated_at = job.updated_at
+    row.attempts = job.attempts
+    row.claimed_at = job.claimed_at
+    row.claimed_by = job.claimed_by
+    row.printed_at = job.printed_at
+    row.printer = job.printer
+    row.error = job.error
+
+
+def _load_job(db: Session, job_id: str) -> Optional[PrintJob]:
+    row = db.get(PrintJobRow, job_id)
+    return _row_to_job(row) if row is not None else None
+
+
+def _save_job(db: Session, job: PrintJob) -> None:
+    row = db.get(PrintJobRow, job.id)
+    if row is None:
+        row = PrintJobRow(id=job.id)
+        db.add(row)
+    _apply_job_to_row(job, row)
+    db.commit()
+
+
+def _sweep(db: Session) -> None:
+    """清理无主上传材料、回收掉线代理占用的任务。"""
     now = time.time()
 
-    for job_id, job in list(_JOBS.items()):
-        if now - job.created_at > _JOB_TTL_SECONDS:
-            _JOBS.pop(job_id, None)
-            continue
+    stale = (
+        db.query(PrintJobRow)
+        .filter(PrintJobRow.status == "printing", PrintJobRow.claimed_at.isnot(None))
+        .all()
+    )
+    for row in stale:
+        claimed_at = float(row.claimed_at or 0)
+        if now - claimed_at > _CLAIM_TIMEOUT_SECONDS:
+            if int(row.attempts or 0) >= _MAX_ATTEMPTS:
+                row.status = "failed"
+                row.error = "打印代理多次未响应"
+            else:
+                row.status = "pending"
+                row.claimed_at = None
+                row.claimed_by = None
+                row.error = "打印代理超时，已退回队列"
+            row.updated_at = now
 
-        # 代理领走后长时间没回执 → 退回队列（或判定失败）
-        if job.status == "printing" and job.claimed_at:
-            if now - job.claimed_at > _CLAIM_TIMEOUT_SECONDS:
-                if job.attempts >= _MAX_ATTEMPTS:
-                    job.status = "failed"
-                    job.error = "打印代理多次未响应"
-                else:
-                    job.status = "pending"
-                    job.claimed_at = None
-                    job.claimed_by = None
-                    job.error = "打印代理超时，已退回队列"
-                job.updated_at = now
+    # 顺手清掉没人引用、且放太久的上传材料（被作业引用的随作业长期保留）
+    db.query(PrintUploadRow).filter(
+        PrintUploadRow.job_id.is_(None),
+        PrintUploadRow.created_at < now - _UPLOAD_TTL_SECONDS,
+    ).delete(synchronize_session=False)
+    db.commit()
 
-    # 顺手清掉没人用、且放太久的上传材料
-    for upload_id, item in list(_UPLOADS.items()):
-        if now - item["created_at"] > _UPLOAD_TTL_SECONDS:
-            _UPLOADS.pop(upload_id, None)
+
+def _upload_item_to_dict(item: PrintUploadRow) -> dict:
+    return {
+        "kind": item.kind,
+        "name": item.name,
+        "data": bytes(item.data or b""),
+        "width": item.width,
+        "height": item.height,
+    }
+
+
+def _build_pdf(job_payload: dict, uploads: list[dict]) -> bytes:
+    """按出卷参数重建作业纸 PDF（创建与修改共用）。"""
+    try:
+        pdf = build_worksheet_pdf(
+            title=str(job_payload.get("title") or ""),
+            subject=str(job_payload.get("subject") or ""),
+            grade=str(job_payload.get("grade") or ""),
+            class_name=str(job_payload.get("class_name") or ""),
+            teacher=str(job_payload.get("teacher") or ""),
+            questions=job_payload.get("questions") or [],
+            question_count=int(job_payload.get("question_count") or 0),
+            answer_lines=int(job_payload.get("answer_lines") or 2),
+            note=str(job_payload.get("note") or ""),
+            uploads=uploads or None,
+            upload_answer_lines=int(job_payload.get("upload_answer_lines") or 0),
+            question_items=job_payload.get("question_items") or None,
+            answer_lines_override=job_payload.get("answer_lines_override"),
+            page_size=str(job_payload.get("page_size") or "a4"),
+            layout=str(job_payload.get("layout") or "auto"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"作业纸生成失败：{exc}")
+    if len(pdf) > _MAX_PDF_BYTES:
+        raise HTTPException(status_code=500, detail="作业纸文件过大，请减少题目数量")
+    return pdf
 
 
 # ─── 请求 / 响应模型 ─────────────────────────────────────────────────────
@@ -214,10 +349,31 @@ class CreatePrintJobRequest(BaseModel):
     )
 
 
+class UpdatePrintJobRequest(BaseModel):
+    """网页/小程序修改作业记录。只传要改的字段；改了出卷内容会重建 PDF。"""
+
+    title: Optional[str] = None
+    subject: Optional[str] = None
+    grade: Optional[str] = None
+    class_name: Optional[str] = None
+    teacher: Optional[str] = None
+    copies: Optional[int] = None
+    questions: Optional[list[str]] = None
+    question_count: Optional[int] = None
+    answer_lines: Optional[int] = None
+    note: Optional[str] = None
+    upload_answer_lines: Optional[int] = None
+    question_items: Optional[list[dict]] = None
+    answer_lines_override: Optional[int] = None
+    page_size: Optional[str] = None
+    layout: Optional[str] = None
+
+
 class PrintNowRequest(BaseModel):
     """老师点「打印」时可以临时改份数。"""
 
     copies: Optional[int] = Field(None, description="临时改打印份数；不传则用生成时定的份数")
+    reprint: bool = Field(False, description="已打印过的作业重打一份（网页端「再打」用）")
 
 
 class AgentAckRequest(BaseModel):
@@ -247,17 +403,25 @@ def _require_agent(
 #  注意：必须写在 /{job_id} 之前，避免 "agent" 被当作 job_id 匹配。
 # ══════════════════════════════════════════════════════════════════════════
 @router.get("/agent/health")
-def agent_health(_: str = Depends(_require_agent)):
+def agent_health(db: Session = Depends(get_db), _: str = Depends(_require_agent)):
     """代理连通性自检。"""
     with _LOCK:
-        _sweep()
-        pending = sum(1 for j in _JOBS.values() if j.status == "pending")
-    return {"ok": True, "pending": pending, "queue_total": len(_JOBS)}
+        _sweep(db)
+        pending = (
+            db.query(PrintJobRow).filter(PrintJobRow.status == "pending").count()
+        )
+        queue_total = (
+            db.query(PrintJobRow)
+            .filter(PrintJobRow.status.in_(("draft", "pending", "printing")))
+            .count()
+        )
+    return {"ok": True, "pending": pending, "queue_total": queue_total}
 
 
 @router.get("/agent/next")
 def agent_next(
     agent: str = Query("default", description="代理名，用于日志标识"),
+    db: Session = Depends(get_db),
     _: str = Depends(_require_agent),
 ):
     """代理拉取下一个待打印任务。
@@ -267,17 +431,23 @@ def agent_next(
     - 无任务：返回 204 No Content（代理据此继续等待）。
     """
     with _LOCK:
-        _sweep()
-        job = next((j for j in _JOBS.values() if j.status == "pending"), None)
-        if job is None:
+        _sweep(db)
+        row = (
+            db.query(PrintJobRow)
+            .filter(PrintJobRow.status == "pending")
+            .order_by(PrintJobRow.created_at.asc())
+            .first()
+        )
+        if row is None:
             return Response(status_code=204)
 
-        job.status = "printing"
-        job.claimed_at = time.time()
-        job.claimed_by = agent
-        job.attempts += 1
-        job.updated_at = time.time()
-        job_id, pdf, copies, title = job.id, job.pdf, job.copies, job.title
+        row.status = "printing"
+        row.claimed_at = time.time()
+        row.claimed_by = agent
+        row.attempts = int(row.attempts or 0) + 1
+        row.updated_at = time.time()
+        db.commit()
+        job_id, pdf, copies, title = row.id, bytes(row.pdf or b""), row.copies, row.title
 
     return Response(
         content=pdf,
@@ -296,32 +466,33 @@ def agent_ack(
     job_id: str,
     payload: AgentAckRequest,
     agent: str = Query("default"),
+    db: Session = Depends(get_db),
     _: str = Depends(_require_agent),
 ):
     """代理回报打印结果。"""
     with _LOCK:
-        job = _JOBS.get(job_id)
-        if job is None:
+        row = db.get(PrintJobRow, job_id)
+        if row is None:
             raise HTTPException(status_code=404, detail="打印任务不存在或已过期")
 
-        job.updated_at = time.time()
-        job.printer = payload.printer or job.printer
-        job.claimed_by = agent or job.claimed_by
+        row.updated_at = time.time()
+        row.printer = payload.printer or row.printer
+        row.claimed_by = agent or row.claimed_by
         if payload.success:
-            job.status = "done"
-            job.printed_at = time.time()
-            job.error = None
+            row.status = "done"
+            row.printed_at = time.time()
+            row.error = None
         else:
-            job.error = payload.error or "打印机报错"
+            row.error = payload.error or "打印机报错"
             # 还有重试机会就退回队列，让代理稍后再试
-            if job.attempts < _MAX_ATTEMPTS:
-                job.status = "pending"
-                job.claimed_at = None
-                job.claimed_by = None
+            if int(row.attempts or 0) < _MAX_ATTEMPTS:
+                row.status = "pending"
+                row.claimed_at = None
+                row.claimed_by = None
             else:
-                job.status = "failed"
-
-        return job.to_public()
+                row.status = "failed"
+        db.commit()
+        return _row_to_job(row).to_public()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -334,6 +505,7 @@ async def upload_material(
         None, description="原始文件名。小程序上传时临时文件名可能丢后缀，用它兜底判断格式"
     ),
     user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
 ):
     """上传一份题目材料，返回 upload_id；创建打印任务时用 upload_ids 引用它。
 
@@ -343,7 +515,8 @@ async def upload_material(
         - Word：.docx 提取文字后重排（.doc 老格式请先另存为 .docx 或 PDF）
         - 文本：txt / md / csv
 
-    材料存在内存里，一小时没人用就自动清掉，不写数据库。
+    材料先暂存（一小时没被作业引用自动清掉）；被作业引用后随作业长期保留，
+    改题重建 PDF 时还要用。
     """
     # 小程序上传的临时文件名常常没有扩展名，优先用前端传过来的原始文件名
     raw_name = (filename or "").strip() or file.filename or "material"
@@ -403,8 +576,12 @@ async def upload_material(
             raise HTTPException(status_code=400, detail=f"PDF 读取失败：{exc}")
 
     with _LOCK:
-        _sweep()
-        mine = sum(1 for u in _UPLOADS.values() if u["created_by"] == user_id)
+        _sweep(db)
+        mine = (
+            db.query(PrintUploadRow)
+            .filter(PrintUploadRow.created_by == user_id, PrintUploadRow.job_id.is_(None))
+            .count()
+        )
         if mine >= _MAX_UPLOADS_PER_JOB:
             raise HTTPException(
                 status_code=429,
@@ -413,17 +590,21 @@ async def upload_material(
             )
 
         upload_id = "up_" + uuid.uuid4().hex[:12]
-        item = {
-            "id": upload_id,
-            "kind": kind,
-            "name": raw_name,
-            "size": len(data),
-            "data": data,
-            "created_by": user_id,
-            "created_at": time.time(),
-        }
-        item.update(extra)
-        _UPLOADS[upload_id] = item
+        item = PrintUploadRow(
+            id=upload_id,
+            created_by=user_id,
+            kind=kind,
+            name=raw_name,
+            size=len(data),
+            width=extra.get("width"),
+            height=extra.get("height"),
+            pages=extra.get("pages"),
+            data=data,
+            job_id=None,
+            created_at=time.time(),
+        )
+        db.add(item)
+        db.commit()
 
     return {
         "upload_id": upload_id,
@@ -447,6 +628,7 @@ def list_page_sizes():
 def create_print_job(
     payload: CreatePrintJobRequest,
     user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
 ):
     """生成作业纸（草稿）。
 
@@ -454,62 +636,70 @@ def create_print_job(
     那时才调 /print-jobs/{job_id}/print 真正入队。不想打就直接返回或删掉。
     """
     with _LOCK:
-        _sweep()
-        if len(_JOBS) >= _MAX_QUEUE_SIZE:
+        _sweep(db)
+        active = (
+            db.query(PrintJobRow)
+            .filter(PrintJobRow.status.in_(("draft", "pending", "printing")))
+            .count()
+        )
+        if active >= _MAX_QUEUE_SIZE:
             raise HTTPException(
                 status_code=429,
                 detail="打印队列已满，请确认打印代理是否在运行",
             )
 
-    # 取出本次要用的上传材料。不在这里删除 —— 结果页的「再打一份」还要用，
-    # 一小时后由 _sweep 统一清理。
+    # 取出本次要用的上传材料。不解除暂存 —— 结果页的「再打一份」和网页改题
+    # 重建 PDF 都还要用；未被引用的由 _sweep 一小时后清掉。
     uploads: list[dict] = []
+    uploads_meta: list[dict] = []
+    used_upload_ids: list[str] = []
     if payload.upload_ids:
         with _LOCK:
-            _sweep()
+            _sweep(db)
             for upload_id in payload.upload_ids[:_MAX_UPLOADS_PER_JOB]:
-                item = _UPLOADS.get(upload_id)
-                if item is None or item["created_by"] != user_id:
+                item = db.get(PrintUploadRow, upload_id)
+                if item is None or item.created_by != user_id:
                     raise HTTPException(
                         status_code=400,
                         detail=f"上传的题目材料已过期或无效（{upload_id}），请重新上传",
                     )
-                uploads.append(
+                uploads.append(_upload_item_to_dict(item))
+                used_upload_ids.append(upload_id)
+                uploads_meta.append(
                     {
-                        "kind": item["kind"],
-                        "name": item["name"],
-                        "data": item["data"],
-                        "width": item.get("width"),
-                        "height": item.get("height"),
+                        "upload_id": upload_id,
+                        "kind": item.kind,
+                        "name": item.name,
+                        "size": int(item.size or 0),
+                        "width": item.width,
+                        "height": item.height,
+                        "pages": item.pages,
                     }
                 )
 
-    try:
-        pdf = build_worksheet_pdf(
-            title=payload.title,
-            subject=payload.subject,
-            grade=payload.grade,
-            class_name=payload.class_name,
-            teacher=payload.teacher,
-            questions=payload.questions,
-            question_count=payload.question_count,
-            answer_lines=payload.answer_lines,
-            note=payload.note,
-            uploads=uploads or None,
-            upload_answer_lines=payload.upload_answer_lines,
-            question_items=payload.question_items or None,
-            answer_lines_override=payload.answer_lines_override,
-            page_size=payload.page_size,
-            layout=payload.layout,
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"作业纸生成失败：{exc}")
-
-    if len(pdf) > _MAX_PDF_BYTES:
-        raise HTTPException(status_code=500, detail="作业纸文件过大，请减少题目数量")
-
     now = time.time()
     fallback_title = f"{grade_label(payload.grade)}{subject_label(payload.subject)}作业".strip()
+    job_payload = {
+        "questions": payload.questions or [],
+        "question_count": payload.question_count,
+        "answer_lines": payload.answer_lines,
+        "note": payload.note or "",
+        "upload_answer_lines": payload.upload_answer_lines,
+        "question_items": payload.question_items or [],
+        "answer_lines_override": payload.answer_lines_override,
+        "layout": payload.layout or "auto",
+        "upload_ids": used_upload_ids,
+        "uploads_meta": uploads_meta,
+    }
+    # 生成时标题/学科等也在 payload 里留一份，网页改题重建 PDF 时用
+    job_payload["title"] = payload.title.strip()
+    job_payload["subject"] = payload.subject
+    job_payload["grade"] = payload.grade
+    job_payload["class_name"] = payload.class_name
+    job_payload["teacher"] = payload.teacher
+
+    pdf = _build_pdf(job_payload, uploads)
+
     job = PrintJob(
         id="pj_" + uuid.uuid4().hex[:12],
         status="draft",
@@ -534,13 +724,21 @@ def create_print_job(
             else ("ai" if payload.question_items else "text")
         ),
         page_size=resolve_page_spec(payload.page_size).key,
+        layout=payload.layout or "auto",
+        payload=job_payload,
         created_by=user_id,
         created_at=now,
         pdf=pdf,
     )
 
     with _LOCK:
-        _JOBS[job.id] = job
+        _save_job(db, job)
+        # 上传材料打上归属，随作业长期保留
+        if used_upload_ids:
+            db.query(PrintUploadRow).filter(
+                PrintUploadRow.id.in_(used_upload_ids)
+            ).update({"job_id": job.id}, synchronize_session=False)
+            db.commit()
         return job.to_public()
 
 
@@ -548,38 +746,166 @@ def create_print_job(
 def list_print_jobs(
     limit: int = Query(20, ge=1, le=100),
     user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
 ):
     """列出当前用户的打印任务（最新的在前）。"""
     with _LOCK:
-        _sweep()
-        jobs = [j for j in _JOBS.values() if j.created_by == user_id]
-        jobs.sort(key=lambda j: j.created_at, reverse=True)
-        return {"jobs": [j.to_public() for j in jobs[:limit]]}
+        _sweep(db)
+        rows = (
+            db.query(PrintJobRow)
+            .filter(PrintJobRow.created_by == user_id)
+            .order_by(PrintJobRow.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return {"jobs": [_row_to_job(j).to_public() for j in rows]}
 
 
 @router.get("/{job_id}")
 def get_print_job(
     job_id: str,
     user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
 ):
     """查询单个打印任务状态，供小程序轮询。"""
     with _LOCK:
-        _sweep()
-        job = _JOBS.get(job_id)
+        _sweep(db)
+        job = _load_job(db, job_id)
         if job is None or job.created_by != user_id:
             raise HTTPException(status_code=404, detail="打印任务不存在或已过期")
         return job.to_public()
+
+
+@router.get("/{job_id}/full")
+def get_print_job_full(
+    job_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """作业完整详情（含出卷参数），网页端编辑弹窗用。"""
+    with _LOCK:
+        job = _load_job(db, job_id)
+        if job is None or job.created_by != user_id:
+            raise HTTPException(status_code=404, detail="打印任务不存在或已过期")
+        return job.to_full()
+
+
+@router.patch("/{job_id}")
+def update_print_job(
+    job_id: str,
+    payload: UpdatePrintJobRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """修改作业记录（网页/小程序通用）。改了出卷内容会重建 PDF。
+
+    正在打印中（printing）的作业不允许改，其余状态（含 done/failed）都可改。
+    """
+    with _LOCK:
+        _sweep(db)
+        job = _load_job(db, job_id)
+        if job is None or job.created_by != user_id:
+            raise HTTPException(status_code=404, detail="打印任务不存在或已过期")
+        if job.status == "printing":
+            raise HTTPException(status_code=409, detail="这份作业正在打印中，稍后再改")
+
+        meta_changed = False
+        content_changed = False
+
+        for key in ("title", "subject", "grade", "class_name", "teacher"):
+            val = getattr(payload, key)
+            if val is not None:
+                if (getattr(job, key) or "") != val:
+                    setattr(job, key, val)
+                    meta_changed = True
+
+        if payload.copies is not None:
+            copies = max(1, min(int(payload.copies), 50))
+            if job.copies != copies:
+                job.copies = copies
+                meta_changed = True
+
+        content_map = {
+            "questions": payload.questions,
+            "question_items": payload.question_items,
+            "note": payload.note,
+            "answer_lines": payload.answer_lines,
+            "upload_answer_lines": payload.upload_answer_lines,
+            "answer_lines_override": payload.answer_lines_override,
+            "question_count": payload.question_count,
+        }
+        for key, val in content_map.items():
+            if val is not None and job.payload.get(key) != val:
+                job.payload[key] = val
+                content_changed = True
+
+        if payload.page_size is not None:
+            page_size = resolve_page_spec(payload.page_size).key
+            if job.page_size != page_size:
+                job.page_size = page_size
+                job.payload["page_size"] = page_size
+                content_changed = True
+
+        if payload.layout is not None:
+            layout = payload.layout if payload.layout in ("auto", "single", "double") else "auto"
+            if job.layout != layout:
+                job.layout = layout
+                job.payload["layout"] = layout
+                content_changed = True
+
+        # 标题/学科/班级/老师也进 payload（重建 PDF 卷头要用）
+        if meta_changed or content_changed:
+            job.payload["title"] = job.title
+            job.payload["subject"] = job.subject
+            job.payload["grade"] = job.grade
+            job.payload["class_name"] = job.class_name
+            job.payload["teacher"] = job.teacher
+            job.payload["page_size"] = job.page_size
+            job.payload["layout"] = job.layout
+
+        if content_changed:
+            upload_ids = job.payload.get("upload_ids") or []
+            uploads = []
+            if upload_ids:
+                rows = (
+                    db.query(PrintUploadRow)
+                    .filter(
+                        PrintUploadRow.id.in_(upload_ids),
+                        PrintUploadRow.job_id == job.id,
+                    )
+                    .all()
+                )
+                by_id = {r.id: r for r in rows}
+                for up_id in upload_ids:
+                    item = by_id.get(up_id)
+                    if item is not None:
+                        uploads.append(_upload_item_to_dict(item))
+            job.pdf = _build_pdf(job.payload, uploads)
+            # 题量跟着内容重算
+            if not uploads:
+                job.question_count = (
+                    len(job.payload.get("question_items") or [])
+                    or len(
+                        [q for q in (job.payload.get("questions") or []) if str(q).strip()]
+                    )
+                    or int(job.payload.get("question_count") or 0)
+                )
+
+        job.updated_at = time.time()
+        _save_job(db, job)
+        return job.to_full()
 
 
 @router.get("/{job_id}/pdf")
 def get_print_job_pdf(
     job_id: str,
     user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
 ):
     """下载作业纸 PDF（小程序里预览用）。"""
     with _LOCK:
-        _sweep()
-        job = _JOBS.get(job_id)
+        _sweep(db)
+        job = _load_job(db, job_id)
         if job is None or job.created_by != user_id:
             raise HTTPException(status_code=404, detail="打印任务不存在或已过期")
         pdf = job.pdf
@@ -599,14 +925,16 @@ def enqueue_print_job(
     job_id: str,
     payload: Optional[PrintNowRequest] = None,
     user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
 ):
     """把作业送出打印。老师在预览页点了「打印」才调这个。
 
-    草稿（draft）和之前失败的（failed）都能重新入队；已经在打印或已完成的会拒绝。
+    草稿（draft）和之前失败的（failed）都能重新入队；已经在打印的会拒绝；
+    已打印过的（done）默认拒绝，带 reprint=true 可重打。
     """
     with _LOCK:
-        _sweep()
-        job = _JOBS.get(job_id)
+        _sweep(db)
+        job = _load_job(db, job_id)
         if job is None or job.created_by != user_id:
             raise HTTPException(status_code=404, detail="作业不存在或已过期")
 
@@ -614,7 +942,7 @@ def enqueue_print_job(
             return job.to_public()  # 重复点按，幂等返回
         if job.status == "printing":
             raise HTTPException(status_code=409, detail="这份作业正在打印中")
-        if job.status == "done":
+        if job.status == "done" and not (payload is not None and payload.reprint):
             raise HTTPException(status_code=409, detail="这份作业已经打印过了")
 
         if payload is not None and payload.copies:
@@ -626,6 +954,7 @@ def enqueue_print_job(
         job.claimed_at = None
         job.claimed_by = None
         job.updated_at = time.time()
+        _save_job(db, job)
         return job.to_public()
 
 
@@ -633,13 +962,20 @@ def enqueue_print_job(
 def cancel_print_job(
     job_id: str,
     user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
 ):
-    """删除一份作业（草稿，或还没被打印机取走的排队中作业）。"""
+    """删除一份作业记录。打印中（printing）的不能删，其余状态（含 done/failed）都可删。"""
     with _LOCK:
-        job = _JOBS.get(job_id)
+        job = _load_job(db, job_id)
         if job is None or job.created_by != user_id:
             raise HTTPException(status_code=404, detail="作业不存在或已过期")
-        if job.status in ("printing", "done"):
-            raise HTTPException(status_code=409, detail="这份作业已经在打印了，无法删除")
-        _JOBS.pop(job_id, None)
+        if job.status == "printing":
+            raise HTTPException(status_code=409, detail="这份作业正在打印中，无法删除")
+        row = db.get(PrintJobRow, job_id)
+        db.query(PrintUploadRow).filter(PrintUploadRow.job_id == job_id).delete(
+            synchronize_session=False
+        )
+        if row is not None:
+            db.delete(row)
+        db.commit()
     return {"ok": True, "job_id": job_id}

@@ -1,9 +1,9 @@
 """班级 CRUD、任课教师；协作教师可在「我的班级」中看到对应班级"""
+import re
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import asc
 
 from app.database import get_db
 from app.dependencies import get_current_user_id
@@ -61,6 +61,47 @@ def _orm_to_record(
     )
 
 
+_GRADE_NUMBER_WORDS = {
+    "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
+    "七": 7, "八": 8, "九": 9, "十": 10, "十一": 11, "十二": 12,
+}
+
+
+def _grade_rank(grade: Optional[str]) -> int:
+    """年级段位：小学 1-6、初中 7-9、高中 10-12；认不出的排最后"""
+    g = (grade or "").strip()
+    if not g:
+        return 99
+    if g.startswith("小学"):
+        g = g[2:]
+    stage = 0
+    if g.startswith("初"):
+        stage, g = 7, g[1:]
+    elif g.startswith("高"):
+        stage, g = 10, g[1:]
+    if g.endswith("年级"):
+        g = g[:-2]
+    n = _GRADE_NUMBER_WORDS.get(g)
+    if n is None and g.isdigit():
+        n = int(g)
+    if n is None:
+        return 99
+    if stage and 1 <= n <= 3:
+        return stage + n - 1
+    if 1 <= n <= 12:
+        return n
+    return 99
+
+
+def _class_sort_key(c: Class) -> tuple:
+    # 20261109 修改意见#3：班级顺序乱跳根因=按 name 字典序（1班/10班/2班），
+    # 改自然排序：年级段位 → 班号数字 → 名称兜底
+    name = c.name or ""
+    m = re.search(r"\d+", name)
+    number = int(m.group()) if m else 999
+    return (_grade_rank(c.grade), number, name)
+
+
 def _merge_class_lists(db: Session, user_id: str, school_level: Optional[str], grade: Optional[str]) -> List[Class]:
     if _is_global_admin(db, user_id):
         # 全局管理员看全校
@@ -69,7 +110,9 @@ def _merge_class_lists(db: Session, user_id: str, school_level: Optional[str], g
             q = q.filter(Class.school_level == school_level)
         if grade:
             q = q.filter(Class.grade == grade)
-        return q.order_by(asc(Class.name)).all()
+        rows = q.all()
+        rows.sort(key=_class_sort_key)
+        return rows
 
     q1 = db.query(Class).filter(Class.user_id == user_id)
     if school_level:
@@ -96,7 +139,7 @@ def _merge_class_lists(db: Session, user_id: str, school_level: Optional[str], g
             continue
         seen.add(c.id)
         out.append(c)
-    out.sort(key=lambda x: x.name or "")
+    out.sort(key=_class_sort_key)
     return out
 
 

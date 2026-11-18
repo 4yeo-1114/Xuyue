@@ -1,0 +1,96 @@
+/* 错题举一反三页 */
+
+.v-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+
+.v-meta {
+  margin: 4rpx 8rpx 16rpx;
+  font-size: 24rpx;
+}
+
+/* 变式题卡片：点开看答案与解析 */
+.v-card {
+  cursor: pointer;
+}
+
+.v-card-open {
+  border-color: #c9bfe0;
+  background: #fff;
+}
+
+.v-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  margin-bottom: 12rpx;
+}
+
+.v-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #3d3352;
+}
+
+.v-from {
+  font-size: 22rpx;
+  color: #a89bc4;
+  background: #f3effa;
+  border-radius: 999rpx;
+  padding: 6rpx 18rpx;
+  flex-shrink: 0;
+}
+
+.v-question {
+  display: block;
+  white-space: pre-line;
+  word-break: break-all;
+  font-size: 28rpx;
+  line-height: 1.7;
+  color: #4a3f5c;
+}
+
+.v-body {
+  margin-top: 16rpx;
+  border-top: 1rpx dashed #eee8fb;
+  padding-top: 16rpx;
+}
+
+.v-row {
+  display: flex;
+  gap: 18rpx;
+  margin-bottom: 12rpx;
+  align-items: flex-start;
+}
+
+.v-label {
+  flex-shrink: 0;
+  width: 90rpx;
+  font-size: 24rpx;
+  color: #a89bc4;
+  padding-top: 2rpx;
+}
+
+.v-value {
+  flex: 1;
+  font-size: 27rpx;
+  line-height: 1.65;
+  color: #4a3f5c;
+  white-space: pre-line;
+  word-break: break-all;
+}
+
+.v-answer {
+  color: #1f9d63;
+  font-weight: 600;
+}
+
+.v-arrow {
+  margin-top: 14rpx;
+  text-align: center;
+  font-size: 23rpx;
+  color: #a89bc4;
+}
