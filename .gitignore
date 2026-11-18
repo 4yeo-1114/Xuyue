@@ -27,6 +27,11 @@ bun.lockb
 # ===== 运行时数据（大文件 / 学生答题卡数据）=====
 grading_data_all/
 temp/
+
+# ===== 根目录 docs/ 全部不进库（2026-11-18 用户要求）=====
+# ⚠️ 只锚定根目录：backend/docs/ 下的数据层契约等正式文档仍要入库，
+#    所以写 /docs/ 而不是 docs/（后者会连 backend/docs/ 一起忽略）。
+/docs/
 _zyk_legacy_backup_*/
 
 # ===== 日志 =====
